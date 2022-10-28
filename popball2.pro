@@ -16,6 +16,7 @@ SOURCES += \
 
 HEADERS += \
     config.h \
+    macro_def.h \
     sysInfo.h \
     widget.h
 

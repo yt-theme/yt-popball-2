@@ -49,12 +49,26 @@ bool Config::checkOrCreateConfig()
 // read configure file content
 void Config::readConfig()
 {
-    this->x         = this->settingsObj->value("/position/x").toInt();
-    this->y         = this->settingsObj->value("/position/y").toInt();
-    this->width     = this->settingsObj->value("/appearance/width").toInt();
-    this->height    = this->settingsObj->value("/appearance/height").toInt();
-    this->opacity   = this->settingsObj->value("/appearance/opacity").toDouble();
+    this->x                     = this->settingsObj->value("/position/x").toInt();
+    this->y                     = this->settingsObj->value("/position/y").toInt();
+    this->width                 = this->settingsObj->value("/appearance/width").toInt();
+    this->height                = this->settingsObj->value("/appearance/height").toInt();
+    this->opacity               = this->settingsObj->value("/appearance/opacity").toDouble();
+    this->shadow_radius         = this->settingsObj->value("/appearance/shadow_radius").toInt();
+    this->shape                 = this->settingsObj->value("/appearance/shape").toInt();
+    this->main_color            = this->settingsObj->value("/appearance/main_color").toString();
+    this->main_border_color     = this->settingsObj->value("/appearance/main_border_color").toString();
+    this->main_border_width     = this->settingsObj->value("/appearance/main_border_width").toInt();
+    this->mem_color             = this->settingsObj->value("/appearance/mem_color").toString();
+    this->swap_color            = this->settingsObj->value("/appearance/swap_color").toString();
+    this->cpu_usage_color       = this->settingsObj->value("/appearance/cpu_usage_color").toString();
+    this->cpu_freq_color        = this->settingsObj->value("/appearance/cpu_freq_color").toString();
+    this->cpu_temp_color        = this->settingsObj->value("/appearance/cpu_temp_color").toString();
+    this->net_speed_color       = this->settingsObj->value("/appearance/net_speed_color").toString();
+    this->charts_rows           = this->settingsObj->value("/appearance/charts_rows").toInt();
+    this->update_data_interval  = this->settingsObj->value("/timer/update_data_interval").toInt();
 }
+
 
 /** *********************************************************
                            set
@@ -89,6 +103,79 @@ void Config::setOpacity(double val)
     this->opacity = val;
 }
 
+void Config::setShadowRadius(qint32 val)
+{
+    this->settingsObj->setValue("/appearance/shadow_radius", val);
+    this->shadow_radius = val;
+}
+
+void Config::setShape(qint32 val)
+{
+    this->settingsObj->setValue("/appearance/shape", val);
+    this->shape = val;
+}
+
+void Config::setMainColor(QString val)
+{
+    this->settingsObj->setValue("/appearance/main_color", val);
+    this->main_color = val;
+}
+void Config::setMainBorderColor(QString val)
+{
+    this->settingsObj->setValue("/appearance/main_border_color", val);
+    this->main_border_color = val;
+}
+
+void Config::setMainBorderWidth(qint32 val)
+{
+    this->settingsObj->setValue("/appearance/main_border_width", val);
+    this->main_border_width = val;
+}
+
+void Config::setMemColor(QString val)
+{
+    this->settingsObj->setValue("/appearance/mem_color", val);
+    this->mem_color = val;
+
+}
+void Config::setSwapColor(QString val)
+{
+    this->settingsObj->setValue("/appearance/swap_color", val);
+    this->swap_color = val;
+}
+void Config::setCpuUsageColor(QString val)
+{
+    this->settingsObj->setValue("/appearance/cpu_usage_color", val);
+    this->cpu_usage_color = val;
+}
+void Config::setCpuFreqColor(QString val)
+{
+    this->settingsObj->setValue("/appearance/cpu_freq_color", val);
+    this->cpu_freq_color = val;
+}
+void Config::setCpuTempColor(QString val)
+{
+    this->settingsObj->setValue("/appearance/cpu_temp_color", val);
+}
+void Config::setNetSpeedColor(QString val)
+{
+    this->settingsObj->setValue("/appearance/net_speed_color", val);
+    this->net_speed_color = val;
+}
+
+void Config::setChartsRows(qint32 val)
+{
+    this->settingsObj->setValue("/appearance/charts_rows", val);
+    this->charts_rows = val;
+}
+
+void Config::setUpdateDataInterval(qint32 val)
+{
+    this->settingsObj->setValue("/timer/update_data_interval", val);
+    this->update_data_interval = val;
+}
+
+
 /** *********************************************************
                            get
 ********************************************************* */
@@ -115,5 +202,62 @@ qint32 Config::getHeight()
 double Config::getOpacity()
 {
     return this->opacity;
+}
+
+qint32 Config::getShadowRadius()
+{
+    return this->shadow_radius;
+}
+
+qint32 Config::getShape()
+{
+    return this->shape;
+}
+
+QString Config::getMainColor()
+{
+    return this->main_color;
+}
+QString Config::getMainBorderColor()
+{
+    return this->main_border_color;
+}
+qint32 Config::getMainBorderWidth()
+{
+    return this->main_border_width;
+}
+QString Config::getMemColor()
+{
+    return this->mem_color;
+}
+QString Config::getSwapColor()
+{
+    return this->swap_color;
+}
+QString Config::getCpuUsageColor()
+{
+    return this->cpu_usage_color;
+}
+QString Config::getCpuFreqColor()
+{
+    return this->cpu_freq_color;
+}
+QString Config::getCpuTempColor()
+{
+    return this->cpu_temp_color;
+}
+QString Config::getNetSpeedColor()
+{
+    return this->net_speed_color;
+}
+
+qint32 Config::getChartsRows()
+{
+    return this->charts_rows;
+}
+
+qint32 Config::getUpdateDataInterval()
+{
+    return this->update_data_interval;
 }
 
