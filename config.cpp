@@ -53,6 +53,8 @@ void Config::readConfig()
     this->y                     = this->settingsObj->value("/position/y").toInt();
     this->width                 = this->settingsObj->value("/appearance/width").toInt();
     this->height                = this->settingsObj->value("/appearance/height").toInt();
+    this->aside_width           = this->settingsObj->value("/appearance/aside_width").toInt();
+    this->aside_height          = this->settingsObj->value("/appearance/aside_height").toInt();
     this->opacity               = this->settingsObj->value("/appearance/opacity").toDouble();
     this->shadow_radius         = this->settingsObj->value("/appearance/shadow_radius").toInt();
     this->shape                 = this->settingsObj->value("/appearance/shape").toInt();
@@ -67,6 +69,7 @@ void Config::readConfig()
     this->net_speed_color       = this->settingsObj->value("/appearance/net_speed_color").toString();
     this->charts_rows           = this->settingsObj->value("/appearance/charts_rows").toInt();
     this->update_data_interval  = this->settingsObj->value("/timer/update_data_interval").toInt();
+    this->update_ui_interval    = this->settingsObj->value("/timer/update_ui_interval").toInt();
 }
 
 
@@ -95,6 +98,18 @@ void Config::setHeight(qint32 val)
 {
     this->settingsObj->setValue("/appearance/height", val);
     this->height = val;
+}
+
+void Config::setAsideWidth(qint32 val)
+{
+    this->settingsObj->setValue("/appearance/aside_width", val);
+    this->aside_width = val;
+}
+
+void Config::setAsideHeight(qint32 val)
+{
+    this->settingsObj->setValue("/appearance/aside_height", val);
+    this->aside_height = val;
 }
 
 void Config::setOpacity(double val)
@@ -175,6 +190,12 @@ void Config::setUpdateDataInterval(qint32 val)
     this->update_data_interval = val;
 }
 
+void Config::setUpdateUIInterval(qint32 val)
+{
+    this->settingsObj->setValue("/timer/update_ui_interval", val);
+    this->update_ui_interval = val;
+}
+
 
 /** *********************************************************
                            get
@@ -197,6 +218,16 @@ qint32 Config::getWidth()
 qint32 Config::getHeight()
 {
     return this->height;
+}
+
+qint32 Config::getAsideWidth()
+{
+    return this->aside_width;
+}
+
+qint32 Config::getAsideHeight()
+{
+    return this->aside_height;
 }
 
 double Config::getOpacity()
@@ -259,5 +290,10 @@ qint32 Config::getChartsRows()
 qint32 Config::getUpdateDataInterval()
 {
     return this->update_data_interval;
+}
+
+qint32 Config::getUpdateUIInterval()
+{
+    return this->update_ui_interval;
 }
 

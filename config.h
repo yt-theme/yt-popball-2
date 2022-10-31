@@ -19,6 +19,8 @@ private:
     qint32 y;
     qint32 width;
     qint32 height;
+    qint32 aside_width;
+    qint32 aside_height;
     double opacity;
     qint32 shadow_radius;
     qint16 shape;
@@ -35,6 +37,7 @@ private:
 
     qint32 charts_rows;
     qint32 update_data_interval;
+    qint32 update_ui_interval;
 
 public:
     Config();
@@ -50,6 +53,8 @@ public:
     void setY(qint32 val);
     void setWidth(qint32 val);
     void setHeight(qint32 val);
+    void setAsideWidth(qint32 val);
+    void setAsideHeight(qint32 val);
     void setOpacity(double val);
     void setShadowRadius(qint32 val);
     void setShape(qint32 val);
@@ -66,12 +71,15 @@ public:
 
     void setChartsRows(qint32 val);
     void setUpdateDataInterval(qint32 val);
+    void setUpdateUIInterval(qint32 val);
 
     // ########### get config item values ###########
     qint32  getX();
     qint32  getY();
     qint32  getWidth();
     qint32  getHeight();
+    qint32  getAsideWidth();
+    qint32  getAsideHeight();
     double  getOpacity();
     qint32  getShadowRadius();
     qint32  getShape();
@@ -88,6 +96,7 @@ public:
 
     qint32  getChartsRows();
     qint32  getUpdateDataInterval();
+    qint32  getUpdateUIInterval();
 };
 
 

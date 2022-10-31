@@ -51,6 +51,7 @@ public:
     quint64 getMemFree();
     quint64 getSwapTotal();
     quint64 getSwapFree();
+    double  getCpuFreq();
     double  getCpuUsage();
     double  getCpuTemperature();
     quint64 getReceive();

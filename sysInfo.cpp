@@ -73,7 +73,7 @@ void SysInfo::updateSysinfo()
     double tmp_maxFreq = 0.0;
     for (quint32 i=0; i<cpuInfoStr_arr.size(); i++)
     {
-        if (cpuInfoStr_arr[i].contains("cpu MHZ"))
+        if (cpuInfoStr_arr[i].contains("cpu MHz"))
         {
             double val = cpuInfoStr_arr[i].split(":")[1].trimmed().toDouble();
             if (val > tmp_maxFreq) {
@@ -93,22 +93,24 @@ void SysInfo::updateSysinfo()
 
     // cpu usage data split
     QStringList cpuUsageStr_1st_arr = cpuUsageStr_1st.split(" ", Qt::SkipEmptyParts);
-    double tmp_cpuUsage_total = 0.0;
-    for (quint32 i = 0; i < cpuUsageStr_1st_arr.size(); i++)
-    {
-        if (i == 0) continue;
-        tmp_cpuUsage_total += cpuUsageStr_1st_arr[i].toDouble();
-    }
-    this->cpuUsage_total = tmp_cpuUsage_total;
+    this->cpuUsage_total = cpuUsageStr_1st_arr[1].toDouble() +
+                           cpuUsageStr_1st_arr[2].toDouble() +
+                           cpuUsageStr_1st_arr[3].toDouble() +
+                           cpuUsageStr_1st_arr[4].toDouble() +
+                           cpuUsageStr_1st_arr[5].toDouble() +
+                           cpuUsageStr_1st_arr[6].toDouble() +
+                           cpuUsageStr_1st_arr[7].toDouble() +
+                           cpuUsageStr_1st_arr[8].toDouble() +
+                           cpuUsageStr_1st_arr[9].toDouble() +
+                           cpuUsageStr_1st_arr[10].toDouble();
     this->cpuUsage_idle = cpuUsageStr_1st_arr[4].toDouble();
 
     // cpu usage
-    this->cpuUsage = (
-                (this->cpuUsage_total - this->cpuUsage_total_last) -
-                (this->cpuUsage_idle - this->cpuUsage_total_last)
-                ) / (
-                    this->cpuUsage_total - this->cpuUsage_total_last
-                ) * 100;
+    this->cpuUsage = static_cast<double>(
+                ((this->cpuUsage_total - this->cpuUsage_total_last) - (this->cpuUsage_idle - this->cpuUsage_total_last)) /
+                (this->cpuUsage_total - this->cpuUsage_total_last)
+              );
+    qDebug() << this->cpuUsage_total << this->cpuUsage_idle << this->cpuUsage;
 
     // store last
     this->cpuUsage_total_last = this->cpuUsage_total;
@@ -171,6 +173,11 @@ quint64 SysInfo::getSwapTotal()
 quint64 SysInfo::getSwapFree()
 {
     return this->sys_info.freeswap;
+}
+
+double SysInfo::getCpuFreq()
+{
+    return this->cpuFreq;
 }
 
 double SysInfo::getCpuUsage()

@@ -5,8 +5,12 @@
 #include <QPainter>
 #include <QPainterPath>
 #include <QPaintEvent>
+#include <QMouseEvent>
 #include <QPen>
 #include <QVector>
+#include <QGuiApplication>
+#include <QLineF>
+#include <QPointF>
 #include <QTimer>
 #include <QLCDNumber>
 #include <QGraphicsDropShadowEffect>
@@ -19,10 +23,13 @@ class Widget : public QWidget
     Q_OBJECT
 private:
     // base
-    Config *config;
-    SysInfo *sysInfo;
-    QGraphicsDropShadowEffect *winShadow;
-    QTimer *updateDataTimer;
+    Config                      *config;
+    SysInfo                     *sysInfo;
+    QGraphicsDropShadowEffect   *winShadow;
+    QTimer                      *updateDataTimer;
+    QTimer                      *updateUITimer;
+    bool                        isMousePressed = false;
+    QPoint                      curWindowPos;
 
     // history data
     QVector<quint64> mem_data_history;
@@ -30,7 +37,10 @@ private:
     QVector<double>  cpuUsage_data_history;
 
     // widgets
+    QLCDNumber *cpuTempLCD;
     QLCDNumber *cpuFreqLCD;
+    QLCDNumber *netUploadLCD;
+    QLCDNumber *netDownloadLCD;
 
 public:
     Widget(QWidget *parent = nullptr);
@@ -44,7 +54,13 @@ public:
 
 private slots:
     void paintEvent(QPaintEvent *event);
+    void mousePressEvent(QMouseEvent *event);
+    void mouseMoveEvent(QMouseEvent *event);
+    void mouseReleaseEvent(QMouseEvent *event);
+
     void onTimerIntervalForUpdateData();
+    void onTimerIntervalForUpdateUI();
+
 
 };
 #endif // WIDGET_H
