@@ -1,10 +1,10 @@
 # yt-popball-2
 
 #### 介绍
-popball new day
+popb使用qt6制作的popball第二代
 
 #### 软件架构
-软件架构说明
+框架使用qt6，IDE使用安装qt6附带的qtcreator
 
 
 #### 安装教程

@@ -23,10 +23,9 @@ private:
     // cpu
     double cpuTemperature       = 0.0;
     double cpuFreq              = 0.0; // mhz
-    double cpuUsage_total       = 0.0;
+
     double cpuUsage_total_last  = 0.0;
-    double cpuUsage_idle        = 0.0;
-    double cpuUsage_idle_last   = 0.0;
+    double cpuUsage_use_last    = 0.0;
     double cpuUsage             = 0.0;
 
     // last update time

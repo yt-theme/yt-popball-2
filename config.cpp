@@ -64,6 +64,7 @@ void Config::readConfig()
     this->mem_color             = this->settingsObj->value("/appearance/mem_color").toString();
     this->swap_color            = this->settingsObj->value("/appearance/swap_color").toString();
     this->cpu_usage_color       = this->settingsObj->value("/appearance/cpu_usage_color").toString();
+    this->cpu_usage_width       = this->settingsObj->value("/appearance/cpu_usage_width").toDouble();
     this->cpu_freq_color        = this->settingsObj->value("/appearance/cpu_freq_color").toString();
     this->cpu_temp_color        = this->settingsObj->value("/appearance/cpu_temp_color").toString();
     this->net_speed_color       = this->settingsObj->value("/appearance/net_speed_color").toString();
@@ -163,6 +164,13 @@ void Config::setCpuUsageColor(QString val)
     this->settingsObj->setValue("/appearance/cpu_usage_color", val);
     this->cpu_usage_color = val;
 }
+
+void Config::setCpuUsageWidth(double val)
+{
+    this->settingsObj->setValue("/appearance/cpu_usage_width", val);
+    this->cpu_usage_width = val;
+}
+
 void Config::setCpuFreqColor(QString val)
 {
     this->settingsObj->setValue("/appearance/cpu_freq_color", val);
@@ -268,6 +276,10 @@ QString Config::getSwapColor()
 QString Config::getCpuUsageColor()
 {
     return this->cpu_usage_color;
+}
+double Config::getCpuUsageWidth()
+{
+    return this->cpu_usage_width;
 }
 QString Config::getCpuFreqColor()
 {

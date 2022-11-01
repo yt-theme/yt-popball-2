@@ -38,20 +38,20 @@ Widget::Widget(QWidget *parent)
     this->cpuFreqLCD->display("000000000");
     // net upload LCD
     this->netUploadLCD = new QLCDNumber(this);
-    this->netUploadLCD->setDigitCount(6);
+    this->netUploadLCD->setDigitCount(7);
     this->netUploadLCD->setMode(QLCDNumber::Dec);
     this->netUploadLCD->setSegmentStyle(QLCDNumber::Flat);
     this->netUploadLCD->setGeometry(0, config->getHeight()/5.7 + config->getWidth()/5.5 * 2, config->getWidth(), config->getWidth()/6.5);
     this->netUploadLCD->setStyleSheet("border: 0;color:" + config->getCpuFreqColor() + ";");
-    this->netUploadLCD->display("000000");
+    this->netUploadLCD->display("0000000");
     // net downlod LCD
     this->netDownloadLCD = new QLCDNumber(this);
-    this->netDownloadLCD->setDigitCount(6);
+    this->netDownloadLCD->setDigitCount(7);
     this->netDownloadLCD->setMode(QLCDNumber::Dec);
     this->netDownloadLCD->setSegmentStyle(QLCDNumber::Flat);
     this->netDownloadLCD->setGeometry(0, config->getHeight()/5.7 + config->getWidth()/5.5*2.9, config->getWidth(), config->getWidth()/6.5);
     this->netDownloadLCD->setStyleSheet("border: 0;color:" + config->getCpuFreqColor() + ";");
-    this->netDownloadLCD->display("000000");
+    this->netDownloadLCD->display("0000000");
 }
 
 Widget::~Widget()
@@ -85,7 +85,7 @@ void Widget::setUiFrame()
     // set default shape
     this->config->setShape(SHAPE_CIRCLE);
 
-    // chekc y
+    // check y
     if (this->config->getY() <= 0)
     {
         this->config->setY(0);
@@ -105,12 +105,12 @@ void Widget::setUiFrame()
         // left
         if (this->config->getX() <= 0)
         {
-            this->config->setX(0 - this->config->getMainBorderWidth() - this->config->getShadowRadius());
+            this->config->setX(0 - this->config->getShadowRadius());
         }
         // right
         if ((this->config->getX() + this->frameGeometry().width()) >= primaryScreenRect.width())
         {
-            this->config->setX(primaryScreenRect.width() - this->frameGeometry().width() + this->config->getMainBorderWidth() + this->config->getShadowRadius());
+            this->config->setX(primaryScreenRect.width() - this->frameGeometry().width() + this->config->getShadowRadius());
         }
     }
     // set geometry
@@ -214,6 +214,7 @@ void Widget::paintEvent(QPaintEvent *)
     switch (this->config->getShape())
     {
     case SHAPE_CIRCLE:
+    case SHAPE_ASIDE: // tmp
     {
         this->cpuFreqLCD->show();
 
@@ -222,6 +223,7 @@ void Widget::paintEvent(QPaintEvent *)
         qint32 main_width           = config->getWidth();
         qint32 main_height          = config->getHeight();
         qint32 charts_rows          = config->getChartsRows();
+        qint32 edging_width         = config->getMainBorderWidth() + config->getShadowRadius();
 
 
         // main circle && border
@@ -251,34 +253,35 @@ void Widget::paintEvent(QPaintEvent *)
         this->cpuTempLCD->display(QString("%1'c").arg(qRound(this->sysInfo->getCpuTemperature())));
 
         // net upload LCD
-        this->netUploadLCD->display(QString("U%1").arg(QString::number(this->sysInfo->getTransmit() / this->config->getUpdateDataInterval() /1024, 'f', 2)));
+        this->netUploadLCD->display(QString("u %1").arg(QString::number(this->sysInfo->getTransmit()/1024.0/this->config->getUpdateDataInterval(), 'f', 2)));
 
         // net download LCD
-        this->netDownloadLCD->display(QString("D%1").arg(QString::number(this->sysInfo->getReceive() / this->config->getUpdateDataInterval() /1024, 'f', 2)));
+        qDebug() << "receive =>" << this->sysInfo->getTransmit()/1024.0/this->config->getUpdateDataInterval();
+        this->netDownloadLCD->display(QString("d %1").arg(QString::number(this->sysInfo->getReceive()/1024.0/this->config->getUpdateDataInterval(), 'f', 2)));
 
         // mem charts
         QPainterPath memPath;
-        memPath.moveTo(0, main_height);
+        memPath.moveTo(0, main_height - edging_width);
         quint64 mem_total = this->sysInfo->getMemTotal();
         for (int i=0; i<this->mem_data_history.size(); i++)
         {
             memPath.lineTo((main_width/charts_rows)*i,
-                           main_height - floor(this->mem_data_history[i] / 1024) / floor(mem_total / 1024) * main_height);
+                           main_height - floor(this->mem_data_history[i] / 1024) / floor(mem_total / 1024) * main_height - edging_width);
         }
-        memPath.lineTo(main_width, main_height);
-        memPath.lineTo(0, main_height);
+        memPath.lineTo(main_width, main_height - edging_width);
+        memPath.lineTo(0, main_height - edging_width);
         painter.fillPath(memPath, QColor(this->config->getMemColor()));
 
         // swap charts
         QPainterPath swapPath;
-        swapPath.moveTo(0, main_height);
+        swapPath.moveTo(0, main_height - edging_width);
         quint64 swap_total = this->sysInfo->getSwapTotal();
         for (int i=0; i<this->swap_data_history.size(); i++)
         {
             swapPath.lineTo((main_width/charts_rows)*i,
-                           main_height - floor(this->swap_data_history[i] / 1024) / floor(swap_total / 1024) * main_height);
+                           main_height - floor(this->swap_data_history[i] / 1024) / floor(swap_total / 1024) * main_height - edging_width);
         }
-        swapPath.lineTo(main_width, main_height);
+        swapPath.lineTo(main_width, main_height - edging_width);
         swapPath.lineTo(0, main_height);
         painter.fillPath(swapPath, QColor(this->config->getSwapColor()));
 
@@ -286,43 +289,44 @@ void Widget::paintEvent(QPaintEvent *)
         QPen cpuUsagePen;
         cpuUsagePen.setColor(config->getCpuUsageColor());
         cpuUsagePen.setStyle(Qt::SolidLine);
-        cpuUsagePen.setWidth(2);
+        cpuUsagePen.setWidthF(config->getCpuUsageWidth());
         painter.setPen(cpuUsagePen);
         QVector<double> cpuUsageData = this->cpuUsage_data_history;
         QPointF cpuUsagePoints[charts_rows];
         for (int i=0; i<charts_rows; i++)
         {
-            cpuUsagePoints[i] = QPointF(main_width / charts_rows * i, main_height - (cpuUsageData[i]));
+            cpuUsagePoints[i] = QPointF(main_width / charts_rows * i, main_height - (cpuUsageData[i]) - edging_width);
         }
         painter.drawPolyline(cpuUsagePoints, charts_rows);
 
         painter.end();
         break;
     }
-    case SHAPE_ASIDE:
-    {
-        this->cpuFreqLCD->hide();
-        qint32 main_border_width    = config->getMainBorderWidth();
-        qint32 shadow_radius        = config->getShadowRadius();
-        qint32 main_width           = config->getWidth();
-        qint32 main_height          = config->getHeight();
+//    case SHAPE_ASIDE:
+//    {
+//        this->cpuFreqLCD->hide();
+//        qint32 main_border_width    = config->getMainBorderWidth();
+//        qint32 shadow_radius        = config->getShadowRadius();
+//        qint32 main_width           = config->getWidth();
+//        qint32 main_height          = config->getHeight();
 
-        // main color
-        painter.setBrush(QColor(config->getMainColor()));
-        QPen pen(QColor(config->getMainBorderColor()), main_border_width, Qt::SolidLine, Qt::SquareCap, Qt::RoundJoin);
-        painter.setPen(pen);
-        painter.drawEllipse(
-                    main_border_width/2 + shadow_radius,
-                    main_border_width/2 + shadow_radius,
-                    main_width  - main_border_width - (shadow_radius * 2),
-                    main_height - main_border_width - (shadow_radius * 2) );
+//        // main color
+//        painter.setBrush(QColor(config->getMainColor()));
+//        QPen pen(QColor(config->getMainBorderColor()), main_border_width, Qt::SolidLine, Qt::SquareCap, Qt::RoundJoin);
+//        painter.setPen(pen);
+//        painter.drawEllipse(
+//                    main_border_width/2 + shadow_radius,
+//                    main_border_width/2 + shadow_radius,
+//                    main_width  - main_border_width - (shadow_radius * 2),
+//                    main_height - main_border_width - (shadow_radius * 2) );
 
 
 
-        painter.end();
-        break;
-    }
+//        painter.end();
+//        break;
+//    }
 
+    default: break;
 
     }
 }

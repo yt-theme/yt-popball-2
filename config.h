@@ -31,6 +31,7 @@ private:
     QString mem_color;
     QString swap_color;
     QString cpu_usage_color;
+    double  cpu_usage_width;
     QString cpu_freq_color;
     QString cpu_temp_color;
     QString net_speed_color;
@@ -65,6 +66,7 @@ public:
     void setMemColor(QString val);
     void setSwapColor(QString val);
     void setCpuUsageColor(QString val);
+    void setCpuUsageWidth(double val);
     void setCpuFreqColor(QString val);
     void setCpuTempColor(QString val);
     void setNetSpeedColor(QString val);
@@ -90,6 +92,7 @@ public:
     QString getMemColor();
     QString getSwapColor();
     QString getCpuUsageColor();
+    double  getCpuUsageWidth();
     QString getCpuFreqColor();
     QString getCpuTempColor();
     QString getNetSpeedColor();

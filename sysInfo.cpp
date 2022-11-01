@@ -93,28 +93,26 @@ void SysInfo::updateSysinfo()
 
     // cpu usage data split
     QStringList cpuUsageStr_1st_arr = cpuUsageStr_1st.split(" ", Qt::SkipEmptyParts);
-    this->cpuUsage_total = cpuUsageStr_1st_arr[1].toDouble() +
-                           cpuUsageStr_1st_arr[2].toDouble() +
-                           cpuUsageStr_1st_arr[3].toDouble() +
-                           cpuUsageStr_1st_arr[4].toDouble() +
-                           cpuUsageStr_1st_arr[5].toDouble() +
-                           cpuUsageStr_1st_arr[6].toDouble() +
-                           cpuUsageStr_1st_arr[7].toDouble() +
-                           cpuUsageStr_1st_arr[8].toDouble() +
-                           cpuUsageStr_1st_arr[9].toDouble() +
-                           cpuUsageStr_1st_arr[10].toDouble();
-    this->cpuUsage_idle = cpuUsageStr_1st_arr[4].toDouble();
+    if (cpuUsageStr_1st_arr.size() > 3)
+    {
+        double use = cpuUsageStr_1st_arr[1].toDouble() + cpuUsageStr_1st_arr[2].toDouble() + cpuUsageStr_1st_arr[3].toDouble();
+        double total = 0;
+        for (int i=0; i<cpuUsageStr_1st_arr.size(); i++)
+        {
+            total += cpuUsageStr_1st_arr[i].toDouble();
+        }
 
-    // cpu usage
-    this->cpuUsage = static_cast<double>(
-                ((this->cpuUsage_total - this->cpuUsage_total_last) - (this->cpuUsage_idle - this->cpuUsage_total_last)) /
-                (this->cpuUsage_total - this->cpuUsage_total_last)
-              );
-    qDebug() << this->cpuUsage_total << this->cpuUsage_idle << this->cpuUsage;
+        // cpu usage
+        this->cpuUsage = (use - this->cpuUsage_use_last) / (total - this->cpuUsage_total_last) * 100.0;
 
-    // store last
-    this->cpuUsage_total_last = this->cpuUsage_total;
-    this->cpuUsage_idle_last = this->cpuUsage_idle;
+        // store last
+        this->cpuUsage_total_last = total;
+        this->cpuUsage_use_last = use;
+    }
+
+
+
+
 
     // ##################################################################################################
     //                          net
@@ -139,11 +137,15 @@ void SysInfo::updateSysinfo()
             tmp_transmit    += ite[9].toULongLong();
         }
     }
+
     this->receive = tmp_receive - this->receive_last;
-    this->transmit = tmp_transmit - this->receive_last;
+    this->transmit = tmp_transmit - this->transmit_last;
+
+
     // store last
     this->receive_last = tmp_receive;
     this->transmit_last = tmp_transmit;
+
 
 
     // ##################################################################################################
