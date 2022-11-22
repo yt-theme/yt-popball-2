@@ -71,6 +71,11 @@ void Config::readConfig()
     this->charts_rows           = this->settingsObj->value("/appearance/charts_rows").toInt();
     this->update_data_interval  = this->settingsObj->value("/timer/update_data_interval").toInt();
     this->update_ui_interval    = this->settingsObj->value("/timer/update_ui_interval").toInt();
+
+    // [components_show]
+    this->cpu_temp_show         = this->settingsObj->value("/components_show/cpu_temp_show").toInt();
+    this->cpu_freq_show         = this->settingsObj->value("/components_show/cpu_freq_show").toInt();
+    this->net_speed_show        = this->settingsObj->value("/components_show/net_speed_show").toInt();
 }
 
 
@@ -204,6 +209,22 @@ void Config::setUpdateUIInterval(qint32 val)
     this->update_ui_interval = val;
 }
 
+// [components_show]
+void Config::setCpuTempShow(qint8 val)
+{
+    this->settingsObj->setValue("/components_show/cpu_temp_show", val);
+    this->cpu_temp_show = val;
+}
+void Config::setCpuFreqShow(qint8 val)
+{
+    this->settingsObj->setValue("/components_show/cpu_freq_show", val);
+    this->cpu_freq_show = val;
+}
+void Config::setNetSpeedShow(qint8 val)
+{
+    this->settingsObj->setValue("/components_show/net_speed_show", val);
+    this->net_speed_show = val;
+}
 
 /** *********************************************************
                            get
@@ -308,4 +329,19 @@ qint32 Config::getUpdateUIInterval()
 {
     return this->update_ui_interval;
 }
+
+// [components_show]
+qint8 Config::getCpuTempShow()
+{
+    return this->cpu_temp_show;
+}
+qint8 Config::getCpuFreqShow()
+{
+    return this->cpu_freq_show;
+}
+qint8 Config::getNetSpeedShow()
+{
+    return this->net_speed_show;
+}
+
 

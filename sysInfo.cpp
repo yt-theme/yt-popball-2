@@ -159,7 +159,8 @@ void SysInfo::updateSysinfo()
 ********************************************************* */
 quint64 SysInfo::getMemTotal()
 {
-    return this->sys_info.totalram;
+    qDebug() << this->sys_info.totalram << this->sys_info.bufferram << this->sys_info.sharedram;
+    return this->sys_info.totalram - this->sys_info.bufferram - this->sys_info.freeram;
 }
 
 quint64 SysInfo::getMemFree()

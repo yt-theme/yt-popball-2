@@ -40,6 +40,11 @@ private:
     qint32 update_data_interval;
     qint32 update_ui_interval;
 
+    // [components_show]
+    qint8 cpu_temp_show;
+    qint8 cpu_freq_show;
+    qint8 net_speed_show;
+
 public:
     Config();
     ~Config();
@@ -75,6 +80,11 @@ public:
     void setUpdateDataInterval(qint32 val);
     void setUpdateUIInterval(qint32 val);
 
+    // [components_show]
+    void setCpuTempShow(qint8 val);
+    void setCpuFreqShow(qint8 val);
+    void setNetSpeedShow(qint8 val);
+
     // ########### get config item values ###########
     qint32  getX();
     qint32  getY();
@@ -100,6 +110,11 @@ public:
     qint32  getChartsRows();
     qint32  getUpdateDataInterval();
     qint32  getUpdateUIInterval();
+
+    // [components_show]
+    qint8 getCpuTempShow();
+    qint8 getCpuFreqShow();
+    qint8 getNetSpeedShow();
 };
 
 

@@ -79,6 +79,8 @@ void Widget::setUiFrame()
     this->setAttribute(Qt::WA_TranslucentBackground);
     this->setWindowOpacity(config->getOpacity());
     this->setFixedSize(config->getWidth(), config->getHeight());
+    this->setWindowFlag(Qt::Tool);
+    this->setWindowFlags(windowFlags()|Qt::BypassWindowManagerHint);
 
     QRect primaryScreenRect = QGuiApplication::primaryScreen()->geometry();
 
@@ -247,17 +249,38 @@ void Widget::paintEvent(QPaintEvent *)
         painter.setClipPath(clipPath);
 
         // cpu freq LCD
-        this->cpuFreqLCD->display(QString("CPU %1").arg(qRound(this->sysInfo->getCpuFreq())));
+        if (config->getCpuFreqShow() == SHOW)
+        {
+            this->cpuFreqLCD->display(QString("CPU %1").arg(qRound(this->sysInfo->getCpuFreq())));
+        }
+        else
+        {
+            this->cpuFreqLCD->hide();
+        }
 
         // temp LCD
-        this->cpuTempLCD->display(QString("%1'c").arg(qRound(this->sysInfo->getCpuTemperature())));
+        if (config->getCpuTempShow() == SHOW)
+        {
+            this->cpuTempLCD->display(QString("%1'c").arg(qRound(this->sysInfo->getCpuTemperature())));
+        }
+        else
+        {
+            this->cpuTempLCD->hide();
+        }
 
-        // net upload LCD
-        this->netUploadLCD->display(QString("u %1").arg(QString::number(this->sysInfo->getTransmit()/1024.0/this->config->getUpdateDataInterval(), 'f', 2)));
+        if (config->getNetSpeedShow() == SHOW)
+        {
+            // net upload LCD
+            this->netUploadLCD->display(QString("u %1").arg(QString::number(this->sysInfo->getTransmit()/1024.0/this->config->getUpdateDataInterval(), 'f', 2)));
 
-        // net download LCD
-        qDebug() << "receive =>" << this->sysInfo->getTransmit()/1024.0/this->config->getUpdateDataInterval();
-        this->netDownloadLCD->display(QString("d %1").arg(QString::number(this->sysInfo->getReceive()/1024.0/this->config->getUpdateDataInterval(), 'f', 2)));
+            // net download LCD
+            this->netDownloadLCD->display(QString("d %1").arg(QString::number(this->sysInfo->getReceive()/1024.0/this->config->getUpdateDataInterval(), 'f', 2)));
+        }
+        else
+        {
+            this->netUploadLCD->hide();
+            this->netDownloadLCD->hide();
+        }
 
         // mem charts
         QPainterPath memPath;
