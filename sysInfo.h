@@ -9,6 +9,8 @@
 #include <QString>
 #include <QDir>
 
+#include "struct_def.h"
+
 class SysInfo {
 private:
     // file obj
@@ -17,8 +19,9 @@ private:
     // temperator path
     QStringList temperatorPaths = {};
 
-    // sys state mem & swap
-    struct sysinfo sys_info;
+    // mem & swap
+    MemoryInfo memoryInfo;
+
 
     // cpu
     double cpuTemperature       = 0.0;
@@ -46,15 +49,17 @@ public:
     // call system api to get sys info
     void updateSysinfo();
 
-    quint64 getMemTotal();
-    quint64 getMemFree();
-    quint64 getSwapTotal();
-    quint64 getSwapFree();
+    qulonglong getMemTotal();
+    qulonglong getMemUsed();
+    qulonglong getMemFree();
+    qulonglong getSwapTotal();
+    qulonglong getSwapUsed();
+    qulonglong getSwapFree();
     double  getCpuFreq();
     double  getCpuUsage();
     double  getCpuTemperature();
-    quint64 getReceive();
-    quint64 getTransmit();
+    qulonglong getReceive();
+    qulonglong getTransmit();
 };
 
 #endif // SYSINFO_H

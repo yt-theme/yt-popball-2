@@ -201,10 +201,10 @@ void Widget::updateDataAndHistory()
     this->cpuUsage_data_history.push_back(this->sysInfo->getCpuUsage());
     // mem history
     if ((mem_data_history.size() + 1) >= config->getChartsRows()) mem_data_history.pop_front();
-    this->mem_data_history.push_back(this->sysInfo->getMemTotal() - this->sysInfo->getMemFree());
+    this->mem_data_history.push_back(this->sysInfo->getMemUsed());
     // swap history
     if ((swap_data_history.size() + 1) >= config->getChartsRows()) swap_data_history.pop_front();
-    this->swap_data_history.push_back(this->sysInfo->getSwapTotal() - this->sysInfo->getSwapFree());
+    this->swap_data_history.push_back(this->sysInfo->getSwapUsed());
 }
 
 void Widget::paintEvent(QPaintEvent *)

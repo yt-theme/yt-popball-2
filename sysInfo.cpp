@@ -38,10 +38,26 @@ void SysInfo::updateSysinfo()
     // ##################################################################################################
     //                          mem swap sys info
     // ##################################################################################################
-    if (sysinfo(&sys_info) != 0)
-    {
-        // err
+    this->_file_obj->setFileName("/proc/meminfo");
+    this->_file_obj->open(QIODevice::ReadOnly|QIODevice::Text);
+    QString mem_data_string = this->_file_obj->readAll().replace("\t", "");
+    this->_file_obj->close();
+    QStringList mem_data_list   = mem_data_string.split("\n", Qt::SkipEmptyParts);
+    for (const QString &ite : mem_data_list) {
+        // every item for lines
+        QStringList ite_list = ite.split(":", Qt::SkipEmptyParts);
+        if (ite_list[0] == "MemTotal")     { memoryInfo.mem_total       = ite_list[1].trimmed().split(" ")[0].toULongLong(); }
+        if (ite_list[0] == "MemFree")      { memoryInfo.mem_free        = ite_list[1].trimmed().split(" ")[0].toULongLong(); }
+        if (ite_list[0] == "MemAvailable") { memoryInfo.mem_available   = ite_list[1].trimmed().split(" ")[0].toULongLong(); }
+        if (ite_list[0] == "Cached")       { memoryInfo.cached          = ite_list[1].trimmed().split(" ")[0].toULongLong(); }
+        if (ite_list[0] == "Buffers")      { memoryInfo.buffers         = ite_list[1].trimmed().split(" ")[0].toULongLong(); }
+        if (ite_list[0] == "SwapTotal")    { memoryInfo.swap_total      = ite_list[1].trimmed().split(" ")[0].toULongLong(); }
+        if (ite_list[0] == "SwapFree")     { memoryInfo.swap_free       = ite_list[1].trimmed().split(" ")[0].toULongLong(); }
     }
+
+    memoryInfo.mem_used  = memoryInfo.mem_total - memoryInfo.buffers - memoryInfo.mem_free - memoryInfo.cached;
+    memoryInfo.swap_used = memoryInfo.swap_total - memoryInfo.swap_free;
+    qDebug() <<  memoryInfo.mem_total << memoryInfo.buffers << memoryInfo.mem_free << memoryInfo.cached;
 
     // #########################################QString filePath : this->temperatorPaths#########################################################
     //                          cpu temperature
@@ -157,25 +173,34 @@ void SysInfo::updateSysinfo()
 /** *********************************************************
                            get
 ********************************************************* */
-quint64 SysInfo::getMemTotal()
+qulonglong SysInfo::getMemTotal()
 {
-    qDebug() << this->sys_info.totalram << this->sys_info.bufferram << this->sys_info.sharedram;
-    return this->sys_info.totalram - this->sys_info.bufferram - this->sys_info.freeram;
+    return this->memoryInfo.mem_total;
 }
 
-quint64 SysInfo::getMemFree()
+qulonglong SysInfo::getMemUsed()
 {
-    return this->sys_info.freeram;
+    return this->memoryInfo.mem_used;
 }
 
-quint64 SysInfo::getSwapTotal()
+qulonglong SysInfo::getMemFree()
 {
-    return this->sys_info.totalswap;
+    return this->memoryInfo.mem_free;
 }
 
-quint64 SysInfo::getSwapFree()
+qulonglong SysInfo::getSwapTotal()
 {
-    return this->sys_info.freeswap;
+    return this->memoryInfo.swap_total;
+}
+
+qulonglong SysInfo::getSwapUsed()
+{
+    return this->memoryInfo.swap_used;
+}
+
+qulonglong SysInfo::getSwapFree()
+{
+    return this->memoryInfo.swap_free;
 }
 
 double SysInfo::getCpuFreq()
@@ -193,10 +218,10 @@ double SysInfo::getCpuTemperature()
     return this->cpuTemperature;
 }
 
-quint64 SysInfo::getReceive() {
+qulonglong SysInfo::getReceive() {
     return this->receive;
 }
 
-quint64 SysInfo::getTransmit() {
+qulonglong SysInfo::getTransmit() {
     return this->transmit;
 }
