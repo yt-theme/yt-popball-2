@@ -318,11 +318,22 @@ void Widget::paintEvent(QPaintEvent *)
         painter.setPen(cpuUsagePen);
         QVector<double> cpuUsageData = this->cpuUsage_data_history;
         QPointF cpuUsagePoints[charts_rows];
-        for (int i=0; i<charts_rows; i++)
+//        for (int i=0; i<charts_rows; i++)
+//        {
+//            cpuUsagePoints[i] = QPointF(main_width / charts_rows * i, main_height - (cpuUsageData[i]) - edging_width);
+//        }
+//        painter.drawPolyline(cpuUsagePoints, charts_rows);
+        QPainterPath cpuUsagePath;
+        for (int i=0; i<cpuUsageData.size(); i++)
         {
-            cpuUsagePoints[i] = QPointF(main_width / charts_rows * i, main_height - (cpuUsageData[i]) - edging_width);
+            cpuUsagePath.lineTo(main_width / charts_rows * i,
+                                main_height - (cpuUsageData[i]) - edging_width);
+
         }
-        painter.drawPolyline(cpuUsagePoints, charts_rows);
+        cpuUsagePath.lineTo(main_width, main_height - edging_width);
+        cpuUsagePath.lineTo(0, main_height);
+        painter.fillPath(cpuUsagePath, QColor(this->config->getCpuUsageColor()));
+
 
         painter.end();
         break;
