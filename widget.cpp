@@ -33,7 +33,7 @@ Widget::Widget(QWidget *parent)
     this->cpuFreqLCD->setDigitCount(9);
     this->cpuFreqLCD->setMode(QLCDNumber::Dec);
     this->cpuFreqLCD->setSegmentStyle(QLCDNumber::Flat);
-    this->cpuFreqLCD->setGeometry(0, config->getHeight()/5.7 + config->getWidth()/5.5, config->getWidth(), config->getWidth()/6.5);
+    this->cpuFreqLCD->setGeometry(0, config->getHeight()/5.7 + config->getWidth()/5.5, config->getWidth(), config->getWidth()/8);
     this->cpuFreqLCD->setStyleSheet("border: 0;color:" + config->getCpuFreqColor() + ";");
     this->cpuFreqLCD->display("000000000");
     // net upload LCD
@@ -41,7 +41,7 @@ Widget::Widget(QWidget *parent)
     this->netUploadLCD->setDigitCount(7);
     this->netUploadLCD->setMode(QLCDNumber::Dec);
     this->netUploadLCD->setSegmentStyle(QLCDNumber::Flat);
-    this->netUploadLCD->setGeometry(0, config->getHeight()/5.7 + config->getWidth()/5.5 * 2, config->getWidth(), config->getWidth()/6.5);
+    this->netUploadLCD->setGeometry(0, config->getHeight()/5.7 + config->getWidth()/5.5 * 1.9, config->getWidth(), config->getWidth()/6.5);
     this->netUploadLCD->setStyleSheet("border: 0;color:" + config->getCpuFreqColor() + ";");
     this->netUploadLCD->display("0000000");
     // net downlod LCD
@@ -49,7 +49,7 @@ Widget::Widget(QWidget *parent)
     this->netDownloadLCD->setDigitCount(7);
     this->netDownloadLCD->setMode(QLCDNumber::Dec);
     this->netDownloadLCD->setSegmentStyle(QLCDNumber::Flat);
-    this->netDownloadLCD->setGeometry(0, config->getHeight()/5.7 + config->getWidth()/5.5*2.9, config->getWidth(), config->getWidth()/6.5);
+    this->netDownloadLCD->setGeometry(0, config->getHeight()/5.7 + config->getWidth()/5.5*2.8, config->getWidth(), config->getWidth()/6.5);
     this->netDownloadLCD->setStyleSheet("border: 0;color:" + config->getCpuFreqColor() + ";");
     this->netDownloadLCD->display("0000000");
 }
@@ -271,10 +271,12 @@ void Widget::paintEvent(QPaintEvent *)
         if (config->getNetSpeedShow() == SHOW)
         {
             // net upload LCD
-            this->netUploadLCD->display(QString("u %1").arg(QString::number(this->sysInfo->getTransmit()/1024.0/this->config->getUpdateDataInterval(), 'f', 2)));
+            QString upload_val_str = QString::number(this->sysInfo->getTransmit()/1024.0/this->config->getUpdateDataInterval(), 'f', 2);
+            this->netUploadLCD->display(QString("u %1").arg(upload_val_str.size() < 5 ? ("0" + upload_val_str ) : upload_val_str ));
 
             // net download LCD
-            this->netDownloadLCD->display(QString("d %1").arg(QString::number(this->sysInfo->getReceive()/1024.0/this->config->getUpdateDataInterval(), 'f', 2)));
+            QString download_val_str = QString::number(this->sysInfo->getReceive()/1024.0/this->config->getUpdateDataInterval(), 'f', 2);
+            this->netDownloadLCD->display(QString("d %1").arg(download_val_str.size() < 5 ? ("0" + download_val_str ) : download_val_str ));
         }
         else
         {

@@ -57,7 +57,6 @@ void SysInfo::updateSysinfo()
 
     memoryInfo.mem_used  = memoryInfo.mem_total - memoryInfo.buffers - memoryInfo.mem_free - memoryInfo.cached;
     memoryInfo.swap_used = memoryInfo.swap_total - memoryInfo.swap_free;
-    qDebug() <<  memoryInfo.mem_total << memoryInfo.buffers << memoryInfo.mem_free << memoryInfo.cached;
 
     // #########################################QString filePath : this->temperatorPaths#########################################################
     //                          cpu temperature
