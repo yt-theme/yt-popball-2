@@ -268,14 +268,22 @@ void Widget::paintEvent(QPaintEvent *)
         if (config->getCpuTempShow() == SHOW)
         {
             this->cpuTempLCD->display(QString("%1'c").arg(qRound(this->sysInfo->getCpuTemperature())));
+            if (this->cpuTempLCD->isHidden())
+            {
+                this->cpuTempLCD->show();
+            }
         }
         else
         {
-            this->cpuTempLCD->hide();
+            if (this->cpuTempLCD->isHidden())
+            {
+                this->cpuTempLCD->hide();
+            }
         }
 
         if (config->getNetSpeedShow() == SHOW)
         {
+
             // net upload LCD
             QString upload_val_str = QString::number(this->sysInfo->getTransmit()/1024.0/this->config->getUpdateDataInterval(), 'f', 2);
             this->netUploadLCD->display(QString("u %1").arg(upload_val_str.size() < 5 ? ("0" + upload_val_str ) : upload_val_str ));
@@ -283,11 +291,20 @@ void Widget::paintEvent(QPaintEvent *)
             // net download LCD
             QString download_val_str = QString::number(this->sysInfo->getReceive()/1024.0/this->config->getUpdateDataInterval(), 'f', 2);
             this->netDownloadLCD->display(QString("d %1").arg(download_val_str.size() < 5 ? ("0" + download_val_str ) : download_val_str ));
+
+            if (this->netUploadLCD->isHidden() || this->netDownloadLCD->isHidden())
+            {
+                this->netUploadLCD->show();
+                this->netDownloadLCD->show();
+            }
         }
         else
         {
-            this->netUploadLCD->hide();
-            this->netDownloadLCD->hide();
+            if (this->netUploadLCD->isHidden() == false || this->netDownloadLCD->isHidden() == false)
+            {
+                this->netUploadLCD->hide();
+                this->netDownloadLCD->hide();
+            }
         }
 
         // mem charts
