@@ -148,7 +148,7 @@ void Widget::setUiFrame()
     this->updateUITimer->setInterval(config->getUpdateUIInterval());
     this->updateUITimer->start();
 
-    this->update();
+//    this->update();
 
 }
 
@@ -218,7 +218,6 @@ void Widget::paintEvent(QPaintEvent *)
     case SHAPE_CIRCLE:
     case SHAPE_ASIDE: // tmp
     {
-        this->cpuFreqLCD->show();
 
         qint32 main_border_width    = config->getMainBorderWidth();
         qint32 shadow_radius        = config->getShadowRadius();
@@ -252,10 +251,17 @@ void Widget::paintEvent(QPaintEvent *)
         if (config->getCpuFreqShow() == SHOW)
         {
             this->cpuFreqLCD->display(QString("CPU %1").arg(qRound(this->sysInfo->getCpuFreq())));
+            if (this->cpuFreqLCD->isHidden())
+            {
+                this->cpuFreqLCD->show();
+            }
+
         }
         else
         {
-            this->cpuFreqLCD->hide();
+            if (this->cpuFreqLCD->isHidden() == false) {
+                this->cpuFreqLCD->hide();
+            }
         }
 
         // temp LCD
