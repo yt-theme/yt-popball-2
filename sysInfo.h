@@ -8,6 +8,10 @@
 #include <QFile>
 #include <QString>
 #include <QDir>
+#include <QStringList>
+
+#include <dirent.h>
+#include <cstdio>
 
 #include "struct_def.h"
 
@@ -17,7 +21,11 @@ private:
     QFile *_file_obj            = new QFile();
 
     // temperator path
-    QStringList temperatorPaths = {};
+    QStringList         _temp_paths = {};
+    DIR *               _temp_parentDir;
+    struct dirent *     _temp_entry;
+    char                _temp_buffer[512];
+    FILE *              _temp_fp;
 
     // mem & swap
     MemoryInfo memoryInfo;

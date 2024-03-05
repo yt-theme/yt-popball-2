@@ -340,7 +340,7 @@ void Widget::paintEvent(QPaintEvent *)
         cpuUsagePen.setWidthF(config->getCpuUsageWidth());
         painter.setPen(cpuUsagePen);
         QVector<double> cpuUsageData = this->cpuUsage_data_history;
-        QPointF cpuUsagePoints[charts_rows];
+        // QPointF cpuUsagePoints[charts_rows];
 //        for (int i=0; i<charts_rows; i++)
 //        {
 //            cpuUsagePoints[i] = QPointF(main_width / charts_rows * i, main_height - (cpuUsageData[i]) - edging_width);

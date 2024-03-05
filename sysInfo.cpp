@@ -1,5 +1,7 @@
 #include "sysInfo.h"
+#include <QFile>
 
+#include <QTextStream>
 SysInfo::SysInfo()
 {
     this->checkTemperatorFilePath();
@@ -11,24 +13,46 @@ SysInfo::SysInfo()
 SysInfo::~SysInfo()
 {
     delete this->_file_obj;
+    // delete this->_temp_parentDir;
+    delete this->_temp_entry;
+    delete this->_temp_fp;
 }
 
 void SysInfo::checkTemperatorFilePath()
 {
-    QString hwmonDirPath = "/sys/class/thermal/";
-    QDir hwmonDir(hwmonDirPath);
-    QStringList hwmonFiles = hwmonDir.entryList();
-    for (int i=0; i<hwmonFiles.size(); i++)
-    {
-        if ((hwmonFiles[i] != ".") && (hwmonFiles[i] != "..") && (hwmonFiles[i].split("_zone")[0] == "thermal"))
-        {
-            // read hwmonX files
-            this->_file_obj->setFileName(hwmonDirPath + hwmonFiles[i] + "/temp" );
-            if (this->_file_obj->exists() == true)
-            {
-                this->temperatorPaths.append(this->_file_obj->fileName());
-            }
-        }
+    char _temp_path[512];
+    // 打开 /sys/class/hwmon/ 目录
+    _temp_parentDir = opendir("/sys/class/hwmon/");
+    if (_temp_parentDir == NULL) {
+        perror("opendir");
+    }
+    // 遍历目录中的每个条目
+    // while ((_temp_entry = readdir(_temp_parentDir)) != NULL) {
+    //     QString strDName = QString(_temp_entry->d_name).trimmed();
+    //     if (strDName == QString(".") || strDName == QString(".."))
+    //     {
+    //         continue;
+    //     }
+    //     // 构建完整的路径
+    //     snprintf(_temp_path, sizeof(_temp_path), "/sys/class/hwmon/%s/temp1_input", _temp_entry->d_name);
+    //     _temp_paths.append(_temp_path);
+    // }
+
+    // find avaliable paths
+    while ((_temp_entry = readdir(_temp_parentDir)) != NULL) {
+        // 构建完整的路径
+        snprintf(_temp_path, sizeof(_temp_path), "/sys/class/hwmon/%s/temp1_input", _temp_entry->d_name);
+
+        QFile file(_temp_path);
+        if (!file.open(QIODevice::ReadOnly | QIODevice::Text))
+            continue;
+        QTextStream in(&file);
+        QString line = in.readLine();
+
+        _temp_paths.append(QString(_temp_path));
+        // set first temp val
+        this->cpuTemperature = line.toDouble() / 1000.0;
+
     }
 }
 
@@ -62,18 +86,27 @@ void SysInfo::updateSysinfo()
     //                          cpu temperature
     // ##################################################################################################
     double tmp_cpuTemperature_max = 0.0;
-    for (quint32 i=0; i<this->temperatorPaths.size(); i++)
+    // 打开文件并读取温度数据 get Max value
+
+    for (int i=0; i<this->_temp_paths.size(); i++)
     {
-        this->_file_obj->setFileName(temperatorPaths[i]);
-        this->_file_obj->open(QIODevice::ReadOnly|QIODevice::Text);
-        double val = this->_file_obj->readLine().replace("\t", "").toDouble();
-        this->_file_obj->close();
-        if (val > tmp_cpuTemperature_max)
-        {
+        // qDebug() << "_temp_paths[i] =>" << _temp_paths[i] << "\n";
+        QFile file(_temp_paths[i]);
+        if (!file.open(QIODevice::ReadOnly | QIODevice::Text))
+            continue;
+        QTextStream in(&file);
+        QString line = in.readLine();
+        // qDebug() << line;
+        // set first temp val
+        double val= line.toDouble() / 1000.0;
+
+        if (val > tmp_cpuTemperature_max) {
             tmp_cpuTemperature_max = val;
         }
+
     }
-    this->cpuTemperature = tmp_cpuTemperature_max / 1000;
+    this->cpuTemperature = tmp_cpuTemperature_max;
+
 
 
     // ##################################################################################################
