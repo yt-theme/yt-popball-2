@@ -8,12 +8,15 @@
 #   平台与方式：
 #     • 在 Linux 上        ：直接用本机构建并打包 deb/rpm/AppImage（真实可分发）。
 #     • 在 macOS 上        ：macOS 包用本机构建（真实可分发）；
-#                            Linux 包（deb/rpm/AppImage）若本机有 Docker，
-#                            则自动用 Docker 容器真正编译并打包 Linux 的
-#                            x86（x86_64 / amd64）与 arm（aarch64）两种架构（真实可分发）；
-#                            若没有 Docker 或显式 --no-docker，则退回
-#                            --skip-platform-check 仅验证打包流程
-#                            （产物里是当前平台的二进制，不能直接分发）。
+#                            Linux 包（deb/rpm/AppImage）一律用 Docker 容器构建——
+#                            把项目挂进 ubuntu:22.04（已装 Qt6 的镜像）里真正编译并打包，
+#                            对每个架构（x86 / arm）各起一个容器，产物真实可分发。
+#                            没有 Docker 或显式 --no-docker 时，退回
+#                            --skip-platform-check 仅验证打包流程（不可分发）。
+#
+#   多平台（参考 QrCode_gen 的 build-docker-rpm.sh / build-docker-linux.sh）：
+#     Linux 的 x86_64 与 aarch64 两种架构都通过 Docker 打出真包，
+#     在 Apple Silicon 上 x86 走 QEMU 模拟、arm 走原生，二者都可用。
 #
 #   用法与示例见 ./build.sh --help
 #
@@ -39,6 +42,62 @@ step() { printf '\n%s==> %s%s\n' "$C_B$C_C" "$*" "$C_R"; }
 ok()   { printf '    %s✓%s %s\n' "$C_G" "$C_R" "$*"; }
 warn() { printf '    %s!%s %s\n' "$C_Y" "$C_R" "$*"; }
 die()  { printf '    %s✗ %s%s\n' "$C_R" "$*" >&2; exit 1; }
+info() { printf '    %s\n' "$*"; }
+
+# ---------------------------------------------------------------- Docker 辅助
+# 参考 QrCode_gen 的 build-docker-rpm.sh / build-docker-linux.sh：
+# 用 docker run 把项目挂进 Linux 容器，在容器内编译并打包，对每个架构循环一次。
+
+# 确保 Docker 守护进程可用（未运行则给出友好提示；macOS 需手动开 Docker Desktop）
+ensure_docker() {
+    if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
+        ok "Docker 已就绪 ($(docker --version | awk '{print $3}' | tr -d ', '))"
+        return 0
+    fi
+    if command -v docker >/dev/null 2>&1; then
+        if [ "$(uname -s)" = Darwin ]; then
+            die "检测到 docker 命令，但 Docker 守护进程未运行。请打开 Docker Desktop（等菜单栏鲸鱼图标稳定）后再运行本脚本。"
+        fi
+        sudo systemctl start docker >/dev/null 2>&1 || true
+        if docker info >/dev/null 2>&1; then ok "Docker 守护进程已启动"; return 0; fi
+        die "Docker 守护进程未运行，请执行 'sudo systemctl start docker' 后重跑。"
+    fi
+    if [ "$(uname -s)" = Darwin ]; then
+        die "未检测到 Docker。请先安装并启动 Docker Desktop：https://www.docker.com/products/docker-desktop/"
+    fi
+    die "未检测到 Docker。请先安装 Docker：https://docs.docker.com/get-docker/"
+}
+
+# 判断路径是否处于 Docker Desktop（macOS）默认共享范围内
+# （/Users、/tmp 等可直接挂载；U 盘 /Volumes/... 需先 tar 到 /tmp）
+path_is_docker_shared() {
+    [ "$(uname -s)" = Darwin ] || return 0   # Linux 本地 daemon 始终可挂载
+    case "$1" in
+        /Users/*|/tmp/*|/private/tmp/*|/private/var/folders/*) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+# 跨架构构建前确保 QEMU binfmt 可用（Apple Silicon 打 x86 / x64 打 arm 时需要）
+ensure_qemu() {
+    local plat="$1"; local host_m; host_m="$(uname -m)"
+    local host_plat=""
+    case "$host_m" in
+        x86_64|amd64)  host_plat=linux/amd64 ;;
+        arm64|aarch64) host_plat=linux/arm64 ;;
+    esac
+    [ -n "$host_plat" ] && [ "$host_plat" = "$plat" ] && return 0   # 同架构无需模拟
+    info "跨架构构建 ${plat}（本机 ${host_m}），需 QEMU 模拟"
+    if docker run --rm --platform "$plat" --pull=always mplatform/mquery >/dev/null 2>&1; then
+        ok "目标架构模拟可用"; return 0
+    fi
+    warn "未检测到 $plat 模拟支持，尝试注册 QEMU binfmt..."
+    if docker run --privileged --rm tonistiigi/binfmt --install all >/dev/null 2>&1; then
+        ok "QEMU binfmt 已注册"
+    else
+        warn "自动注册失败：请手动执行  docker run --privileged --rm tonistiigi/binfmt --install all"
+    fi
+}
 
 usage() {
     cat <<EOF
@@ -70,12 +129,16 @@ ${C_B}popball2 一键构建并打包${C_R}
 
 说明（在 macOS 上）:
   • macOS 包  : 本机编译，真实可分发（dmg/zip）。
-  • Linux 包  : 若 Docker 可用，自动用 Docker 真正编译并打包
+  • Linux 包  : 用 Docker 容器构建（参考 QrCode_gen 的 Docker 打包方式）——
+                把项目挂进容器，在 ubuntu:22.04（已装 Qt6）里真正编译并打包
                 Linux 的 x86（x86_64 / amd64）和 arm（aarch64）两种架构（真实可分发）。
-                每个架构首次会下载并构建镜像（装 Qt6，稍慢，之后缓存）。
-                在 Apple Silicon 上 x86 走 QEMU 模拟、arm 走原生，二者都可用。
+                对每个架构各起一个容器；产物直接写回 dist/。
+                首次会下载并构建镜像（装 Qt6，稍慢，之后缓存）。
+                在 Apple Silicon 上 x86 走 QEMU 模拟、arm 走原生，二者都可用；
                 若 x86 构建报 'exec format error'，脚本会自动注册 QEMU binfmt。
   • 无 Docker : Linux 目标退回 --skip-platform-check 仅验证流程（不可分发）。
+  • 挂载说明 : 项目在 /Users、/tmp 下可直接挂载；在 U 盘（/Volumes）等
+                Docker 默认不共享的路径时，脚本自动改为先 tar 到 /tmp 再挂载。
 
 示例:
   ./build.sh                 # macOS: mac(本机) + deb/rpm/appimage(x64,arm 经 Docker)
@@ -159,20 +222,22 @@ mkdir -p "$OUT"
 OUT_DIR="$(cd "$OUT" && pwd)"
 
 # ---------------------------------------------------------------- Docker 决策
-DOCKER_AVAIL=0
-if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
-    DOCKER_AVAIL=1
-fi
-
+# 在 macOS 上打 Linux 包 → 默认用 Docker（多架构真实可分发）；
+# 在 Linux 上打 Linux 包 → 本机原生即可（Docker 可选，用于跨架构）。
 USE_DOCKER=0
 if [ "$OS_KIND" = macos ] && [ ${#LINUX_TARGETS[@]} -gt 0 ]; then
-    if [ "$FORCE_DOCKER" -eq 1 ]; then
-        [ "$DOCKER_AVAIL" -eq 1 ] || die "已指定 --docker，但 docker 不可用（确认 Docker Desktop 正在运行）"
-        USE_DOCKER=1
-    elif [ "$NO_DOCKER" -eq 1 ]; then
+    if [ "$NO_DOCKER" -eq 1 ]; then
         USE_DOCKER=0
+    elif [ "$FORCE_DOCKER" -eq 1 ]; then
+        ensure_docker
+        USE_DOCKER=1
     else
-        [ "$DOCKER_AVAIL" -eq 1 ] && USE_DOCKER=1
+        if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
+            USE_DOCKER=1
+        else
+            warn "本机未检测到可用的 Docker，Linux 包将退回仅验证流程（不可分发）。"
+            warn "如需真实多平台包，请启动 Docker Desktop 后重跑（或加 --docker 强制）。"
+        fi
     fi
 fi
 
@@ -185,6 +250,7 @@ if [ "$USE_DOCKER" -eq 1 ]; then
     else
         LINUX_ARCHES=(x86 arm)
     fi
+    ensure_docker   # Docker 路径启用时，确保 daemon 可用
 fi
 
 printf '%s%s%s\n' "$C_B" "popball2 一键构建并打包" "$C_R"
@@ -242,37 +308,11 @@ if [ ${#MAC_TARGETS[@]} -gt 0 ]; then
 fi
 
 # ---------------------------------------------------------------- 打包 Linux
+DOCKER_LINUX_FAILED=0
 if [ ${#LINUX_TARGETS[@]} -gt 0 ]; then
     if [ "$USE_DOCKER" -eq 1 ]; then
-        # 跨架构构建前，确保 QEMU binfmt 可用（Apple Silicon 打 x86 / x64 打 arm 时需要）。
-        # Docker Desktop 通常已内置；缺失或更新后丢失时，自动拉 tonistiigi/binfmt 注册。
-        ensure_qemu() {
-            local plat="$1"
-            local host_m; host_m="$(uname -m)"
-            # 归一化本机架构
-            local host_plat=""
-            case "$host_m" in
-                x86_64|amd64)  host_plat=linux/amd64 ;;
-                arm64|aarch64) host_plat=linux/arm64 ;;
-                *) host_plat="" ;;
-            esac
-            # 同架构无需模拟，直接返回
-            [ -n "$host_plat" ] && [ "$host_plat" = "$plat" ] && return 0
-            info "跨架构构建 $plat（本机 $host_m），需 QEMU 模拟"
-            # 极小的 multi-arch 探针：能跑起来说明模拟已就绪
-            if docker run --rm --platform "$plat" --pull=always mplatform/mquery >/dev/null 2>&1; then
-                ok "目标架构模拟可用"
-                return 0
-            fi
-            warn "未检测到 $plat 模拟支持，尝试注册 QEMU binfmt..."
-            if docker run --privileged --rm tonistiigi/binfmt --install all >/dev/null 2>&1; then
-                ok "QEMU binfmt 已注册"
-            else
-                warn "自动注册失败：请手动执行  docker run --privileged --rm tonistiigi/binfmt --install all"
-            fi
-        }
-
-        # 用 Docker 真正编译并打包每个 Linux 架构（x86 / arm）
+        # 用 Docker 真正编译并打包每个 Linux 架构（x86 / arm），参考 build-docker-rpm.sh 的多架构循环：
+        # 对每个架构各起一个容器，在容器内 qmake+make+package.sh，产物直接写回 dist/。
         docker_build_linux() {
             local arch="$1"; shift
             local targets=("$@")
@@ -280,43 +320,55 @@ if [ ${#LINUX_TARGETS[@]} -gt 0 ]; then
             case "$arch" in
                 x86|x64|amd64|x86_64)   plat=linux/amd64; debarch=x86_64;  img="popball2-linux-build:amd64" ;;
                 arm|arm64|aarch64)      plat=linux/arm64; debarch=aarch64; img="popball2-linux-build:arm64" ;;
-                *) die "不支持的 Linux 架构: $arch（可选 x86 / arm；x86 即 x86_64 64 位 Intel/AMD）" ;;
+                *) die "不支持的 Linux 架构: ${arch}（可选 x86 / arm；x86 即 x86_64 64 位 Intel/AMD）" ;;
             esac
             # 跨架构（如 Apple Silicon 打 x86）前确保 QEMU 模拟就绪
             ensure_qemu "$plat"
             # 镜像按架构分别构建并缓存（首跑装 Qt6，稍慢）
             if ! docker image inspect "$img" >/dev/null 2>&1; then
-                step "首次构建 Docker 镜像 $img（下载并安装 Qt6，请稍候）"
+                step "首次构建 Docker 镜像 ${img}（下载 ubuntu:22.04 并安装 Qt6，请稍候）"
                 docker build --platform "$plat" -t "$img" -f "$DOCKERFILE" "$DOCKER_CTX" \
-                    || die "Docker 镜像构建失败（确认 Docker Desktop 正在运行且有网络）"
+                    || { warn "Docker 镜像构建失败（${arch}）：通常是 Docker 的镜像仓库镜像/代理配置有问题（如某个 registry-mirror 指向 127.0.0.1 不可用）。请在 Docker Desktop 的 设置→Docker Engine 里检查 registry-mirrors，或 设置→Proxies 关闭/修正代理后重跑。"; DOCKER_LINUX_FAILED=1; return 1; }
             fi
-            # 暂存项目与输出：Docker Desktop 默认只共享 /Users、/tmp，
-            # 项目在 U 盘上时直接挂载可能失败，故先拷到 /tmp。
-            local stage outstage
-            stage="$(mktemp -d "/tmp/popball2-docker.XXXXXX")"
-            outstage="$(mktemp -d "/tmp/popball2-docker-out.XXXXXX")"
-            tar -C "$PROJECT_DIR" --exclude=build-pkg --exclude=build --exclude='*.o' \
-                --exclude=dist --exclude=.git -cf - . | tar -C "$stage" -xf -
-            step "Docker 构建并打包 Linux ($arch): ${targets[*]}"
+
+            # package.sh 参数：版本 / jobs / 架构 / 输出目录 / 目标 / 保留中间目录
             local pa=()
             [ -n "$VERSION" ] && pa+=(--version "$VERSION")
             [ -n "$JOBS" ]    && pa+=(--jobs "$JOBS")
-            pa+=(--arch "$debarch" --out /out "${targets[@]}")
-            docker run --rm --platform "$plat" \
-                -v "$stage:/src:ro" \
-                -v "$outstage:/out:rw" \
-                -e POPBALL2_BUILD_DIR=/build \
-                -e NO_COLOR=1 \
-                "$img" \
-                bash -lc "cd /src && ./package.sh ${pa[*]}" \
-                || { rm -rf "$stage" "$outstage"; die "Docker 内打包失败 ($arch)" ; }
-            # 拷贝产物回真实输出目录
-            cp -f "$outstage"/* "$OUT_DIR"/ 2>/dev/null || true
-            rm -rf "$stage" "$outstage"
+            pa+=(--arch "$debarch")
+            [ "$KEEP" -eq 1 ] && pa+=(--keep-stage)
+            pa+=("${targets[@]}")
+
+            step "Docker 构建并打包 Linux ($arch / $debarch): ${targets[*]}"
+            if path_is_docker_shared "$PROJECT_DIR"; then
+                # 直接挂载项目：容器内的编译与产物直写 $PROJECT_DIR/dist（无需回拷）
+                pa+=(--out /project/dist)
+                docker run --rm --platform "$plat" \
+                    -v "$PROJECT_DIR:/project:rw" -w /project \
+                    -e POPBALL2_BUILD_DIR=/build -e NO_COLOR=1 \
+                    "$img" bash -lc "cd /project && ./package.sh ${pa[*]}" \
+                    || { warn "Docker 内打包失败 ($arch)：容器构建/打包出错，详见上方日志。"; DOCKER_LINUX_FAILED=1; return 1; }
+            else
+                # 项目在 Docker 默认不共享的卷（如 U 盘）：先 tar 到 /tmp 再挂载
+                warn "项目不在 Docker 共享路径（/Users、/tmp），改用 /tmp 暂存方式挂载"
+                local stage outstage
+                stage="$(mktemp -d "/tmp/popball2-docker.XXXXXX")"
+                outstage="$(mktemp -d "/tmp/popball2-docker-out.XXXXXX")"
+                tar -C "$PROJECT_DIR" --exclude=build-pkg --exclude=build --exclude='*.o' \
+                    --exclude=dist --exclude=.git -cf - . | tar -C "$stage" -xf -
+                pa+=(--out /out)
+                docker run --rm --platform "$plat" \
+                    -v "$stage:/project:ro" -v "$outstage:/out:rw" \
+                    -e POPBALL2_BUILD_DIR=/build -e NO_COLOR=1 \
+                    "$img" bash -lc "cd /project && ./package.sh ${pa[*]}" \
+                    || { rm -rf "$stage" "$outstage"; warn "Docker 内打包失败 ($arch)：容器构建/打包出错，详见上方日志。"; DOCKER_LINUX_FAILED=1; return 1; }
+                cp -f "$outstage"/* "$OUT_DIR"/ 2>/dev/null || true
+                rm -rf "$stage" "$outstage"
+            fi
             ok "Linux ($arch) 打包完成 -> $OUT_DIR"
         }
         for a in "${LINUX_ARCHES[@]}"; do
-            docker_build_linux "$a" "${LINUX_TARGETS[@]}"
+            docker_build_linux "$a" "${LINUX_TARGETS[@]}" || true
         done
     else
         # 无 Docker：退回仅验证打包流程（不可分发）
@@ -334,3 +386,9 @@ fi
 printf '\n%s完成。%s 里查看产物。%s\n' "$C_G" "$OUT_DIR" \
     "$([ "$USE_DOCKER" -eq 1 ] && echo '(macOS 本机 + Linux x86/arm 均真实可分发)' || echo '(本机格式可分发，非本机格式仅验证流程)')"
 info_plat "依赖与安装说明见 DEPENDENCIES.md（deb/rpm 请用包管理器安装以自动补装 Qt6）"
+
+# 若有 Linux 目标经 Docker 构建失败（多为镜像仓库/代理配置问题），以非 0 退出，便于 CI/脚本感知
+if [ "$DOCKER_LINUX_FAILED" -eq 1 ]; then
+    warn "部分 Linux 包经 Docker 构建失败（详见上方警告）。本机 macOS 包已正常产出；请按提示修正 Docker 的 registry-mirror / 代理后重跑 Linux 目标。"
+    exit 1
+fi
