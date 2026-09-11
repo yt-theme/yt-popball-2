@@ -22,7 +22,8 @@ private:
     qint32 aside_width;
     qint32 aside_height;
     double opacity;
-    qint32 shadow_radius;
+    qint32 shadow_radius;      // 阴影长度（模糊半径），0 = 无阴影
+    QString shadow_color;      // 阴影颜色
     qint16 shape;
 
     QString main_color;
@@ -45,6 +46,14 @@ private:
     qint8 cpu_freq_show;
     qint8 net_speed_show;
 
+    // [window]
+    // 形状蒙版：桌面没开混成(compositing)时，半透明窗口会露出黑色矩形底，
+    // 这时需要用圆形蒙版把窗口裁成圆的。
+    //   0 = 自动（X11 下自动检测有没有混成管理器）
+    //   1 = 强制开启（自动检测不准时手动打开）
+    //   2 = 关闭
+    qint32 shape_mask;
+
 public:
     Config();
     ~Config();
@@ -63,6 +72,7 @@ public:
     void setAsideHeight(qint32 val);
     void setOpacity(double val);
     void setShadowRadius(qint32 val);
+    void setShadowColor(QString val);
     void setShape(qint32 val);
 
     void setMainColor(QString val);
@@ -85,6 +95,9 @@ public:
     void setCpuFreqShow(qint8 val);
     void setNetSpeedShow(qint8 val);
 
+    // [window]
+    void setShapeMask(qint32 val);
+
     // ########### get config item values ###########
     qint32  getX();
     qint32  getY();
@@ -94,6 +107,7 @@ public:
     qint32  getAsideHeight();
     double  getOpacity();
     qint32  getShadowRadius();
+    QString getShadowColor();
     qint32  getShape();
 
     QString getMainColor();
@@ -115,6 +129,9 @@ public:
     qint8 getCpuTempShow();
     qint8 getCpuFreqShow();
     qint8 getNetSpeedShow();
+
+    // [window]
+    qint32 getShapeMask();
 };
 
 

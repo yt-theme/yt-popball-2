@@ -2,6 +2,12 @@
 
 Config::Config()
 {
+    // 允许用环境变量指定配置文件：多开实例、自动化测试时可以不碰用户的配置。
+    // 例：POPBALL2_CONFIG=/tmp/test.ini ./popball2
+    const QString envPath = qEnvironmentVariable("POPBALL2_CONFIG");
+    if (!envPath.isEmpty())
+        this->configFilePath = envPath;
+
     // check
     bool checkOrCreateRet = this->checkOrCreateConfig();
     // create setting obj
@@ -56,7 +62,9 @@ void Config::readConfig()
     this->aside_width           = this->settingsObj->value("/appearance/aside_width").toInt();
     this->aside_height          = this->settingsObj->value("/appearance/aside_height").toInt();
     this->opacity               = this->settingsObj->value("/appearance/opacity").toDouble();
-    this->shadow_radius         = this->settingsObj->value("/appearance/shadow_radius").toInt();
+    this->shadow_radius         = this->settingsObj->value("/appearance/shadow_radius", 5).toInt();
+    // 新增键：老配置文件里可能没有，必须给默认值，否则读出来是空/0
+    this->shadow_color          = this->settingsObj->value("/appearance/shadow_color", "#000000").toString();
     this->shape                 = this->settingsObj->value("/appearance/shape").toInt();
     this->main_color            = this->settingsObj->value("/appearance/main_color").toString();
     this->main_border_color     = this->settingsObj->value("/appearance/main_border_color").toString();
@@ -76,6 +84,9 @@ void Config::readConfig()
     this->cpu_temp_show         = this->settingsObj->value("/components_show/cpu_temp_show").toInt();
     this->cpu_freq_show         = this->settingsObj->value("/components_show/cpu_freq_show").toInt();
     this->net_speed_show        = this->settingsObj->value("/components_show/net_speed_show").toInt();
+
+    // [window]
+    this->shape_mask            = this->settingsObj->value("/window/shape_mask").toInt();
 }
 
 
@@ -128,6 +139,12 @@ void Config::setShadowRadius(qint32 val)
 {
     this->settingsObj->setValue("/appearance/shadow_radius", val);
     this->shadow_radius = val;
+}
+
+void Config::setShadowColor(QString val)
+{
+    this->settingsObj->setValue("/appearance/shadow_color", val);
+    this->shadow_color = val;
 }
 
 void Config::setShape(qint32 val)
@@ -184,6 +201,7 @@ void Config::setCpuFreqColor(QString val)
 void Config::setCpuTempColor(QString val)
 {
     this->settingsObj->setValue("/appearance/cpu_temp_color", val);
+    this->cpu_temp_color = val;
 }
 void Config::setNetSpeedColor(QString val)
 {
@@ -224,6 +242,13 @@ void Config::setNetSpeedShow(qint8 val)
 {
     this->settingsObj->setValue("/components_show/net_speed_show", val);
     this->net_speed_show = val;
+}
+
+// [window]
+void Config::setShapeMask(qint32 val)
+{
+    this->settingsObj->setValue("/window/shape_mask", val);
+    this->shape_mask = val;
 }
 
 /** *********************************************************
@@ -267,6 +292,11 @@ double Config::getOpacity()
 qint32 Config::getShadowRadius()
 {
     return this->shadow_radius;
+}
+
+QString Config::getShadowColor()
+{
+    return this->shadow_color;
 }
 
 qint32 Config::getShape()
@@ -342,6 +372,12 @@ qint8 Config::getCpuFreqShow()
 qint8 Config::getNetSpeedShow()
 {
     return this->net_speed_show;
+}
+
+// [window]
+qint32 Config::getShapeMask()
+{
+    return this->shape_mask;
 }
 
 

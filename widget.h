@@ -13,21 +13,28 @@
 #include <QPointF>
 #include <QTimer>
 #include <QLCDNumber>
+#include <QLabel>
 #include <QGraphicsDropShadowEffect>
+#include <QMenu>
+#include <QAction>
 #include "macro_def.h"
 #include "config.h"
 #include "sysInfo.h"
+#include "settingsdialog.h"
 
 class Widget : public QWidget
 {
     Q_OBJECT
 private:
     // base
-    Config                      *config;
-    SysInfo                     *sysInfo;
-    QGraphicsDropShadowEffect   *winShadow;
-    QTimer                      *updateDataTimer;
-    QTimer                      *updateUITimer;
+    // 注意：这些指针必须初始化为 nullptr。像 winShadow 这种"先判断是否已创建、
+    // 再决定要不要 new"的写法，如果指针是未初始化的垃圾值，判断会失败/误判，
+    // 随后在野指针上调用方法就会直接段错误。
+    Config                      *config          = nullptr;
+    SysInfo                     *sysInfo         = nullptr;
+    QGraphicsDropShadowEffect   *winShadow       = nullptr;
+    QTimer                      *updateDataTimer = nullptr;
+    QTimer                      *updateUITimer   = nullptr;
     bool                        isMousePressed = false;
     QPoint                      curWindowPos;
 
@@ -37,10 +44,20 @@ private:
     QVector<double>  cpuUsage_data_history;
 
     // widgets
-    QLCDNumber *cpuTempLCD;
-    QLCDNumber *cpuFreqLCD;
-    QLCDNumber *netUploadLCD;
-    QLCDNumber *netDownloadLCD;
+    QLCDNumber *cpuTempLCD       = nullptr;
+    QLCDNumber *cpuFreqLCD       = nullptr;
+    // 网速不用 QLCDNumber：7 段数码管渲染不了 K/M/G 这些单位字母（实测会直接丢弃），
+    // 改用 QLabel + 等宽粗体，配合 Flat 风格的其他 LCD 视觉上基本一致
+    QLabel *netUploadLCD     = nullptr;
+    QLabel *netDownloadLCD   = nullptr;
+
+    // 右键菜单（设置 / 退出）
+    QMenu   *contextMenu    = nullptr;
+    QAction *actSettings    = nullptr;
+    QAction *actQuit        = nullptr;
+
+    // 设置窗口（右键菜单 -> 设置）
+    SettingsDialog *settingsDialog = nullptr;
 
 public:
     Widget(QWidget *parent = nullptr);
@@ -48,6 +65,20 @@ public:
 
     void setPosition();
     void setUiFrame();
+
+    // 桌面环境适配：不同平台/不同桌面（Xorg / Wayland / macOS）的窗口行为不同
+    void applyDesktopBehavior();
+    // 圆形形状蒙版：桌面没开混成时，用它把窗口裁成圆的，避免露出黑色矩形
+    void applyShapeMask(bool on);
+
+    // 构建右键菜单（在构造函数里调用一次）
+    void buildContextMenu();
+    // 退出：先隐藏窗口、停掉定时器，再安全地结束事件循环
+    void quitApplication();
+    // 把配置里的颜色套到各 LCD 上（设置保存后也要调用）
+    void applyLcdStyle();
+    // 按配置里的尺寸重新摆放各 LCD（改"大小"后必须调用，否则数字会留在旧位置）
+    void applyLcdLayout();
 
     // update data && history
     void updateDataAndHistory();
@@ -61,6 +92,10 @@ private slots:
     void onTimerIntervalForUpdateData();
     void onTimerIntervalForUpdateUI();
 
-
+    // 右键菜单动作
+    void onMenuSettings();
+    void onMenuQuit();
+    // 设置保存后刷新界面
+    void onSettingsApplied();
 };
 #endif // WIDGET_H

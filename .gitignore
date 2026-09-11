@@ -52,3 +52,12 @@ compile_commands.json
 *creator.user*
 
 *_qmlcache.qrc
+
+# 构建与打包产物
+/build/
+/build-pkg/
+/dist/
+/tools/
+
+# macOS
+.DS_Store
