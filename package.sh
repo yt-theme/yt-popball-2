@@ -179,8 +179,47 @@ find_qmake() {
 }
 find_qmake || die "找不到 qmake6，请先运行 ./run.sh 安装开发环境"
 
+# ---------------------------------------------------------------- 产物完整性自检
+# Linux：ldd 检查二进制动态库是否全部可解析（构建容器里 Qt 已装，理论上不应缺失）。
+check_linux_deps() {
+    [ "$OS_KIND" = linux ] || return 0
+    command -v ldd >/dev/null 2>&1 || return 0
+    local miss
+    miss="$(ldd "$APP_BIN" 2>/dev/null | awk '/not found/{print $1}' || true)"
+    if [ -n "$miss" ]; then
+        err "以下库在构建环境里找不到（二进制不完整，分发后可能跑不起来）:"
+        printf '      %s\n' "$miss" >&2
+        die "请先在构建环境安装缺失的运行库（Docker 镜像已装 qt6-base-dev 等，理论上不应发生）"
+    fi
+    ok "二进制动态库全部可解析（ldd 无 not found）"
+}
+
+# macOS：检查 Qt 框架是否已被 macdeployqt 打进 .app（否则换台 Mac 可能跑不了）。
+# 必须在 macdeployqt 之后调用，故只从 pkg_mac 里调用（传入打包后的 .app 内二进制路径）。
+check_mac_bundle() {
+    local bin="${1:-$APP_BIN}"
+    [ "$OS_KIND" = macos ] || return 0
+    [ -x "$bin" ] || return 0
+    command -v otool >/dev/null 2>&1 || return 0
+    local bad
+    # 注意：Qt 已内置时，两次 grep 后没有剩余行，grep 会返回 1；
+    # 在 set -o pipefail + set -e 下会让赋值失败并中断脚本，故末尾加 || true。
+    bad="$(otool -L "$bin" 2>/dev/null \
+        | grep -iE 'Qt(Core|Gui|Widgets)' \
+        | grep -vE '@executable_path/../Frameworks|@rpath' \
+        | awk '{print $1}' || true)"
+    if [ -n "$bad" ]; then
+        warn "以下 Qt 库似乎没有被 macdeployqt 打进 .app（可能影响在其他 Mac 上运行）:"
+        printf '      %s\n' "$bad"
+    else
+        ok "Qt 框架已随 .app 内置（@rpath / Frameworks）"
+    fi
+}
+
 # ---------------------------------------------------------------- 构建
-BUILD_DIR="$PROJECT_DIR/build-pkg"
+# 允许用环境变量覆盖构建目录（Docker 容器内把 Linux 构建隔离到容器本地，
+# 避免污染宿主机的 macOS 构建产物 build-pkg）。
+BUILD_DIR="${POPBALL2_BUILD_DIR:-$PROJECT_DIR/build-pkg}"
 # 中间产物目录，稍后用 mktemp 建在本地临时盘上（见下方说明）
 WORK_DIR=""
 APP_BIN=""
@@ -218,6 +257,7 @@ if [ "$DO_BUILD" -eq 1 ]; then
 fi
 locate_app
 info "可执行文件: $APP_BIN"
+check_linux_deps
 
 mkdir -p "$OUT_DIR"
 OUT_DIR="$(cd "$OUT_DIR" && pwd)"
@@ -339,7 +379,7 @@ Version:        $VERSION
 Release:        1%{?dist}
 Summary:        Floating desktop system monitor ball
 
-License:        MIT
+License:        GPLv2
 URL:            https://gitee.com/
 Source0:        %{name}-%{version}.tar.gz
 
@@ -539,6 +579,9 @@ pkg_mac() {
     else
         warn "ad-hoc 签名失败，首次打开可能需要右键->打开 绕过 Gatekeeper"
     fi
+
+    # 确认 Qt 已随包内置（macdeployqt 之后才校验，才有意义）
+    check_mac_bundle "$app/Contents/MacOS/$APP_NAME"
 
     # zip（先在本地临时盘生成，再拷贝到输出目录）
     local zipname="${APP_NAME}-${VERSION}-macos-${MAC_ARCH}.zip"

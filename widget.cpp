@@ -36,23 +36,25 @@ namespace {
 // 也不会出现网速一高数字被截断的问题。
 QString formatNetSpeedField(double bytesPerSec)
 {
-    double v = bytesPerSec / 1024.0;                 // KB/s
-    const char *unit = "K";
-    if (v >= 1024.0) { v /= 1024.0; unit = "M"; }
-    if (v >= 1024.0) { v /= 1024.0; unit = "G"; }    // 再往上就到 1024G/s 了，不考虑
-
+    // 固定单位 MiB/s（不显示单位字母），小数位按数值大小自适应：
+    //   <1        → 3 位小数   "0.048"   （几 KB/s 的空闲流量也有读数）
+    //   <10       → 2 位小数   "01.23"
+    //   <100      → 2 位小数   "12.34"
+    //   <1000     → 1 位小数   "123.4"
+    //   ≥1000     → 无小数     "1234"    （上限 9999）
+    // 字段恒为 5 字符宽（前导 0 补齐），LCD 上 "u 0.048" / "d 123.4" 不会跳动。
+    double v = bytesPerSec / (1024.0 * 1024.0);   // MiB/s
     QString s;
-    if (v < 10.0)       s = QString::number(v, 'f', 2);   // 1.23
-    else if (v < 100.0) s = QString::number(v, 'f', 1);   // 12.3
+    if (v < 1.0)         s = QString::number(v, 'f', 3);   // "0.048"
+    else if (v < 100.0)  s = QString::number(v, 'f', 2);   // "01.23" / "45.67"
+    else if (v < 1000.0) s = QString::number(v, 'f', 1);   // "123.4"
     else {
-        // 3 位整数无小数。四舍五入可能把 999.5 进成 "1000"（4 位），
-        // 字段就超宽了 —— 钳到 999，下一帧数值继续增大会自然升单位。
-        s = QString::number(qRound(v), 'f', 0);
-        if (s.size() > 3) s = QStringLiteral("999");
+        s = QString::number(qRound(v), 'f', 0);            // "1234"
+        if (s.size() > 4) s = QStringLiteral("9999");      // 钳到上限
+        return s;                                          // 4 位整数不再补零
     }
-
-    while (s.size() < 4) s.prepend(QLatin1Char('0'));     // 0.12 之类保持等宽
-    return s + QLatin1String(unit);
+    while (s.size() < 5) s.prepend(QLatin1Char('0'));      // 等宽
+    return s;
 }
 
 #if defined(POPBALL_HAVE_X11)
@@ -115,15 +117,19 @@ Widget::Widget(QWidget *parent)
     this->cpuFreqLCD->setGeometry(0, config->getHeight()/5.7 + config->getWidth()/5.5, config->getWidth(), config->getWidth()/8);
     this->cpuFreqLCD->display("000000000");
     // net upload LCD
-    this->netUploadLCD = new QLabel(this);
-    this->netUploadLCD->setAlignment(Qt::AlignCenter);
+    this->netUploadLCD = new QLCDNumber(this);
+    this->netUploadLCD->setDigitCount(7);   // "u 01.23" 共 7 字符（小数点占 1 位）
+    this->netUploadLCD->setMode(QLCDNumber::Dec);
+    this->netUploadLCD->setSegmentStyle(QLCDNumber::Flat);
     this->netUploadLCD->setGeometry(0, config->getHeight()/5.7 + config->getWidth()/5.5 * 1.9, config->getWidth(), config->getWidth()/6.5);
-    this->netUploadLCD->setText("u --");
+    this->netUploadLCD->display("u 00.00");
     // net downlod LCD
-    this->netDownloadLCD = new QLabel(this);
-    this->netDownloadLCD->setAlignment(Qt::AlignCenter);
+    this->netDownloadLCD = new QLCDNumber(this);
+    this->netDownloadLCD->setDigitCount(7);
+    this->netDownloadLCD->setMode(QLCDNumber::Dec);
+    this->netDownloadLCD->setSegmentStyle(QLCDNumber::Flat);
     this->netDownloadLCD->setGeometry(0, config->getHeight()/5.7 + config->getWidth()/5.5*2.8, config->getWidth(), config->getWidth()/6.5);
-    this->netDownloadLCD->setText("d --");
+    this->netDownloadLCD->display("d 00.00");
 
     // LCD 前景色（设置里改颜色后也会重新套用）
     this->applyLcdStyle();
@@ -143,12 +149,6 @@ void Widget::applyLcdLayout()
     this->cpuFreqLCD->setGeometry(0, h/5.7 + w/5.5, w, w/8);
     this->netUploadLCD->setGeometry(0, h/5.7 + w/5.5 * 1.9, w, w/6.5);
     this->netDownloadLCD->setGeometry(0, h/5.7 + w/5.5*2.8, w, w/6.5);
-    // QLabel 的字号不随控件尺寸自动缩放（QLCDNumber 会），改大小后必须重设
-    QFont netFont = this->netUploadLCD->font();
-    netFont.setPixelSize(qMax(6, int(w/6.5 * 0.72)));
-    netFont.setBold(true);
-    this->netUploadLCD->setFont(netFont);
-    this->netDownloadLCD->setFont(netFont);
 }
 
 // 把配置里的前景色套到各 LCD
@@ -559,14 +559,16 @@ void Widget::paintEvent(QPaintEvent *)
         if (config->getNetSpeedShow() == SHOW)
         {
 
-            // 网速自适应显示：单位随大小升（K→M→G），恒定 3 位有效数字，
-            // 字段宽度固定，LCD 不会因网速变大而溢出或跳动
-            const double interval = this->config->getUpdateDataInterval() > 0
-                                        ? this->config->getUpdateDataInterval() : 1.0;
-            this->netUploadLCD->setText(
-                QString("u %1").arg(formatNetSpeedField(this->sysInfo->getTransmit() / interval)));
-            this->netDownloadLCD->setText(
-                QString("d %1").arg(formatNetSpeedField(this->sysInfo->getReceive() / interval)));
+            // 网速自适应显示：固定 MiB/s，小数位随数值自适应。
+            // 注意单位：update_data_interval 是 QTimer 的毫秒数（450 = 0.45 秒），
+            // getTransmit() 是"这个间隔内"的字节数，必须除以"秒数"才是 B/s。
+            // 原实现直接除以 450，数值小了 1000 倍（下载几 MB/s 只显示 0.00x）。
+            const int intervalMs = this->config->getUpdateDataInterval();
+            const double seconds = intervalMs > 0 ? intervalMs / 1000.0 : 1.0;
+            this->netUploadLCD->display(
+                QString("u %1").arg(formatNetSpeedField(this->sysInfo->getTransmit() / seconds)));
+            this->netDownloadLCD->display(
+                QString("d %1").arg(formatNetSpeedField(this->sysInfo->getReceive() / seconds)));
 
             if (this->netUploadLCD->isHidden() || this->netDownloadLCD->isHidden())
             {

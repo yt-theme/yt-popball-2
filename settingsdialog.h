@@ -2,6 +2,7 @@
 #define SETTINGSDIALOG_H
 
 #include <QDialog>
+#include <QShowEvent>
 #include <QPushButton>
 #include <QCheckBox>
 #include <QSlider>
@@ -61,6 +62,14 @@ private:
     };
 
     void buildUi();
+
+protected:
+    // 把窗口钳进屏幕可用区域（父窗口是屏幕边缘上的悬浮球，默认摆放会跑出屏幕）
+    void showEvent(QShowEvent *event) override;
+    void resizeEvent(QResizeEvent *event) override;
+
+private:
+    void clampIntoScreen();
     void buildPresetRow(QVBoxLayout *parentLayout);
     QWidget *buildColorSection();
     QWidget *buildShowSection();

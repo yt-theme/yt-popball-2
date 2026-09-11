@@ -13,7 +13,6 @@
 #include <QPointF>
 #include <QTimer>
 #include <QLCDNumber>
-#include <QLabel>
 #include <QGraphicsDropShadowEffect>
 #include <QMenu>
 #include <QAction>
@@ -46,10 +45,8 @@ private:
     // widgets
     QLCDNumber *cpuTempLCD       = nullptr;
     QLCDNumber *cpuFreqLCD       = nullptr;
-    // 网速不用 QLCDNumber：7 段数码管渲染不了 K/M/G 这些单位字母（实测会直接丢弃），
-    // 改用 QLabel + 等宽粗体，配合 Flat 风格的其他 LCD 视觉上基本一致
-    QLabel *netUploadLCD     = nullptr;
-    QLabel *netDownloadLCD   = nullptr;
+    QLCDNumber *netUploadLCD     = nullptr;
+    QLCDNumber *netDownloadLCD   = nullptr;
 
     // 右键菜单（设置 / 退出）
     QMenu   *contextMenu    = nullptr;

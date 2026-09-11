@@ -8,6 +8,8 @@
 #include <QSettings>
 #include <QFrame>
 #include <QPainter>
+#include <cstdio>
+#include <QTimer>
 #include <QIcon>
 #include <QPixmap>
 #include <QMessageBox>
@@ -113,6 +115,31 @@ QSpinBox, QDoubleSpinBox, QComboBox {
     background-color:#FFFFFF; border:1px solid #DDE2E8; border-radius:4px;
     padding:4px 8px; color:#3A3F45; font-size:13px;
 }
+/* 调节按钮：自绘扁平三角，替换 macOS 原生的细小箭头（太挤、与扁平风格不符） */
+QSpinBox::up-button, QDoubleSpinBox::up-button {
+    subcontrol-origin: border; subcontrol-position: top right;
+    width: 18px; border: none; border-left: 1px solid #DDE2E8;
+    background: transparent;
+}
+QSpinBox::down-button, QDoubleSpinBox::down-button {
+    subcontrol-origin: border; subcontrol-position: bottom right;
+    width: 18px; border: none; border-left: 1px solid #DDE2E8;
+    background: transparent;
+}
+QSpinBox::up-button:hover, QDoubleSpinBox::up-button:hover,
+QSpinBox::down-button:hover, QDoubleSpinBox::down-button:hover {
+    background-color: #EFF6FF;
+}
+QSpinBox::up-arrow, QDoubleSpinBox::up-arrow {
+    width: 0; height: 0;
+    border-left: 3.5px solid transparent; border-right: 3.5px solid transparent;
+    border-bottom: 4.5px solid #6B7280;
+}
+QSpinBox::down-arrow, QDoubleSpinBox::down-arrow {
+    width: 0; height: 0;
+    border-left: 3.5px solid transparent; border-right: 3.5px solid transparent;
+    border-top: 4.5px solid #6B7280;
+}
 QSpinBox:hover, QDoubleSpinBox:hover, QComboBox:hover { border-color:#B8C0CA; }
 QSpinBox:focus, QDoubleSpinBox:focus, QComboBox:focus { border-color:#2E7DD8; }
 QComboBox QAbstractItemView {
@@ -127,11 +154,50 @@ SettingsDialog::SettingsDialog(Config *cfg, QWidget *parent)
 {
     setWindowTitle(tr("设置"));
     setModal(false);
-    setMinimumWidth(480);
+    setMinimumWidth(520);
     setStyleSheet(QString::fromLatin1(kDialogStyle));
 
     buildUi();
     loadFromConfig();
+}
+
+// 防止窗口跑出屏幕：父窗口是屏幕边缘上的悬浮球，
+// Qt 会按父窗口位置摆放子窗口，结果右半截（含"确定"按钮）被推到屏幕外。
+// 在 show 时把自己钳回屏幕可用区域内。
+void SettingsDialog::clampIntoScreen()
+{
+    if (!isVisible())
+        return;
+    QScreen *scr = screen() != nullptr ? screen() : QGuiApplication::primaryScreen();
+    if (scr == nullptr)
+        return;
+    const QRect av = scr->availableGeometry();
+    const QPoint pos = frameGeometry().topLeft();
+    // QRect::right() = left + width - 1，所以"贴右缘"的 x 是 av.right()+1-w
+    const int maxX = av.right()  + 1 - frameGeometry().width();
+    const int maxY = av.bottom() + 1 - frameGeometry().height();
+    const QPoint clamped(qBound(av.left(), pos.x(), qMax(av.left(), maxX)),
+                         qBound(av.top(),  pos.y(), qMax(av.top(),  maxY)));
+    if (clamped != pos)
+        move(clamped);
+}
+
+void SettingsDialog::showEvent(QShowEvent *event)
+{
+    QDialog::showEvent(event);
+    // 不能在 showEvent 里同步 move()：此刻布局/开窗还没定型，钳完马上又会变。
+    // 排队到事件循环下一轮，等首轮布局完成后钳一次。
+    if (qEnvironmentVariableIsSet("PB_CLAMP_OFF"))
+        return;   // 二分实验：禁用
+    QTimer::singleShot(0, this, [this]() { clampIntoScreen(); });
+}
+
+void SettingsDialog::resizeEvent(QResizeEvent *event)
+{
+    QDialog::resizeEvent(event);
+    // 窗口尺寸在显示后仍可能变化（首次布局、DPI 切换），
+    // 每次尺寸变化后重新钳一次，保证永远在屏内。
+    clampIntoScreen();
 }
 
 void SettingsDialog::buildUi()
@@ -151,10 +217,6 @@ void SettingsDialog::buildUi()
     root->setContentsMargins(22, 18, 22, 18);
     root->setSpacing(10);
 
-    auto *title = new QLabel(tr("设置"), content);
-    title->setProperty("section", "title");
-    root->addWidget(title);
-
     auto *line = new QFrame(content);
     line->setProperty("role", "line");
     line->setFrameShape(QFrame::StyledPanel);
@@ -172,7 +234,12 @@ void SettingsDialog::buildUi()
 
     // ---- 底部按钮（固定不滚动）----
     auto *btnBox = new QWidget(this);
-    btnBox->setStyleSheet(QStringLiteral("QWidget{background-color:#FAFBFC;border-top:1px solid #EEF1F4;}"));
+    // 注意必须用 ID 选择器：写成 QWidget{...} 会匹配所有后代（包括按钮），
+    // 且祖先样式表比对话框级样式表优先级更高，会把「确定」按钮的蓝色背景
+    // 覆盖成容器色 —— 白底白字，看起来就像按钮不存在一样。
+    btnBox->setObjectName(QStringLiteral("btnBar"));
+    btnBox->setStyleSheet(QStringLiteral(
+        "#btnBar { background-color:#FAFBFC; border-top:1px solid #EEF1F4; }"));
     auto *btnRow = new QHBoxLayout(btnBox);
     btnRow->setContentsMargins(22, 10, 22, 14);
     btnRow->setSpacing(8);
@@ -205,9 +272,7 @@ QWidget *SettingsDialog::buildColorSection()
     v->setContentsMargins(0, 0, 0, 0);
     v->setSpacing(8);
 
-    auto *g = new QLabel(tr("颜  色"), box);
-    g->setProperty("section", "group");
-    v->addWidget(g);
+
 
     buildPresetRow(v);
 
@@ -419,10 +484,6 @@ QWidget *SettingsDialog::buildAdvancedSection()
 // ---------------------------------------------------------------- 预制配色
 void SettingsDialog::buildPresetRow(QVBoxLayout *parentLayout)
 {
-    auto *lab = new QLabel(tr("预制配色"), this);
-    lab->setProperty("section", "group");
-    parentLayout->addWidget(lab);
-
     auto *grid = new QGridLayout();
     grid->setHorizontalSpacing(8);
     grid->setVerticalSpacing(6);
@@ -512,33 +573,52 @@ void SettingsDialog::loadFromConfig()
     comboShapeMask->setCurrentIndex((mask >= 0 && mask <= 2) ? mask : 0);
 }
 
-// 从内置的默认配置读回（不走用户配置文件）
+// 从内置默认值把【所有】设置项填回界面。
+// 用硬编码的单一默认值来源（与 default_config.ini 完全一致），
+// 不依赖 qresource 读取：否则一旦颜色段读取失败，颜色不会被重置、
+// 而其它项被重置，造成“只恢复了一部分”的不一致表现。
 void SettingsDialog::loadDefaults()
 {
-    QSettings def(QStringLiteral(":/config/default_config.ini"), QSettings::IniFormat);
-    for (int i = 0; i < rows.size(); ++i) {
-        const QString k = QStringLiteral("/appearance/") + rows[i].key;
-        const QString v = def.value(k).toString();
-        if (!v.isEmpty()) {
-            rows[i].color = QColor(v);
-            if (!rows[i].color.isValid()) rows[i].color = QColor(Qt::white);
-            refreshRowStyle(rows[i]);
-        }
+    Q_ASSERT(rows.size() == kColorCount);
+    // 颜色（顺序必须与 kColors 一致）
+    static const struct { const char *key; const char *val; } kColorDefs[kColorCount] = {
+        { "main_color",        "#13191C" },
+        { "main_border_color", "#41B0DD" },
+        { "mem_color",         "#2E6FC4" },
+        { "swap_color",        "#8C2A5E93" },
+        { "cpu_usage_color",   "#4FB7DDFF" },
+        { "shadow_color",      "#000000" },
+        { "cpu_temp_color",    "#fff" },
+        { "cpu_freq_color",    "#fff" },
+        { "net_speed_color",   "#fff" },
+    };
+    for (int i = 0; i < kColorCount; ++i) {
+        rows[i].color = QColor(QString::fromLatin1(kColorDefs[i].val));
+        if (!rows[i].color.isValid())
+            rows[i].color = QColor(Qt::white);
+        refreshRowStyle(rows[i]);
     }
-    chkTemp->setChecked(def.value(QStringLiteral("/components_show/cpu_temp_show"), 1).toInt() == 1);
-    chkFreq->setChecked(def.value(QStringLiteral("/components_show/cpu_freq_show"), 0).toInt() == 1);
-    chkNet->setChecked(def.value(QStringLiteral("/components_show/net_speed_show"), 1).toInt() == 1);
 
-    opacitySlider->setValue(int(def.value(QStringLiteral("/appearance/opacity"), 0.91).toDouble() * 100));
-    spinWidth->setValue(def.value(QStringLiteral("/appearance/width"), 100).toInt());
-    spinHeight->setValue(def.value(QStringLiteral("/appearance/height"), 100).toInt());
-    spinBorderWidth->setValue(def.value(QStringLiteral("/appearance/main_border_width"), 2).toInt());
-    spinShadowLen->setValue(def.value(QStringLiteral("/appearance/shadow_radius"), 5).toInt());
-    spinCpuLine->setValue(def.value(QStringLiteral("/appearance/cpu_usage_width"), 1.1).toDouble());
-    spinChartsRows->setValue(def.value(QStringLiteral("/appearance/charts_rows"), 32).toInt());
-    spinDataInterval->setValue(def.value(QStringLiteral("/timer/update_data_interval"), 450).toInt());
-    spinUiInterval->setValue(def.value(QStringLiteral("/timer/update_ui_interval"), 450).toInt());
-    comboShapeMask->setCurrentIndex(def.value(QStringLiteral("/window/shape_mask"), 0).toInt());
+    // 显示
+    chkTemp->setChecked(true);
+    chkFreq->setChecked(false);
+    chkNet->setChecked(true);
+
+    // 窗口
+    opacitySlider->setValue(91);          // 0.91
+    spinWidth->setValue(100);
+    spinHeight->setValue(100);
+    spinBorderWidth->setValue(2);
+    spinShadowLen->setValue(5);           // shadow_radius
+
+    // 图表
+    spinCpuLine->setValue(1.1);           // cpu_usage_width
+    spinChartsRows->setValue(32);
+
+    // 高级
+    spinDataInterval->setValue(450);
+    spinUiInterval->setValue(450);
+    comboShapeMask->setCurrentIndex(0);   // 形状蒙版：自动
 }
 
 // ---------------------------------------------------------------- 色块样式

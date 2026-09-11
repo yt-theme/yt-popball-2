@@ -55,6 +55,21 @@ rpm 需要装 `rpmbuild`，AppImage 首次运行会自动下载工具。）
 
 产物统一输出到 `dist/`。macOS 包会做临时（ad-hoc）签名；正式分发请换成自己的开发者证书。
 
+#### 依赖与「装上就能用」
+
+| 格式 | 自包含？ | 关键点 |
+|---|---|---|
+| macOS dmg/zip | ✅ Qt 已内置 | 首次打开可能被 Gatekeeper 拦截，见下文 |
+| Linux AppImage | ✅ Qt 已内置 | 需 FUSE，无 FUSE 用 `--appimage-extract` |
+| Linux deb | ❌ 用系统 Qt6 | 用 `sudo apt install ./xxx.deb` 装会自动补装 Qt6 |
+| Linux rpm | ❌ 用系统 Qt6 | 用 `sudo dnf install ./xxx.rpm` 装会自动补装 Qt6 |
+
+> ⚠️ deb/rpm **不要**用 `dpkg -i` / `rpm -ivh` 直接装，那样不会自动解决依赖；
+> 用包管理器形式（`apt install` / `dnf install` / `zypper install` 加本地路径）才会自动装 Qt6。
+> 一键脚本 `./build.sh` 在 macOS 上通过 Docker 把 Linux 的 **x64 和 arm** 两种架构都打成真实可运行包。
+
+完整的依赖关系、安装命令、各发行版注意事项、架构与 glibc 要求见 **[DEPENDENCIES.md](DEPENDENCIES.md)**。
+
 #### 使用说明
 
 1. 小球常驻桌面最顶层，可按住左键拖动；松手后位置会记住（Wayland 下受协议限制无法定位）
@@ -65,11 +80,16 @@ rpm 需要装 `rpmbuild`，AppImage 首次运行会自动下载工具。）
 6. macOS 上应用是「配件型」：不会出现在 Dock 和 Cmd+Tab 里，就像 360 悬浮球那样
 
 
+#### 开源协议
+
+本项目基于 **GNU General Public License v2（GPLv2）** 发布，详见仓库根目录的 `LICENSE` 文件。
+任何对本软件的再分发或修改版本，都必须在相同协议（GPLv2）下提供源代码。
+
 #### 参与贡献
 
 1.  Fork 本仓库
 2.  新建 Feat_xxx 分支
-3.  提交代码
+3.  提交代码（可用仓库内 `./push.sh "提交说明"` 一键同时推送到 Gitee 与 GitHub）
 4.  新建 Pull Request
 
 
