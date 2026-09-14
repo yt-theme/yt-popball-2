@@ -44,9 +44,15 @@ PopBall 打包（Node 友好入口）
   npm run deb               # Linux deb（默认 x86_64 + arm64，经 Docker）
   npm run deb:x64           # 只要 x86_64 的 .deb
   npm run deb:arm           # 只要 arm64 的 .deb
-  npm run rpm               # Linux rpm（仅 Linux 本机）
+  npm run rpm               # Linux rpm（默认 x86_64 + arm64，经 Docker）
+  npm run rpm:x64           # 只要 x86_64 的 .rpm
+  npm run rpm:arm           # 只要 arm64 的 .rpm
   npm run appimage          # Linux AppImage（仅 Linux 本机）
+  npm run appimage:x64      # x86_64 AppImage（须在 x86_64 机器上跑）
+  npm run appimage:arm      # arm64 AppImage（须在 arm64 机器上跑）
   npm run all               # 当前平台支持的全部
+  npm run all:x64           # 全套 x64（deb/rpm/appimage:x64 + mac）
+  npm run all:arm           # 全套 arm（deb/rpm/appimage:arm + mac）
 
 示例:
   node pack.js deb --linux-arch arm

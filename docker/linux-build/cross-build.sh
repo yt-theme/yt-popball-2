@@ -21,7 +21,10 @@
 #   bash cross-build.sh <项目目录> <输出目录> [VERSION]
 set -euo pipefail
 
-SRC="$1"; OUT="$2"; VERSION="${3:-1.0.0}"
+SRC="$1"; OUT="$2"
+# 默认从 package.json 读 version（单一版本号来源）
+[ -n "${3:-}" ] && VERSION="$3" || VERSION="$(sed -n 's/^  *"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$SRC/package.json" 2>/dev/null | head -1)"
+[ -n "$VERSION" ] || VERSION="0.0.0"
 [ -d "$SRC" ] || { echo "用法: $0 <项目目录> <输出目录> [VERSION]" >&2; exit 1; }
 [ -n "$OUT" ] || { echo "缺少输出目录" >&2; exit 1; }
 mkdir -p "$OUT"

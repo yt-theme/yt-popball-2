@@ -4,8 +4,9 @@ greaterThan(QT_MAJOR_VERSION, 4): QT += widgets
 
 CONFIG += c++17
 
-# 版本号（打包脚本会读取这里的值，macOS 也会用它填 CFBundleVersion）
-VERSION = 1.0.0
+# 版本号：自动从 package.json 读取（单一来源，改 package.json 即全局生效）
+VERSION = $$system(grep version $$PWD/package.json 2>/dev/null | head -1 | sed 's/[^0-9.]//g')
+isEmpty(VERSION): VERSION = 0.0.0
 
 # You can make your code fail to compile if it uses deprecated APIs.
 # In order to do so, uncomment the following line.

@@ -26,6 +26,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$SCRIPT_DIR"
 APP_NAME="popball2"
 PRO_FILE="$PROJECT_DIR/${APP_NAME}.pro"
+PKG_FILE="$PROJECT_DIR/package.json"
 ICON_PNG="$PROJECT_DIR/resources/${APP_NAME}.png"
 ICON_ICNS="$PROJECT_DIR/resources/${APP_NAME}.icns"
 DOCKERFILE="$SCRIPT_DIR/docker/linux-build/Dockerfile"
@@ -103,14 +104,22 @@ ${C_B}popball2 打包脚本（平台感知 + Docker 多架构 + 容错）${C_R}
 
 目标（可多选，缺省 = 平台默认）:
   deb         Debian/Ubuntu 的 .deb（经 Docker 打 x86_64 + arm64 两种架构）
-  rpm         Fedora/RHEL/openSUSE 的 .rpm（仅 Linux 宿主原生构建）
-  appimage    通用 Linux AppImage（Linux 宿主原生构建；macOS 宿主经 Docker，目标架构=本机架构）
+  deb:x64     只要 x86_64 的 .deb
+  deb:arm     只要 arm64 的 .deb
+  rpm         Fedora/RHEL/openSUSE 的 .rpm（经 Docker 打 x86_64 + arm64 两种架构）
+  rpm:x64     只要 x86_64 的 .rpm
+  rpm:arm     只要 arm64 的 .rpm
+  appimage    通用 Linux AppImage（本机架构；跨设备请用显式变体）
+  appimage:x64 x86_64 AppImage（须在 x86_64 机器上构建；linuxdeploy 不能跨架构）
+  appimage:arm arm64 AppImage（须在 arm64 机器上构建；linuxdeploy 不能跨架构）
   mac         macOS 的 .dmg 与 .zip（仅 macOS 宿主）
   all         当前平台支持的全部
+  all:x64     全部 x86_64 变体（deb:x64 + rpm:x64 + appimage:x64 + mac）
+  all:arm     全部 arm64 变体  （deb:arm + rpm:arm + appimage:arm + mac）
 
 缺省目标:
-  macOS 宿主 : mac deb       （mac 本机 + Linux deb 经 Docker）
-  Linux 宿主 : deb           （x86_64 + arm64，默认经 Docker）
+  macOS 宿主 : mac deb rpm appimage （mac 本机 + Linux deb/rpm/appimage 经 Docker）
+  Linux 宿主 : deb rpm appimage     （x86_64 + arm64，默认经 Docker）
 
 选项:
       --version V    版本号           (默认: 读取 .pro 里的 VERSION)
@@ -131,16 +140,22 @@ ${C_B}popball2 打包脚本（平台感知 + Docker 多架构 + 容错）${C_R}
   -h, --help         显示帮助
 
 容错说明:
-  任一目标（mac / linux-amd64-deb / linux-arm64-deb / rpm / appimage）失败都不会中断脚本，
+  任一目标（mac / linux-amd64-deb / linux-arm64-deb / linux-amd64-rpm / linux-arm64-rpm / appimage）失败都不会中断脚本，
   失败目标会被记录并跳过，其余目标继续执行；最后汇总并给出退出码（有失败则 exit 1）。
 
 示例:
-  ./package.sh                          # macOS: mac(本机) + deb(x86_64,arm64 经 Docker)
-  ./package.sh                          # Linux : deb(x86_64,arm64 经 Docker)
-  ./package.sh --linux-arch arm         # 只要 arm64 架构的 .deb
+  ./package.sh                          # macOS: mac(本机) + deb/rpm/appimage(x86_64,arm64 经 Docker)
+  ./package.sh                          # Linux : deb/rpm/appimage(x86_64,arm64 经 Docker)
+  ./package.sh --linux-arch arm         # 只要 arm64 架构的 .deb / .rpm
   ./package.sh mac --version 1.2.0
   ./package.sh deb --no-docker          # 不用 Docker，仅本机架构原生 deb
+  ./package.sh rpm:x64                   # 只要 x86_64 的 .rpm（经 Docker）
+  ./package.sh rpm:arm                   # 只要 arm64 的 .rpm（经 Docker）
   ./package.sh appimage                 # 通用 AppImage（macOS 上经 Docker，本机架构）
+  ./package.sh appimage:x64              # x86_64 AppImage（须在 x86_64 机器上跑）
+  ./package.sh appimage:arm              # arm64 AppImage（须在 arm64 机器上跑）
+  ./package.sh all:x64                    # 全套 x64（deb/rpm/appimage:x64 + mac）
+  ./package.sh all:arm                    # 全套 arm（deb/rpm/appimage:arm + mac）
   ./package.sh all --out ~/pkgs
 EOF
 }
@@ -162,6 +177,12 @@ while [ $# -gt 0 ]; do
         --native-only)    NATIVE_ONLY=1 ;;
         --skip-platform-check) FORCE_CROSS=1 ;;
         deb|rpm|appimage|mac|all) TARGETS+=("$1") ;;
+        appimage:x64|appimage-x64) TARGETS+=("appimage"); ARCH_OVERRIDE="amd64" ;;
+        appimage:arm|appimage-arm) TARGETS+=("appimage"); ARCH_OVERRIDE="arm64" ;;
+        rpm:x64|rpm-x64) TARGETS+=("rpm"); LINUX_ARCHES_ARG="amd64" ;;
+        rpm:arm|rpm-arm) TARGETS+=("rpm"); LINUX_ARCHES_ARG="arm64" ;;
+        all:x64|all-x64) TARGETS+=("all"); LINUX_ARCHES_ARG="amd64"; ARCH_OVERRIDE="amd64" ;;
+        all:arm|all-arm) TARGETS+=("all"); LINUX_ARCHES_ARG="arm64"; ARCH_OVERRIDE="arm64" ;;
         *) die "未知参数或目标: ${1}（用 --help 查看用法）" ;;
     esac
     shift
@@ -179,7 +200,7 @@ esac
 # 避免各处写死列表而互相漂移。（是否用 Docker、工具是否就绪属于运行期条件，由各目标自行再判断。）
 host_supported_targets() {
     if [ "$OS_KIND" = macos ]; then
-        printf '%s\n' mac deb appimage
+        printf '%s\n' mac deb rpm appimage
     else
         printf '%s\n' deb rpm appimage
     fi
@@ -191,8 +212,8 @@ platform_supports_target() {
     return 1
 }
 
-# 读 .pro 里的版本号
-[ -n "$VERSION" ] || VERSION="$(sed -n 's/^VERSION *= *//p' "$PRO_FILE" 2>/dev/null | head -1)"
+# 读 package.json 里的 version（单一版本号来源，改一处即全局生效）
+[ -n "$VERSION" ] || VERSION="$(sed -n 's/^  *"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' "$PKG_FILE" 2>/dev/null | head -1)"
 [ -n "$VERSION" ] || VERSION="0.0.0"
 
 # 架构映射
@@ -919,6 +940,83 @@ docker_build_deb() {
     ok "Linux ($arch_label / $debarch) deb 已写入 $OUT_DIR"
 }
 
+# 在 Docker 容器里构建 rpm（与 deb 同样的多架构模式；镜像复用 deb 的构建镜像）。
+docker_build_rpm() {
+    local arch_label="$1"
+    local plat rpmarch img
+    case "$arch_label" in
+        amd64|x86_64|x86|x64) plat=linux/amd64; rpmarch=x86_64;  img="popball2-linux-build:amd64" ;;
+        arm64|aarch64|arm)    plat=linux/arm64; rpmarch=aarch64; img="popball2-linux-build:arm64" ;;
+        *) err "不支持的 Linux 架构: ${arch_label}"; return 1 ;;
+    esac
+
+    ensure_qemu "$plat" || true
+    ensure_docker || { err "Docker 不可用，无法构建 ${arch_label} rpm"; return 1; }
+
+    # 把宿主机的 127.0.0.1 代理改写为 host.docker.internal（Docker Desktop 的宿主机网关）
+    local _hp _hs _orig_hp="${HTTP_PROXY:-}" _orig_hs="${HTTPS_PROXY:-}"
+    _rewrite_proxy() { local p="$1"; [ -z "$p" ] && return 0; echo "$p" | sed -E 's#(https?://)127\.0\.0\.1:#\1host.docker.internal:#'; }
+    _hp="$(_rewrite_proxy "$_orig_hp")"; _hs="$(_rewrite_proxy "$_orig_hs")"
+    local _loopback_proxy=0
+    case "$_orig_hp$_orig_hs" in *127.0.0.1*|*localhost*) _loopback_proxy=1 ;; esac
+    local build_proxy_args=()
+    if [ "$_loopback_proxy" -eq 0 ]; then
+        [ -n "$_hp" ] && build_proxy_args+=(--build-arg "MY_HTTP_PROXY=$_hp" --build-arg "MY_HTTPS_PROXY=$_hs")
+    fi
+
+    # 复用 deb 的构建镜像（同一套 Qt6 环境）
+    if ! docker image inspect "$img" >/dev/null 2>&1; then
+        step "首次构建 Docker 镜像 ${img}（下载 ubuntu:22.04 并安装 Qt6，请稍候）"
+        if ! docker build --platform "$plat" -t "$img" -f "$DOCKERFILE" "$DOCKER_CTX" "${build_proxy_args[@]}"; then
+            err "Docker 镜像构建失败（${arch_label}）。rpm 与 deb 共用构建镜像，先成功构建一次本机架构的 deb 即可自动建好镜像。"
+            return 1
+        fi
+    fi
+
+    # 容器内 package.sh 参数：--no-docker 防止递归；--arch 指定该架构
+    local pa=()
+    [ -n "$VERSION" ] && pa+=(--version "$VERSION")
+    [ -n "$JOBS" ]    && pa+=(--jobs "$JOBS")
+    pa+=(--no-docker --arch "$arch_label" rpm --out /project/dist)
+    [ "$KEEP_STAGE" -eq 1 ] && pa+=(--keep-stage)
+
+    local proxy_args=()
+    if [ "$_loopback_proxy" -eq 0 ]; then
+        [ -n "$_hp" ] && proxy_args+=(-e HTTP_PROXY="$_hp"  -e http_proxy="$_hp")
+        [ -n "$_hs" ] && proxy_args+=(-e HTTPS_PROXY="$_hs" -e https_proxy="$_hs")
+        [ -n "${NO_PROXY:-}" ] && proxy_args+=(-e NO_PROXY="$NO_PROXY" -e no_proxy="$NO_PROXY")
+    fi
+
+    if path_is_docker_shared "$PROJECT_DIR"; then
+        if ! docker run --rm --platform "$plat" \
+            -v "$PROJECT_DIR:/project:rw" -w /project \
+            -e POPBALL2_BUILD_DIR=/build -e POPBALL2_IN_DOCKER=1 -e NO_COLOR=1 "${proxy_args[@]}" \
+            "$img" bash -lc "cd /project && ./package.sh ${pa[*]}"; then
+            err "Docker 内 rpm 打包失败 ($arch_label)。详见上方容器日志。"
+            return 1
+        fi
+    else
+        warn "项目不在 Docker 共享路径（/Users、/tmp），改用 /tmp 暂存方式挂载"
+        local stage outstage
+        stage="$(mktemp -d "/tmp/${APP_NAME}-docker.XXXXXX")"
+        outstage="$(mktemp -d "/tmp/${APP_NAME}-docker-out.XXXXXX")"
+        tar -C "$PROJECT_DIR" --exclude=build-pkg --exclude=build --exclude='*.o' \
+            --exclude=dist --exclude=.git -cf - . | tar -C "$stage" -xf -
+        pa+=(--out /out)
+        if ! docker run --rm --platform "$plat" \
+            -v "$stage:/project:ro" -v "$outstage:/out:rw" \
+            -e POPBALL2_BUILD_DIR=/build -e POPBALL2_IN_DOCKER=1 -e NO_COLOR=1 "${proxy_args[@]}" \
+            "$img" bash -lc "cd /project && ./package.sh ${pa[*]}"; then
+            rm -rf "$stage" "$outstage"
+            err "Docker 内 rpm 打包失败 ($arch_label)。"
+            return 1
+        fi
+        cp -f "$outstage"/* "$OUT_DIR"/ 2>/dev/null || true
+        rm -rf "$stage" "$outstage"
+    fi
+    ok "Linux ($arch_label / $rpmarch) rpm 已写入 $OUT_DIR"
+}
+
 # 在 Docker 容器里构建 AppImage（原生路径只在 Linux 宿主可用，这里让 macOS 也能出 AppImage）。
 # 关键限制：linuxdeploy / appimagetool 是「按架构」的工具，不能跨架构，
 # 所以 AppImage 只在「目标架构 == 本机架构」时可构建（本机 arm64 出 aarch64；
@@ -1035,12 +1133,40 @@ if in_list deb "${TARGETS[@]}"; then
     fi
 fi
 
-# ---------- Linux rpm（仅 Linux 宿主原生；macOS 上不支持，跳过）----------
+# ---------- Linux rpm（Docker 优先；macOS 无 Docker 则跳过；Linux 无 Docker 则原生单架构）----------
 if in_list rpm "${TARGETS[@]}"; then
-    if [ "$OS_KIND" = linux ]; then
-        run_stage "Linux rpm (原生)" stage_native_linux rpm
+    LINUX_ARCHES=()
+    if use_docker_for_linux; then
+        if [ -n "$LINUX_ARCHES_ARG" ]; then
+            IFS=',' read -ra LINUX_ARCHES <<< "$LINUX_ARCHES_ARG"
+            norm=()
+            for a in "${LINUX_ARCHES[@]}"; do
+                case "$a" in
+                    x86|x64|amd64|x86_64) norm+=(amd64) ;;
+                    arm|arm64|aarch64)    norm+=(arm64) ;;
+                    *) norm+=("$a") ;;
+                esac
+            done
+            LINUX_ARCHES=("${norm[@]}")
+        else
+            LINUX_ARCHES=(amd64 arm64)
+        fi
+        if docker info >/dev/null 2>&1; then
+            for a in "${LINUX_ARCHES[@]}"; do
+                run_stage "Linux rpm (${a}, Docker)" docker_build_rpm "$a"
+            done
+        elif [ "$OS_KIND" = macos ]; then
+            warn "macOS 宿主且无可用 Docker：无法产出 Linux rpm，已跳过"
+        else
+            warn "Docker 不可用：Linux rpm 仅构建本机架构（需要 x86_64+arm64 请启用 Docker）"
+            run_stage "Linux rpm (原生)" stage_native_linux rpm
+        fi
     else
-        warn "rpm 在 macOS 上暂不支持（deb / appimage 可经 Docker），已跳过 rpm"
+        if [ "$OS_KIND" = macos ]; then
+            warn "未使用 Docker（--no-docker / --native-only / 容器内）：macOS 宿主无法原生构建 Linux rpm，已跳过"
+        else
+            run_stage "Linux rpm (原生)" stage_native_linux rpm
+        fi
     fi
 fi
 
