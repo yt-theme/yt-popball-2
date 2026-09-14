@@ -611,7 +611,7 @@ void SettingsDialog::loadDefaults()
     spinWidth->setValue(100);
     spinHeight->setValue(100);
     spinBorderWidth->setValue(2);
-    spinShadowLen->setValue(5);           // shadow_radius
+    spinShadowLen->setValue(0);           // shadow_radius
 
     // 图表
     spinCpuLine->setValue(1.1);           // cpu_usage_width

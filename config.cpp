@@ -62,7 +62,7 @@ void Config::readConfig()
     this->aside_width           = this->settingsObj->value("/appearance/aside_width").toInt();
     this->aside_height          = this->settingsObj->value("/appearance/aside_height").toInt();
     this->opacity               = this->settingsObj->value("/appearance/opacity").toDouble();
-    this->shadow_radius         = this->settingsObj->value("/appearance/shadow_radius", 5).toInt();
+    this->shadow_radius         = this->settingsObj->value("/appearance/shadow_radius", 0).toInt();
     // 新增键：老配置文件里可能没有，必须给默认值，否则读出来是空/0
     this->shadow_color          = this->settingsObj->value("/appearance/shadow_color", "#000000").toString();
     this->shape                 = this->settingsObj->value("/appearance/shape").toInt();
