@@ -41,6 +41,7 @@ PopBall 打包（Node 友好入口）
 
 常用 npm 脚本:
   npm run mac               # macOS 本机 dmg + zip
+  npm run win               # Windows 本机 zip（windeployqt 内置 Qt）
   npm run deb               # Linux deb（默认 x86_64 + arm64，经 Docker）
   npm run deb:x64           # 只要 x86_64 的 .deb
   npm run deb:arm           # 只要 arm64 的 .deb

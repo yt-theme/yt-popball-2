@@ -62,6 +62,21 @@ unix:!macx {
     }
 }
 
+# Windows：
+#   * iphlpapi —— 网速 GetIfTable2；advapi32 —— 注册表读 CPU 频率
+#   * ole32 / oleaut32 / wbemuuid —— CPU 温度经 WMI(MSAcpi_ThermalZoneTemperature)
+#   * _WIN32_WINNT=0x0601(Win7+) 启用 GetIfTable2 等较新 API
+win32 {
+    DEFINES += WINVER=0x0601
+    DEFINES += _WIN32_WINNT=0x0601
+    LIBS += -liphlpapi -ladvapi32 -lole32 -loleaut32 -lwbemuuid
+
+    # Windows 应用图标（可选，存在才生效）
+    exists(resources/popball2.ico) {
+        RC_ICONS = resources/popball2.ico
+    }
+}
+
 RESOURCES += \
     default_config.qrc \
     resources.qrc

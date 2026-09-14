@@ -54,6 +54,10 @@ private:
     //   2 = 关闭
     qint32 shape_mask;
 
+    // [system_monitor]
+    // 右键菜单「系统监视器」使用的命令；留空则按桌面环境自动检测。
+    QString system_monitor_cmd;
+
 public:
     Config();
     ~Config();
@@ -98,6 +102,9 @@ public:
     // [window]
     void setShapeMask(qint32 val);
 
+    // [system_monitor]
+    void setSystemMonitorCmd(QString val);
+
     // ########### get config item values ###########
     qint32  getX();
     qint32  getY();
@@ -132,7 +139,28 @@ public:
 
     // [window]
     qint32 getShapeMask();
+
+    // [system_monitor]
+    QString getSystemMonitorCmd();
 };
+
+
+// “系统监视器”命令只允许“单条程序 + 参数”，绝不经过 shell 执行。
+// 故命令串里出现下面这些“只在 shell 里才有意义”的字符/序列时，
+// 一律视为危险或误填，拒绝保存与执行：
+//   ; | & < >  `  $(  以及换行/回车
+// （QProcess 本来就按 程序+参数 直接 exec，没有 shell；这里再主动拦截，
+//   是防御性检查：防止用户误粘贴 shell 一行式，也防配置被篡改后注入。）
+inline bool isSafeMonitorCommandLine(const QString &cmdline)
+{
+    const QString danger = QStringLiteral(";|&<>`\n\r");
+    for (const QChar &c : cmdline)
+        if (danger.indexOf(c) >= 0)
+            return false;
+    if (cmdline.contains(QLatin1String("$(")))
+        return false;
+    return true;
+}
 
 
 #endif // CONFIG_H

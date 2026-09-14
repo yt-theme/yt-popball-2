@@ -53,10 +53,11 @@ private:
     QLCDNumber *netUploadLCD     = nullptr;
     QLCDNumber *netDownloadLCD   = nullptr;
 
-    // 右键菜单（设置 / 退出）
-    QMenu   *contextMenu    = nullptr;
-    QAction *actSettings    = nullptr;
-    QAction *actQuit        = nullptr;
+    // 右键菜单（设置 / 系统监视器 / 退出）
+    QMenu   *contextMenu        = nullptr;
+    QAction *actSettings        = nullptr;
+    QAction *actSystemMonitor   = nullptr;
+    QAction *actQuit            = nullptr;
 
     // 设置窗口（右键菜单 -> 设置）
     SettingsDialog *settingsDialog = nullptr;
@@ -98,6 +99,7 @@ private slots:
 
     // 右键菜单动作
     void onMenuSettings();
+    void onMenuSystemMonitor();
     void onMenuQuit();
     // 设置保存后刷新界面
     void onSettingsApplied();

@@ -6,6 +6,10 @@
 #include <QMessageBox>
 #include <QCoreApplication>
 #include <QDir>
+#include <QFileInfo>
+#include <QHash>
+#include <QProcess>
+#include <QStandardPaths>
 
 #if defined(POPBALL_HAVE_X11)
 #  include <QtGui/qguiapplication_platform.h>
@@ -456,10 +460,13 @@ void Widget::buildContextMenu()
 
     this->contextMenu = new QMenu(this);
     this->actSettings = this->contextMenu->addAction(tr("设置"));
+    this->actSystemMonitor = this->contextMenu->addAction(tr("系统监视器"));
+    this->contextMenu->addSeparator();
     this->actQuit     = this->contextMenu->addAction(tr("退出"));
 
-    connect(this->actSettings, &QAction::triggered, this, &Widget::onMenuSettings);
-    connect(this->actQuit,     &QAction::triggered, this, &Widget::onMenuQuit);
+    connect(this->actSettings,      &QAction::triggered, this, &Widget::onMenuSettings);
+    connect(this->actSystemMonitor, &QAction::triggered, this, &Widget::onMenuSystemMonitor);
+    connect(this->actQuit,          &QAction::triggered, this, &Widget::onMenuQuit);
 }
 
 void Widget::onMenuSettings()
@@ -474,6 +481,434 @@ void Widget::onMenuSettings()
     this->settingsDialog->show();
     this->settingsDialog->raise();
     this->settingsDialog->activateWindow();
+}
+
+// —————————————————————— 系统监视器通用启动辅助（所有平台） ——————————————————————
+
+// 同一监视器“单实例 + 成败感知”：用堆上“永不释放”的 QProcess 跟踪。
+// 子进程结束时才释放进程对象；popball 退出时这些对象仍未被销毁，
+// 因此不会误杀已经打开的监视器窗口，也让“是否仍在运行”可被查询。
+static QHash<QString, QProcess *> &liveMonitors()
+{
+    static QHash<QString, QProcess *> *m = new QHash<QString, QProcess *>;
+    return *m;
+}
+
+// 启动一个监视器进程；返回 true = 启动成功或在运行，false = 启动失败。
+// key 决定“单实例”归属：同一 key 已在运行就不再重复启动（避免堆窗口）。
+static bool launchMonitorOnce(const QString &key, const QString &program,
+                              const QStringList &args, QString *errMsg)
+{
+    auto &live = liveMonitors();
+    if (QProcess *p = live.value(key))
+        if (p->state() != QProcess::NotRunning) {
+            if (errMsg)
+                errMsg->clear();
+            return true;
+        }
+
+    auto *p = new QProcess;
+    p->setWorkingDirectory(QDir::homePath());
+    p->setProgram(program);
+    p->setArguments(args);
+    p->start();
+    if (!p->waitForStarted(1500)) {
+        if (errMsg)
+            *errMsg = p->errorString().isEmpty()
+                      ? QStringLiteral("无法启动 %1").arg(program)
+                      : p->errorString();
+        p->deleteLater();
+        live.remove(key);
+        return false;
+    }
+
+    live.insert(key, p);
+    QObject::connect(p, &QProcess::stateChanged, p, [p, key](QProcess::ProcessState st) {
+        if (st == QProcess::NotRunning) {
+            auto &m = liveMonitors();
+            if (m.value(key) == p)
+                m.remove(key);
+            p->deleteLater();
+        }
+    });
+    return true;
+}
+
+// 展开路径里的 ~（如 ~/bin/htop → /home/xxx/bin/htop）。
+static QString expandHome(const QString &p)
+{
+    if (p == QLatin1String("~"))
+        return QDir::homePath();
+    if (p.startsWith(QLatin1String("~/")))
+        return QDir::homePath() + p.mid(1);
+    return p;
+}
+
+// 解释器 / 代码执行器：若拿它们去执行一段代码片段，等价于放行任意命令。
+// 系统监视器只会是普通程序，绝无可能用 `sh -c 代码`、`python 脚本` 这类调用。
+static bool isShellLikeInterpreter(const QString &program)
+{
+    const QString base = QFileInfo(program).fileName().toLower();
+    static const QStringList iters = {
+        QStringLiteral("sh"), QStringLiteral("bash"), QStringLiteral("dash"),
+        QStringLiteral("zsh"), QStringLiteral("fish"), QStringLiteral("ksh"),
+        QStringLiteral("csh"), QStringLiteral("tcsh"), QStringLiteral("pwsh"),
+        QStringLiteral("python"), QStringLiteral("python2"), QStringLiteral("python3"),
+        QStringLiteral("php"), QStringLiteral("perl"), QStringLiteral("ruby"),
+        QStringLiteral("node"), QStringLiteral("awk"), QStringLiteral("busybox"),
+        QStringLiteral("env"), QStringLiteral("xargs"),
+    };
+    return iters.contains(base);
+}
+
+// 判断参数里是否带“执行代码”类开关（-c / -e / --command / -exec / -eval）。
+static bool hasEvalFlag(const QStringList &args)
+{
+    static const QStringList flags = {
+        QStringLiteral("-c"), QStringLiteral("-e"), QStringLiteral("--command"),
+        QStringLiteral("-eval"), QStringLiteral("-exec"),
+    };
+    for (const QString &a : args)
+        for (const QString &f : flags)
+            if (a == f)
+                return true;
+    return false;
+}
+
+// 危险的系统命令：作为“系统监视器”被调用毫无正当性，
+// 一旦执行可能删数据 / 提权 / 关系统 / 杀进程，因此一律拒绝（即使不带 shell 符号）。
+static bool isDangerousProgram(const QString &program)
+{
+    QString base = QFileInfo(program).fileName().toLower();
+    if (base.endsWith(QLatin1String(".exe")))
+        base.chop(4);
+    static const QStringList danger = {
+        // 删除 / 破坏数据
+        QStringLiteral("rm"), QStringLiteral("rmdir"), QStringLiteral("unlink"),
+        QStringLiteral("shred"), QStringLiteral("wipe"), QStringLiteral("wipefs"),
+        QStringLiteral("dd"), QStringLiteral("mkfs"), QStringLiteral("format"),
+        QStringLiteral("parted"), QStringLiteral("fdisk"), QStringLiteral("sfdisk"),
+        QStringLiteral("fsutil"), QStringLiteral("diskpart"),
+        // 提权
+        QStringLiteral("sudo"), QStringLiteral("doas"), QStringLiteral("su"),
+        QStringLiteral("gksu"), QStringLiteral("gksudo"), QStringLiteral("kdesudo"),
+        QStringLiteral("pkexec"), QStringLiteral("runas"), QStringLiteral("kdesu"),
+        // 电源 / 系统控制
+        QStringLiteral("reboot"), QStringLiteral("shutdown"), QStringLiteral("poweroff"),
+        QStringLiteral("halt"), QStringLiteral("telinit"), QStringLiteral("init"),
+        QStringLiteral("systemctl"), QStringLiteral("sv"), QStringLiteral("rcctl"),
+        // 杀进程
+        QStringLiteral("kill"), QStringLiteral("killall"), QStringLiteral("killall5"),
+        QStringLiteral("pkill"), QStringLiteral("taskkill"),
+    };
+    return danger.contains(base) || base.startsWith(QLatin1String("mkfs."));
+}
+
+// 统一入口：无论命令从“整串路径”还是“程序+参数”进来，都先过这道闸。
+// 命中任一危险情况就返回 true（已写好给用户的理由），并拒绝执行。
+static bool isBlockedCommand(const QString &program, const QStringList &args, QString *errMsg)
+{
+    if (isShellLikeInterpreter(program) && hasEvalFlag(args)) {
+        if (errMsg) *errMsg = QStringLiteral("为避免执行任意代码，不允许用解释器（sh/bash/python 等）执行代码片段");
+        return true;
+    }
+    if (isDangerousProgram(program)) {
+        if (errMsg) *errMsg = QStringLiteral("不允许执行危险的系统命令（如 rm / sudo / reboot / kill 等）");
+        return true;
+    }
+    return false;
+}
+
+// 解析“命令串”并尽力启动。支持的写法：
+//   * 程序名（在 PATH 里找）
+//   * 绝对/相对路径，含形如 `C:\Program Files\…\mon.exe` 这种“没引号但含空格”的整串路径
+//   * 带引号与参数的命令，例如 `open -a "Activity Monitor"`
+//   * 带 ~ 的路径
+//   * macOS 纯应用名（如 "Activity Monitor"）→ 用 `open -a` 启动
+static bool launchMonitorPath(const QString &exe, const QStringList &args, QString *errMsg);
+static bool launchMonitorCommand(const QString &cmdline, QString *errMsg)
+{
+    const QString cmd = cmdline.trimmed();
+    if (cmd.isEmpty()) {
+        if (errMsg) *errMsg = QStringLiteral("命令为空");
+        return false;
+    }
+    // 危险字符拦截（关键）：只允许“单条程序 + 参数”，杜绝 shell 运算符。
+    // 即使配置被篡改成 shell 一行式（如 `rm -rf ~ ; reboot`），也在此拒绝执行。
+    if (!isSafeMonitorCommandLine(cmd)) {
+        if (errMsg) *errMsg = QStringLiteral("命令包含不允许的字符（; | & < > ` $() 或换行）");
+        return false;
+    }
+    const QString expanded = expandHome(cmd);            // 处理 ~
+    const QStringList parts = QProcess::splitCommand(expanded);
+    if (parts.isEmpty()) {
+        if (errMsg) *errMsg = QStringLiteral("无法解析命令");
+        return false;
+    }
+
+    // ① 整串本身就是一个“真实存在”的路径 → 整个当单个程序起，不再拆参数。
+    //    典型场景是 Windows 上直接粘贴 `C:\Program Files\…\mon.exe`（含空格没引号）。
+    //    注意只能用 exists()：若用 isAbsolute() 会把“路径+参数”这种串误判成路径，
+    //    例如 `C:\Program Files\mon.exe --flag` 也会被当成完整程序名去 exec。
+    {
+        const QFileInfo whole(expanded);
+        if (whole.exists()) {
+            // 整串当单个程序，也照样过“危险命令”闸，防止用 /bin/rm 这类绕过。
+            if (isBlockedCommand(expanded, {}, errMsg))
+                return false;
+            return launchMonitorPath(expanded, QStringList(), errMsg);
+        }
+    }
+
+    // ② 常规：程序 + 参数
+    const QString program = expandHome(parts.first());
+    const QStringList args = parts.mid(1);
+
+    // 危险拦截：禁止解释器执行代码 / 禁止 rm 等破坏性、提权、系统控制、杀进程命令。
+    if (isBlockedCommand(program, args, errMsg))
+        return false;
+
+    QString exe = QStandardPaths::findExecutable(program);
+    const bool pathLike = program.contains(QLatin1Char('/'))
+                          || program.contains(QLatin1Char('\\'))
+                          || program.startsWith(QLatin1Char('~'));
+    if (exe.isEmpty() && (pathLike || QFileInfo(program).exists()))
+        exe = program;
+
+    if (exe.isEmpty()) {
+        // ③ macOS：再试按“应用名”启动（如 "Activity Monitor"）
+#if defined(Q_OS_MACOS)
+        if (launchMonitorOnce(QStringLiteral("openapp:") + program,
+                              QStringLiteral("open"),
+                              QStringList{ QStringLiteral("-a"), program }, nullptr))
+            return true;
+#endif
+        if (errMsg) *errMsg = QStringLiteral("未找到程序：%1").arg(program);
+        return false;
+    }
+    return launchMonitorPath(exe, args, errMsg);
+}
+
+// 启动一条可执行路径（自动处理 macOS 的 .app 目录包）。
+static bool launchMonitorPath(const QString &exe, const QStringList &args, QString *errMsg)
+{
+#if defined(Q_OS_MACOS)
+    if (exe.endsWith(QLatin1String(".app"), Qt::CaseInsensitive)) {
+        return launchMonitorOnce(QStringLiteral("open:") + QDir::cleanPath(exe),
+                                 QStringLiteral("open"),
+                                 { QDir::toNativeSeparators(exe) }, errMsg);
+    }
+#endif
+    return launchMonitorOnce(QStringLiteral("prog:") + exe, exe, args, errMsg);
+}
+
+#if defined(Q_OS_LINUX)
+// htop / top 是 TTY 程序，没有界面，必须放进一个终端模拟器里跑。
+// 优先用 $TERMINAL；再按 Wayland 友好的现代终端优先排序，xterm 兜底。
+static bool launchInTerminal(const QString &program)
+{
+    const QString termEnv = QString::fromLocal8Bit(qgetenv("TERMINAL")).trimmed();
+    if (!termEnv.isEmpty()) {
+        QStringList preArgs{ QStringLiteral("-e"), program };
+        // 无参风格终端（kitty 等）不接受 -e，改用直接接命令的形式
+        const QStringList bare{ QStringLiteral("--"), program };
+        if (launchMonitorOnce(QStringLiteral("tty:") + program, termEnv, preArgs, nullptr)
+            || launchMonitorOnce(QStringLiteral("tty:") + program, termEnv, bare, nullptr))
+            return true;
+    }
+    struct TermDef { const char *bin; QStringList prefix; };
+    const TermDef terms[] = {
+        { "x-terminal-emulator", { QStringLiteral("-e") } },
+        { "gnome-terminal",      { QStringLiteral("--") } },
+        { "xfce4-terminal",      { QStringLiteral("-x") } },
+        { "konsole",             { QStringLiteral("-e") } },
+        { "kitty",               { } },
+        { "foot",                { QStringLiteral("-e") } },
+        { "alacritty",           { QStringLiteral("-e") } },
+        { "mate-terminal",       { QStringLiteral("-e") } },
+        { "lxterminal",          { QStringLiteral("-e") } },
+        { "terminator",          { QStringLiteral("-e") } },
+        { "wezterm",             { QStringLiteral("start"), QStringLiteral("--") } },
+        { "xterm",               { QStringLiteral("-e") } },
+    };
+    for (const TermDef &t : terms) {
+        const QString exe = QStandardPaths::findExecutable(QString::fromLatin1(t.bin));
+        if (exe.isEmpty())
+            continue;
+        QStringList args = t.prefix;
+        args << program;
+        if (launchMonitorOnce(QStringLiteral("tty:") + program, exe, args, nullptr))
+            return true;
+    }
+    return false;
+}
+
+// 桌面监视器找不到（很可能装的是 Flatpak 版）时的 Flatpak 包名映射。
+static const QHash<QString, QString> &flatpakMonitorMap()
+{
+    static const QHash<QString, QString> m = {
+        { QStringLiteral("gnome-system-monitor"), QStringLiteral("org.gnome.SystemMonitor") },
+        { QStringLiteral("plasma-systemmonitor"), QStringLiteral("org.kde.systemmonitor") },
+        { QStringLiteral("systemmonitor"),         QStringLiteral("org.kde.systemmonitor") },
+        { QStringLiteral("ksysguard"),             QStringLiteral("org.kde.ksysguard") },
+        { QStringLiteral("xfce4-taskmanager"),     QStringLiteral("org.xfce.xtaskmanager") },
+        { QStringLiteral("mate-system-monitor"),   QStringLiteral("org.mate.SystemMonitor") },
+        { QStringLiteral("lxtask"),                QStringLiteral("org.lxde.lxtask") },
+    };
+    return m;
+}
+
+// PATH 里没有该监视器时，判断它是否以 Flatpak 方式安装并启动。
+static bool launchFlatpakMonitor(const QString &name, QString *errMsg)
+{
+    const QString appId = flatpakMonitorMap().value(name);
+    if (appId.isEmpty())
+        return false;
+    if (QStandardPaths::findExecutable(QStringLiteral("flatpak")).isEmpty())
+        return false;
+
+    // 会话内缓存一次“已安装的 flatpak 应用”列表，避免每次点菜单都起子进程。
+    static QStringList cached;
+    if (cached.isEmpty()) {
+        QProcess qp;
+        qp.start(QStringLiteral("flatpak"),
+                 { QStringLiteral("list"), QStringLiteral("--app"),
+                   QStringLiteral("--columns=application") });
+        if (!qp.waitForStarted(1500) || !qp.waitForFinished(3000))
+            return false;
+        const QList<QByteArray> lines = qp.readAllStandardOutput().split('\n');
+        for (const QByteArray &line : lines) {
+            const QString s = QString::fromUtf8(line).trimmed();
+            if (!s.isEmpty())
+                cached << s;
+        }
+    }
+    if (!cached.contains(appId))
+        return false;
+    return launchMonitorOnce(QStringLiteral("flatpak:") + appId,
+                             QStringLiteral("flatpak"), { QStringLiteral("run"), appId }, errMsg);
+}
+
+// 按名字启动一个 GUI 监视器：优先 PATH，找不到再试 Flatpak 版。
+static bool launchGuiMonitor(const QString &name, QString *errMsg)
+{
+    const QString exe = QStandardPaths::findExecutable(name);
+    if (!exe.isEmpty())
+        return launchMonitorOnce(QStringLiteral("prog:") + exe, exe, {}, errMsg);
+    return launchFlatpakMonitor(name, errMsg);
+}
+#endif // Q_OS_LINUX
+
+// 系统监视器右键菜单动作。规则：
+//   1. 配置了自定义命令 → 严格启动它；启动失败才弹窗提示（不再回退自动检测）。
+//   2. 未配置 → 按 操作系统 + 桌面环境 自动挑选，整套统一走“单实例 + 成败感知”。
+void Widget::onMenuSystemMonitor()
+{
+    const QString customCmd = this->config->getSystemMonitorCmd();
+
+    // ---------------- ① 用户自定义命令 ----------------
+    if (!customCmd.trimmed().isEmpty()) {
+        QString err;
+        if (!launchMonitorCommand(customCmd, &err)) {
+            qWarning() << "系统监视器命令启动失败:" << customCmd << err;
+            QMessageBox::warning(this, tr("系统监视器启动失败"),
+                tr("配置的「系统监视器」命令无法启动：\n%1\n\n%2\n\n"
+                   "请确认它是可执行命令或程序路径（可在「设置 → 系统监视器」"
+                   "用“选择程序”指定），\n或暂时留空以走自动检测。")
+                    .arg(customCmd, err));
+        }
+        return;
+    }
+
+    // ---------------- ② 自动检测 ----------------
+#if defined(Q_OS_MACOS)
+    QString macErr;
+    if (!launchMonitorOnce(QStringLiteral("openapp:Activity Monitor"),
+                           QStringLiteral("open"),
+                           QStringList{ QStringLiteral("-a"), QStringLiteral("Activity Monitor") },
+                           &macErr))
+        QMessageBox::warning(this, tr("系统监视器"),
+            tr("无法打开「活动监视器」。\n%1").arg(macErr));
+#elif defined(Q_OS_WIN)
+    QString winErr;
+    if (!launchMonitorOnce(QStringLiteral("taskmgr"), QStringLiteral("taskmgr"), {}, &winErr))
+        QMessageBox::warning(this, tr("系统监视器"),
+            tr("无法打开「任务管理器」。\n%1").arg(winErr));
+#elif defined(Q_OS_LINUX)
+    // 收集桌面环境/会话提示（可能多个来源，合并匹配）
+    const QStringList hints = {
+        QString::fromLocal8Bit(qgetenv("XDG_CURRENT_DESKTOP")),
+        QString::fromLocal8Bit(qgetenv("XDG_SESSION_DESKTOP")),
+        QString::fromLocal8Bit(qgetenv("DESKTOP_SESSION")),
+    };
+    const QString joined = hints.join(QLatin1Char(' ')).toLower();
+
+    QStringList specific;
+    if (joined.contains(QLatin1String("kde")) || joined.contains(QLatin1String("plasma")))
+        specific = { QStringLiteral("plasma-systemmonitor"),
+                     QStringLiteral("systemmonitor"),
+                     QStringLiteral("ksysguard") };
+    else if (joined.contains(QLatin1String("xfce")))
+        specific = { QStringLiteral("xfce4-taskmanager") };
+    else if (joined.contains(QLatin1String("mate")))
+        specific = { QStringLiteral("mate-system-monitor") };
+    else if (joined.contains(QLatin1String("lxqt")))
+        specific = { QStringLiteral("qps"), QStringLiteral("lxtask") };
+    else if (joined.contains(QLatin1String("lxde")))
+        specific = { QStringLiteral("lxtask") };
+    else if (joined.contains(QLatin1String("deepin")) || joined.contains(QLatin1String("dde")))
+        specific = { QStringLiteral("deepin-system-monitor") };
+    else if (joined.contains(QLatin1String("cinnamon")))
+        specific = { QStringLiteral("gnome-system-monitor") };
+    // else：GNOME / Unity / Budgie / Pantheon / GNOME Flashback 及纯 WM，首选留空
+
+    // 桌面和“实际装了哪个”未必一致（如用 LXDE 却只装 gnome-system-monitor）。
+    // 把“首选”之外的所有已知 GUI 监视器追加进去兜底 —— 哪个装了用哪个。
+    const QStringList pool = {
+        QStringLiteral("gnome-system-monitor"),
+        QStringLiteral("plasma-systemmonitor"),
+        QStringLiteral("systemmonitor"),
+        QStringLiteral("ksysguard"),
+        QStringLiteral("mate-system-monitor"),
+        QStringLiteral("xfce4-taskmanager"),
+        QStringLiteral("lxtask"),
+        QStringLiteral("qps"),
+        QStringLiteral("deepin-system-monitor"),
+    };
+
+    QStringList candidates = specific;
+    for (const QString &name : pool)
+        if (!candidates.contains(name))
+            candidates.append(name);
+
+    QString err;
+    bool launched = false;
+    for (const QString &name : candidates)
+        if (launchGuiMonitor(name, &err)) {
+            launched = true;
+            break;
+        }
+
+    // 桌面 GUI 监视器都没有 → 退回「终端里的 htop / top」。
+    if (!launched) {
+        const QString tty = QStandardPaths::findExecutable(QStringLiteral("htop")).isEmpty()
+                            ? QStringLiteral("top")
+                            : QStringLiteral("htop");
+        launched = launchInTerminal(tty);
+    }
+
+    if (!launched) {
+        qWarning() << "未找到可用的系统监视器或终端." << err;
+        QMessageBox::warning(this, tr("系统监视器"),
+            tr("找不到可用的系统监视器或终端模拟器。\n%1\n\n"
+               "可安装 gnome-system-monitor / plasma-systemmonitor / ksysguard /\n"
+               "xfce4-taskmanager / mate-system-monitor / lxtask / qps /\n"
+               "deepin-system-monitor（或 htop/… + 终端），\n"
+               "也可在「设置 → 系统监视器」里指定命令。").arg(err));
+    }
+#else
+    qWarning() << "当前平台不支持系统监视器";
+#endif
 }
 
 // 设置保存后：把新颜色套到 LCD、按新的不透明度/显示项重刷界面

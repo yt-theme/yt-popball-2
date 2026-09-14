@@ -10,6 +10,7 @@
 #include <QSpinBox>
 #include <QDoubleSpinBox>
 #include <QComboBox>
+#include <QLineEdit>
 #include <QColor>
 #include <QList>
 #include "config.h"
@@ -76,6 +77,7 @@ private:
     QWidget *buildWindowSection();
     QWidget *buildChartSection();
     QWidget *buildAdvancedSection();
+    QWidget *buildMonitorSection();
 
     void loadDefaults();
     void applyPreset(int index);
@@ -105,6 +107,8 @@ private:
     QSpinBox *spinDataInterval = nullptr;
     QSpinBox *spinUiInterval   = nullptr;
     QComboBox *comboShapeMask  = nullptr;
+
+    QLineEdit *editMonitorCmd  = nullptr;   // 右键菜单「系统监视器」自定义命令
 
     QPushButton *btnRestore = nullptr;
     QPushButton *btnCancel  = nullptr;

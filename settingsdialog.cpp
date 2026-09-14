@@ -16,6 +16,8 @@
 #include <QGuiApplication>
 #include <QScreen>
 #include <QtGlobal>
+#include <QFileDialog>
+#include <QStandardPaths>
 
 // ---------------------------------------------------------------- 配置项定义
 namespace {
@@ -113,7 +115,7 @@ QSlider::handle:horizontal {
     background-color:#FFFFFF; border:2px solid #2E7DD8;
 }
 QFrame[role="line"] { background-color:#EEF1F4; max-height:1px; border:none; }
-QSpinBox, QDoubleSpinBox, QComboBox {
+QSpinBox, QDoubleSpinBox, QComboBox, QLineEdit {
     background-color:#FFFFFF; border:1px solid #DDE2E8; border-radius:4px;
     padding:4px 8px; color:#3A3F45; font-size:13px;
 }
@@ -142,8 +144,8 @@ QSpinBox::down-arrow, QDoubleSpinBox::down-arrow {
     border-left: 3.5px solid transparent; border-right: 3.5px solid transparent;
     border-top: 4.5px solid #6B7280;
 }
-QSpinBox:hover, QDoubleSpinBox:hover, QComboBox:hover { border-color:#B8C0CA; }
-QSpinBox:focus, QDoubleSpinBox:focus, QComboBox:focus { border-color:#2E7DD8; }
+QSpinBox:hover, QDoubleSpinBox:hover, QComboBox:hover, QLineEdit:hover { border-color:#B8C0CA; }
+QSpinBox:focus, QDoubleSpinBox:focus, QComboBox:focus, QLineEdit:focus { border-color:#2E7DD8; }
 QComboBox QAbstractItemView {
     background-color:#FFFFFF; border:1px solid #DDE2E8;
     selection-background-color:#E0EEFC; selection-color:#1B1F24;
@@ -229,6 +231,7 @@ void SettingsDialog::buildUi()
     root->addWidget(buildWindowSection());
     root->addWidget(buildChartSection());
     root->addWidget(buildAdvancedSection());
+    root->addWidget(buildMonitorSection());
     root->addStretch(1);
 
     scroll->setWidget(content);
@@ -483,6 +486,61 @@ QWidget *SettingsDialog::buildAdvancedSection()
     return box;
 }
 
+QWidget *SettingsDialog::buildMonitorSection()
+{
+    auto *box = new QWidget(this);
+    auto *v = new QVBoxLayout(box);
+    v->setContentsMargins(0, 0, 0, 0);
+    v->setSpacing(8);
+
+    auto *g = new QLabel(tr("系统监视器"), box);
+    g->setProperty("section", "group");
+    v->addWidget(g);
+
+    auto *row = new QHBoxLayout();
+    row->setSpacing(8);
+
+    editMonitorCmd = new QLineEdit(box);
+    editMonitorCmd->setObjectName(QStringLiteral("monitorCmd"));
+    editMonitorCmd->setPlaceholderText(tr("留空 = 自动按桌面环境检测"));
+    editMonitorCmd->setClearButtonEnabled(true);
+    editMonitorCmd->setToolTip(
+        tr("右键菜单「系统监视器」调用的命令。\n"
+           "只支持单条“程序 + 参数”，不支持 shell 运算符（; | & > < ` 等）。\n"
+           "可填绝对路径命令，也支持带参数，例如：\n"
+           "  C:\\Windows\\System32\\Taskmgr.exe\n"
+           "  /usr/bin/gnome-system-monitor\n"
+           "  open -a \"Activity Monitor\""));
+    auto *btnBrowse = new QPushButton(tr("选择程序"), box);
+    btnBrowse->setCursor(Qt::PointingHandCursor);
+    btnBrowse->setToolTip(tr("在文件系统里挑一个程序，自动填入命令框"));
+
+    row->addWidget(editMonitorCmd, 1);
+    row->addWidget(btnBrowse);
+    v->addLayout(row);
+
+    auto *hint = new QLabel(tr("* 留空时按系统自动挑选：macOS→活动监视器，Windows→任务管理器，"
+                               "Linux→按 GNOME/KDE/XFCE 等桌面自动匹配"), box);
+    hint->setProperty("role", "hint");
+    hint->setWordWrap(true);
+    v->addWidget(hint);
+
+    connect(btnBrowse, &QPushButton::clicked, this, [this]() {
+        const QString startDir =
+            QStandardPaths::writableLocation(QStandardPaths::ApplicationsLocation);
+        const QString selected = QFileDialog::getOpenFileName(
+            this,
+            tr("选择系统监视器程序"),
+            startDir.isEmpty() ? QString() : startDir,
+            tr("程序可执行文件 (*);;所有文件 (*)"));
+        if (selected.isEmpty())
+            return;
+        editMonitorCmd->setText(QDir::toNativeSeparators(selected));
+    });
+
+    return box;
+}
+
 // ---------------------------------------------------------------- 预制配色
 void SettingsDialog::buildPresetRow(QVBoxLayout *parentLayout)
 {
@@ -573,6 +631,7 @@ void SettingsDialog::loadFromConfig()
     spinUiInterval->setValue(qBound(100, cfg->getUpdateUIInterval(), spinUiInterval->maximum()));
     const int mask = cfg->getShapeMask();
     comboShapeMask->setCurrentIndex((mask >= 0 && mask <= 2) ? mask : 0);
+    editMonitorCmd->setText(cfg->getSystemMonitorCmd());
 }
 
 // 从内置默认值把【所有】设置项填回界面。
@@ -621,6 +680,9 @@ void SettingsDialog::loadDefaults()
     spinDataInterval->setValue(450);
     spinUiInterval->setValue(450);
     comboShapeMask->setCurrentIndex(0);   // 形状蒙版：自动
+
+    // 系统监视器
+    editMonitorCmd->clear();
 }
 
 // ---------------------------------------------------------------- 色块样式
@@ -685,6 +747,18 @@ void SettingsDialog::applyChanges()
     cfg->setUpdateDataInterval(spinDataInterval->value());
     cfg->setUpdateUIInterval(spinUiInterval->value());
     cfg->setShapeMask(comboShapeMask->currentIndex());
+
+    // 系统监视器命令：只允许“单条程序+参数”。含 shell 运算符的危险串不落盘，
+    // 并提示用户（其余设置照常保存）。
+    const QString monitorCmd = editMonitorCmd->text();
+    if (isSafeMonitorCommandLine(monitorCmd)) {
+        cfg->setSystemMonitorCmd(monitorCmd);
+    } else {
+        QMessageBox::warning(this, tr("系统监视器命令不安全"),
+            tr("「系统监视器」命令包含不允许的字符（; | & < > ` $() 或换行）。\n"
+               "该项只支持单条“程序 + 参数”，不支持 shell 运算符，\n"
+               "为避免执行危险指令，本次未保存该项，其余设置已生效。"));
+    }
 
     emit settingsApplied();
 }

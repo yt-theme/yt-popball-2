@@ -29,6 +29,29 @@
 #include <net/if_dl.h>
 #endif
 
+#if defined(Q_OS_WIN)
+// 必须在 <windows.h> 之前定义，才能启用 GetIfTable2 等较新的 API
+#ifndef WINVER
+#define WINVER 0x0601
+#endif
+#ifndef _WIN32_WINNT
+#define _WIN32_WINNT 0x0601
+#endif
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX                 // 避免 min/max 宏与 qMax 冲突
+#endif
+#include <windows.h>
+#include <iphlpapi.h>            // 网速：GetIfTable2 / FreeMibTable
+#include <netioapi.h>            // MIB_IF_ROW2 / IF 类型与状态常量
+#include <rpcdce.h>              // CoInitializeSecurity 的 RPC_C_AUTHN/IMP 常量
+#include <wbemidl.h>             // CPU 温度：WMI MSAcpi_ThermalZoneTemperature
+#include <oaidl.h>               // VARIANT
+#include <oleauto.h>
+#endif
+
 #include "struct_def.h"
 
 class SysInfo {

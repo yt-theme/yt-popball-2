@@ -12,6 +12,8 @@
 #       - Linux 包（.deb）      ：默认用 Docker 构建 x86_64 与 aarch64 两种架构；
 #                                 没有 Docker 或 --no-docker 时，退回本机架构的原生构建
 #                                 （仅单架构，无法跨架构）。
+#   • Windows 宿主（Git Bash / MSYS2 / Cygwin）：
+#       - Windows 包（zip）     ：本机编译 + windeployqt 内置 Qt 运行库，真实可分发。
 #
 # 容错：每个打包目标（mac / linux-amd64-deb / linux-arm64-deb / 其它）都在独立子 shell 中
 #       执行；任一目标失败都会被记录并跳过，不会中断其它目标；最后统一汇总并给出退出码。
@@ -113,6 +115,7 @@ ${C_B}popball2 打包脚本（平台感知 + Docker 多架构 + 容错）${C_R}
   appimage:x64 x86_64 AppImage（须在 x86_64 机器上构建；linuxdeploy 不能跨架构）
   appimage:arm arm64 AppImage（须在 arm64 机器上构建；linuxdeploy 不能跨架构）
   mac         macOS 的 .dmg 与 .zip（仅 macOS 宿主）
+  win         Windows 的 .zip（仅 Windows 宿主，windeployqt 内置 Qt 运行库）
   all         当前平台支持的全部
   all:x64     全部 x86_64 变体（deb:x64 + rpm:x64 + appimage:x64 + mac）
   all:arm     全部 arm64 变体  （deb:arm + rpm:arm + appimage:arm + mac）
@@ -120,6 +123,7 @@ ${C_B}popball2 打包脚本（平台感知 + Docker 多架构 + 容错）${C_R}
 缺省目标:
   macOS 宿主 : mac deb rpm appimage （mac 本机 + Linux deb/rpm/appimage 经 Docker）
   Linux 宿主 : deb rpm appimage     （x86_64 + arm64，默认经 Docker）
+  Windows 宿主: win                  （本机 zip，windeployqt 内置 Qt 运行库）
 
 选项:
       --version V    版本号           (默认: 读取 .pro 里的 VERSION)
@@ -176,7 +180,7 @@ while [ $# -gt 0 ]; do
         --no-docker)      NO_DOCKER=1 ;;
         --native-only)    NATIVE_ONLY=1 ;;
         --skip-platform-check) FORCE_CROSS=1 ;;
-        deb|rpm|appimage|mac|all) TARGETS+=("$1") ;;
+        deb|rpm|appimage|mac|win|all) TARGETS+=("$1") ;;
         appimage:x64|appimage-x64) TARGETS+=("appimage"); ARCH_OVERRIDE="amd64" ;;
         appimage:arm|appimage-arm) TARGETS+=("appimage"); ARCH_OVERRIDE="arm64" ;;
         rpm:x64|rpm-x64) TARGETS+=("rpm"); LINUX_ARCHES_ARG="amd64" ;;
@@ -189,10 +193,12 @@ while [ $# -gt 0 ]; do
 done
 
 # ---------------------------------------------------------------- 环境识别
+# Windows 的 Git Bash / MSYS / Cygwin 下 uname 会返回 MINGW64_NT / MSYS_NT / CYGWIN_NT
 case "$(uname -s)" in
-    Linux)  OS_KIND=linux ;;
-    Darwin) OS_KIND=macos ;;
-    *)      die "不支持的平台: $(uname -s)（本脚本仅支持 Linux 与 macOS）" ;;
+    Linux)     OS_KIND=linux ;;
+    Darwin)    OS_KIND=macos ;;
+    MINGW*|MSYS*|MSYS_NT*|CYGWIN*) OS_KIND=windows ;;
+    *)         die "不支持的平台: $(uname -s)（本脚本支持 Linux、macOS 与 Windows 的 Git Bash/MSYS2）" ;;
 esac
 
 # ---------------------------------------------------------------- 平台支持矩阵
@@ -201,6 +207,8 @@ esac
 host_supported_targets() {
     if [ "$OS_KIND" = macos ]; then
         printf '%s\n' mac deb rpm appimage
+    elif [ "$OS_KIND" = windows ]; then
+        printf '%s\n' win
     else
         printf '%s\n' deb rpm appimage
     fi
@@ -399,11 +407,17 @@ APP_BIN=""
 APP_BUNDLE=""
 
 build_app() {
+    # Windows 的 MinGW 用 mingw32-make；其它平台用 make
+    local make_tool="${MAKE:-make}"
+    if [ "$OS_KIND" = windows ] && command -v mingw32-make >/dev/null 2>&1; then
+        make_tool=mingw32-make
+    fi
+
     step "构建 $APP_NAME ${VERSION}（release）"
     mkdir -p "$BUILD_DIR"
     ( cd "$BUILD_DIR" && "$QMAKE" "$PRO_FILE" PREFIX="$PREFIX" >/dev/null )
     local log="$BUILD_DIR/pkg-build.log"
-    if ! ( cd "$BUILD_DIR" && make -j"$JOBS" ) >"$log" 2>&1; then
+    if ! ( cd "$BUILD_DIR" && "$make_tool" -j"$JOBS" ) >"$log" 2>&1; then
         tail -40 "$log" >&2
         die "编译失败，完整日志: $log"
     fi
@@ -411,6 +425,19 @@ build_app() {
 }
 
 locate_app() {
+    # Windows（MSVC 会放在 release/ 子目录；MinGW 就在根目录）
+    if [ "$OS_KIND" = windows ]; then
+        if [ -x "$BUILD_DIR/$APP_NAME.exe" ]; then
+            APP_BIN="$BUILD_DIR/$APP_NAME.exe"
+        elif [ -x "$BUILD_DIR/release/$APP_NAME.exe" ]; then
+            APP_BIN="$BUILD_DIR/release/$APP_NAME.exe"
+        elif [ -x "$BUILD_DIR/debug/$APP_NAME.exe" ]; then
+            APP_BIN="$BUILD_DIR/debug/$APP_NAME.exe"
+        else
+            die "找不到构建产物（先去掉 --no-build 跑一次）"
+        fi
+        return
+    fi
     if [ -x "$BUILD_DIR/$APP_NAME.app/Contents/MacOS/$APP_NAME" ]; then
         APP_BUNDLE="$BUILD_DIR/$APP_NAME.app"
         APP_BIN="$APP_BUNDLE/Contents/MacOS/$APP_NAME"
@@ -766,6 +793,70 @@ pkg_mac() {
     fi
 }
 
+# ================================================================== Windows
+pkg_windows() {
+    step "打包 Windows（windeployqt + zip）"
+    [ -n "$APP_BIN" ] && [ -f "$APP_BIN" ] || { die "找不到构建产物（先构建）"; }
+
+    local bundle="$WORK_DIR/$APP_NAME"
+    rm -rf "$bundle"; mkdir -p "$bundle"
+    cp -f "$APP_BIN" "$bundle/$(basename "$APP_BIN")"
+    if [ -f "$ICON_PNG" ]; then
+        cp -f "$ICON_PNG" "$bundle/$APP_NAME.png"
+    fi
+
+    # windeployqt：把 Qt 运行库/DLL/插件打进目录，产物脱离开发机也能跑
+    local wdq=""
+    if wdq="$(command -v windeployqt)"; then
+        info "内置 Qt 运行库（windeployqt）..."
+        "$wdq" --no-translations --release "$bundle/$(basename "$APP_BIN")" \
+                >"$WORK_DIR/windeployqt.log" 2>&1 \
+            && ok "Qt 依赖已内置" \
+            || warn "windeployqt 有警告（日志: $WORK_DIR/windeployqt.log）"
+    else
+        warn "缺少 windeployqt（请把 Qt 的 bin 目录加入 PATH），产物将依赖系统已装的 Qt"
+    fi
+
+    # 附带简体中文翻译（应用已内嵌 Qt 翻译，这里再补一份 qtbase 的翻译给 Qt 控件用）
+    if [ -n "$QMAKE" ]; then
+        local qtdir="$(dirname "$QMAKE")/../translations"
+        if [ -d "$qtdir" ]; then
+            mkdir -p "$bundle/translations"
+            cp -f "$qtdir"/qtbase_zh_CN.qm "$bundle/translations/" 2>/dev/null || true
+        fi
+    fi
+
+    local winarch="$MACH"
+    case "$MACH" in
+        x86_64|amd64) winarch=x86_64 ;;
+        aarch64|arm64) winarch=arm64 ;;
+    esac
+    local zname="${APP_NAME}-${VERSION}-windows-${winarch}.zip"
+
+    # 打包 zip：优先用真实 zip；Windows 上用 PowerShell Compress-Archive（Git Bash 常无 zip）
+    local w_out="$OUT_DIR"
+    command -v cygpath >/dev/null 2>&1 \
+        && w_out="$(cygpath -w "$OUT_DIR" 2>/dev/null || echo "$OUT_DIR")"
+    rm -f "$OUT_DIR/$zname"
+    if [ "$OS_KIND" = windows ] && command -v powershell >/dev/null 2>&1; then
+        ( cd "$WORK_DIR" \
+            && powershell -NoProfile -Command \
+                "Compress-Archive -Path '$APP_NAME' -DestinationPath '$w_out\\$zname' -Force" )
+    elif command -v zip >/dev/null 2>&1; then
+        ( cd "$WORK_DIR" && zip -r -q "$OUT_DIR/$zname" "$APP_NAME" )
+    else
+        warn "缺少 zip 且无法用 PowerShell 压缩，跳过 Windows 包生成"
+        return 1
+    fi
+
+    if [ -f "$OUT_DIR/$zname" ]; then
+        ok "win zip -> $OUT_DIR/$zname"
+    else
+        warn "未能生成 $zname"
+        return 1
+    fi
+}
+
 # ---------------------------------------------------------------- 各 stage（均可能失败，由 run_stage 捕获）
 stage_mac() {
     find_qmake || { err "找不到 qmake6，请先运行 ./run.sh 安装开发环境"; return 1; }
@@ -777,6 +868,18 @@ stage_mac() {
     locate_app
     info "可执行文件: $APP_BIN"
     pkg_mac
+}
+
+stage_win() {
+    find_qmake || { err "找不到 qmake6，请先安装 Qt 并把其 bin 目录加入 PATH（MinGW 或 MSVC 均可）"; return 1; }
+    if [ -z "$JOBS" ]; then
+        if command -v nproc >/dev/null 2>&1; then JOBS="$(nproc)"; else JOBS=4; fi
+    fi
+    BUILD_DIR="${POPBALL2_BUILD_DIR:-$PROJECT_DIR/build-pkg}"
+    if [ "$DO_BUILD" -eq 1 ]; then build_app; fi
+    locate_app
+    info "可执行文件: $APP_BIN"
+    pkg_windows
 }
 
 stage_native_linux() {
@@ -1092,6 +1195,15 @@ if in_list mac "${TARGETS[@]}"; then
         run_stage "macOS 包 (dmg + zip)" stage_mac
     else
         warn "mac 包只能在 macOS 上构建（当前 $OS_KIND），已跳过 mac"
+    fi
+fi
+
+# ---------- Windows 包（仅 Windows 宿主）----------
+if in_list win "${TARGETS[@]}"; then
+    if [ "$OS_KIND" = windows ]; then
+        run_stage "Windows 包 (zip)" stage_win
+    else
+        warn "win 包只能在 Windows（Git Bash / MSYS2 / Cygwin）上构建（当前 $OS_KIND），已跳过 win"
     fi
 fi
 

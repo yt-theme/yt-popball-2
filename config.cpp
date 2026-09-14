@@ -87,6 +87,9 @@ void Config::readConfig()
 
     // [window]
     this->shape_mask            = this->settingsObj->value("/window/shape_mask").toInt();
+
+    // [system_monitor]
+    this->system_monitor_cmd    = this->settingsObj->value("/system_monitor/cmd").toString().trimmed();
 }
 
 
@@ -251,6 +254,14 @@ void Config::setShapeMask(qint32 val)
     this->shape_mask = val;
 }
 
+// [system_monitor]
+void Config::setSystemMonitorCmd(QString val)
+{
+    val = val.trimmed();   // 前后空白去掉，避免误判成非空命令
+    this->settingsObj->setValue("/system_monitor/cmd", val);
+    this->system_monitor_cmd = val;
+}
+
 /** *********************************************************
                            get
 ********************************************************* */
@@ -378,6 +389,12 @@ qint8 Config::getNetSpeedShow()
 qint32 Config::getShapeMask()
 {
     return this->shape_mask;
+}
+
+// [system_monitor]
+QString Config::getSystemMonitorCmd()
+{
+    return this->system_monitor_cmd;
 }
 
 

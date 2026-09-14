@@ -7,6 +7,7 @@
     "pack": "node pack.js",
     "build": "node pack.js",
     "mac": "node pack.js mac",
+    "win": "node pack.js win",
     "deb": "node pack.js deb",
     "deb:x64": "node pack.js deb --linux-arch amd64",
     "deb:arm": "node pack.js deb --linux-arch arm64",

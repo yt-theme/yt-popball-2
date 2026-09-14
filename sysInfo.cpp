@@ -471,6 +471,111 @@ bool smcReadCpuTemperature(io_connect_t conn, const QList<quint32> &keys, double
 }
 #endif // Q_OS_MACOS
 
+#if defined(Q_OS_WIN)
+// ---------------------------------------------------------------------------------------
+//  Windows：CPU 频率 / 温度
+//
+//  * 频率：Windows 没有「用户态读实时频率」的公开 API，注册表里的 "~MHz" 是标称主频，
+//          作为显示值足够；拿不到则标记不可用（UI 自动隐藏）。
+//  * 温度：同样没有公开的「读 CPU 核心温度」API。常见的做法是查 WMI 的 ACPI 热区
+//          MSAcpi_ThermalZoneTemperature（命名空间 root\WMI），它给的是热区温度（十分
+//          之一开尔文），很多机器上是整机/主板温度而非核心温度，且虚拟机通常没有。
+//          因此这里只把读数当温度来源：能读到就给，读不到就标记不可用，UI 自动隐藏，
+//          绝不把假数据当成 CPU 温度。
+// ---------------------------------------------------------------------------------------
+
+bool probeWinCpuFreqMHz(double *outMHz)
+{
+    HKEY key = nullptr;
+    if (RegOpenKeyExW(HKEY_LOCAL_MACHINE,
+                      L"HARDWARE\\DESCRIPTION\\System\\CentralProcessor\\0",
+                      0, KEY_READ, &key) != ERROR_SUCCESS)
+        return false;
+
+    DWORD val = 0, type = 0, sz = sizeof(val);
+    const LONG r = RegQueryValueExW(key, L"~MHz", nullptr, &type,
+                                    reinterpret_cast<LPBYTE>(&val), &sz);
+    RegCloseKey(key);
+
+    if (r != ERROR_SUCCESS || val == 0)
+        return false;
+    *outMHz = static_cast<double>(val);
+    return true;
+}
+
+bool probeWinCpuTempCelsius(double *outC)
+{
+    *outC = -1.0;
+    HRESULT hr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+    if (hr == RPC_E_CHANGED_MODE)
+        hr = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+    const bool needUninit = (hr == S_OK || hr == S_FALSE);
+    if (FAILED(hr))
+        return false;
+
+    // 本地 WMI 简单查询通常无需严格安全上下文；失败也无妨，继续查询。
+    CoInitializeSecurity(nullptr, -1, nullptr, nullptr,
+                         RPC_C_AUTHN_LEVEL_DEFAULT, RPC_C_IMP_LEVEL_IMPERSONATE,
+                         nullptr, EOAC_NONE, nullptr);
+
+    IWbemLocator *wmiLocator = nullptr;
+    const HRESULT hrCo = CoCreateInstance(
+        CLSID_WbemLocator, nullptr, CLSCTX_INPROC_SERVER, IID_IWbemLocator,
+        reinterpret_cast<void **>(&wmiLocator));
+    if (FAILED(hrCo)) {
+        if (needUninit) CoUninitialize();
+        return false;
+    }
+
+    bool ok = false;
+    double best = -1.0;
+
+    BSTR ns = SysAllocString(L"root\\WMI");
+    IWbemServices *svc = nullptr;
+    if (ns && wmiLocator->ConnectServer(ns, nullptr, nullptr, nullptr, 0,
+                                        nullptr, nullptr, &svc) == WBEM_S_NO_ERROR) {
+        BSTR lang  = SysAllocString(L"WQL");
+        BSTR query = SysAllocString(
+            L"SELECT CurrentTemperature FROM MSAcpi_ThermalZoneTemperature");
+        IEnumWbemClassObject *enumObj = nullptr;
+        if (lang && query
+            && svc->ExecQuery(lang, query, WBEM_FLAG_FORWARD_ONLY, nullptr,
+                              &enumObj) == WBEM_S_NO_ERROR) {
+            IWbemClassObject *obj = nullptr;
+            ULONG got = 0;
+            while (enumObj->Next(WBEM_INFINITE, 1, &obj, &got) == WBEM_S_NO_ERROR && got) {
+                VARIANT var;
+                VariantInit(&var);
+                if (obj->Get(L"CurrentTemperature", 0, &var, nullptr, nullptr) == WBEM_S_NO_ERROR) {
+                    LONG raw = 0;
+                    if (var.vt == VT_UI4)      raw = static_cast<LONG>(var.ulVal);
+                    else if (var.vt == VT_I4)  raw = var.lVal;
+                    if (raw > 0) {
+                        const double c = static_cast<double>(raw) / 10.0 - 273.15;
+                        if (c > 0.0 && c < 120.0 && c > best) best = c;
+                    }
+                }
+                VariantClear(&var);
+                obj->Release();
+                obj = nullptr;
+                got = 0;
+            }
+            enumObj->Release();
+        }
+        if (lang)  SysFreeString(lang);
+        if (query) SysFreeString(query);
+        svc->Release();
+    }
+    if (ns) SysFreeString(ns);
+
+    wmiLocator->Release();
+    if (needUninit) CoUninitialize();
+
+    if (best > 0.0) { *outC = best; ok = true; }
+    return ok;
+}
+#endif // Q_OS_WIN
+
 } // namespace
 
 /* =====================================================================================
@@ -837,6 +942,121 @@ void SysInfo::updateSysinfo()
 }
 
 #endif // Q_OS_MACOS
+
+/* =====================================================================================
+ *                                  Windows 平台实现
+ *
+ *    - 内存 / 页面文件(swap) : GlobalMemoryStatusEx（KB，与 Linux/macOS 口径一致）
+ *    - CPU 占用             : GetSystemTimes 的 tick 差值
+ *    - CPU 频率             : 注册表 ~MHz（标称主频）
+ *    - CPU 温度             : WMI MSAcpi_ThermalZoneTemperature（ACPI 热区，启动时探测一次）
+ *    - 网速                 : GetIfTable2 累计字节的差值
+ * ===================================================================================== */
+#if defined(Q_OS_WIN)
+
+void SysInfo::checkTemperatorFilePath()
+{
+    this->cpuTemperatureOk = false;
+    double c = 0.0;
+    if (probeWinCpuTempCelsius(&c)) {
+        this->cpuTemperature   = c;
+        this->cpuTemperatureOk = true;
+    } else {
+        this->cpuTemperature   = 0.0;
+    }
+    qDebug() << "[SysInfo] arch=" << QSysInfo::currentCpuArchitecture()
+             << (this->cpuTemperatureOk
+                     ? QString("ACPI 热区温度: %1 度").arg(this->cpuTemperature)
+                     : QString("未读到 ACPI 热区温度（常发生于虚拟机），将不显示温度"));
+}
+
+void SysInfo::updateSysinfo()
+{
+    // ---------------------------------------------------------------- 内存 / 页面文件
+    MEMORYSTATUSEX ms;
+    ms.dwLength = sizeof(ms);
+    if (GlobalMemoryStatusEx(&ms)) {
+        memoryInfo.mem_total     = ms.ullTotalPhys / 1024;          // KB
+        memoryInfo.mem_available = ms.ullAvailPhys / 1024;
+        memoryInfo.mem_free      = ms.ullAvailPhys / 1024;
+        memoryInfo.mem_used      = (ms.ullTotalPhys - ms.ullAvailPhys) / 1024;
+        // Windows 没有独立 swap，用「页面文件(pagefile)」体积作为交换分区口径
+        memoryInfo.swap_total    = ms.ullTotalPageFile / 1024;
+        memoryInfo.swap_free     = ms.ullAvailPageFile / 1024;
+        memoryInfo.swap_used     = (ms.ullTotalPageFile - ms.ullAvailPageFile) / 1024;
+        // Windows 不把 buffers/缓存按用户程序口径暴露，图表用不到，置 0
+        memoryInfo.cached        = 0;
+        memoryInfo.buffers       = 0;
+        this->memOk  = (memoryInfo.mem_total  > 0);
+        this->swapOk = (memoryInfo.swap_total > 0);
+    } else {
+        this->memOk = this->swapOk = false;
+    }
+
+    // ---------------------------------------------------------------------- CPU 占用
+    // GetSystemTimes：kernel 时间已包含 idle 线程，total = kernel + user、
+    // 空闲部分 = idle，占用 = (total - idle) / total。
+    FILETIME ftIdle, ftKernel, ftUser;
+    if (GetSystemTimes(&ftIdle, &ftKernel, &ftUser)) {
+        const double idle   = double((quint64(ftIdle.dwHighDateTime)  << 32) | ftIdle.dwLowDateTime);
+        const double kernel = double((quint64(ftKernel.dwHighDateTime) << 32) | ftKernel.dwLowDateTime);
+        const double user   = double((quint64(ftUser.dwHighDateTime)  << 32) | ftUser.dwLowDateTime);
+        const double total  = kernel + user;
+
+        if (this->cpuUsageHasPrev && total > this->cpuUsageTotalLast) {
+            const double dTotal = total - this->cpuUsageTotalLast;
+            const double dIdle  = idle  - this->cpuUsageIdleLast;
+            double usage = (1.0 - dIdle / dTotal) * 100.0;
+            if (usage < 0.0)   usage = 0.0;
+            if (usage > 100.0) usage = 100.0;
+            this->cpuUsage = usage;
+        }
+        this->cpuUsageTotalLast = total;
+        this->cpuUsageIdleLast  = idle;
+        this->cpuUsageHasPrev   = true;
+    }
+
+    // ---------------------------------------------------------------------- CPU 频率
+    double mhz = 0.0;
+    if (probeWinCpuFreqMHz(&mhz)) {
+        this->cpuFreq   = mhz;
+        this->cpuFreqOk = true;
+    } else {
+        this->cpuFreq   = 0.0;
+        this->cpuFreqOk = false;
+    }
+
+    // ---------------------------------------------------------------------- 网速
+    MIB_IF_TABLE2 *table = nullptr;
+    if (GetIfTable2(&table) == NO_ERROR && table != nullptr) {
+        quint64 rx = 0;
+        quint64 tx = 0;
+        for (ULONG i = 0; i < table->NumEntries; ++i) {
+            const MIB_IF_ROW2 &r = table->Table[i];
+            if (r.OperStatus != IfOperStatusUp)      continue;   // 只统计已连接的接口
+            if (r.Type == IF_TYPE_SOFTWARE_LOOPBACK) continue;   // 回环
+            if (r.Type == IF_TYPE_TUNNEL)            continue;   // 隧道（IPv6 转换等）
+            // 常见虚拟/桥接网卡（VirtualBox / VMware / Hyper-V / WSL），避免重复计数
+            const QString alias = QString::fromWCharArray(r.Alias);
+            if (alias.startsWith(QLatin1String("vEthernet"))
+                || alias.contains(QLatin1String("Virtual"))
+                || alias.startsWith(QLatin1String("Local Area Connection*")))
+                continue;
+            rx += quint64(r.InOctets);
+            tx += quint64(r.OutOctets);
+        }
+        FreeMibTable(table);
+
+        this->receive  = (rx >= this->receive_last)  ? (rx - this->receive_last)  : 0;
+        this->transmit = (tx >= this->transmit_last) ? (tx - this->transmit_last) : 0;
+        this->receive_last  = rx;
+        this->transmit_last = tx;
+    }
+
+    this->lastUpdateTime = QDateTime::currentMSecsSinceEpoch();
+}
+
+#endif // Q_OS_WIN
 
 /* =====================================================================================
  *                                       get
