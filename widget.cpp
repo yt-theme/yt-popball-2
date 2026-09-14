@@ -57,6 +57,11 @@ QString formatNetSpeedField(double bytesPerSec)
     return s;
 }
 
+// X11 混成状态探测频率：每 N 次 updateUITimer 触发查一次。
+// update_ui_interval 默认 450ms，N=10 ≈ 每 4.5s 查一次 —— 不额外占一个定时器、
+// 也不频繁打扰 X 服务器；用户切换混成后能在几秒内自动去/回黑框。
+constexpr int kCompositingCheckEveryUiTicks = 10;
+
 #if defined(POPBALL_HAVE_X11)
 // X11：检测桌面上有没有「混成管理器(compositing manager)」在跑。
 // 没有混成时，WA_TranslucentBackground 不会被真正混合，小球四周就会露出一块
@@ -319,18 +324,40 @@ void Widget::applyDesktopBehavior()
     // ------------------------------------------------ X11 (Xorg)
     // 若桌面没开混成(compositing)，半透明不会被混合，窗口四角会露出黑色矩形。
     // 这时退回「圆形形状蒙版」：直接把窗口裁成圆的，矩形四角根本不存在。
+    //
+    // 混成是"会变的"——用户可能在运行中开关 compositor。这里只做首次判断；
+    // 之后的重复检测搭在 updateUITimer 上（每 kCompositingCheckEveryUiTicks 次
+    // UI 刷新查一次，见 onTimerIntervalForUpdateUI），不额外占一个定时器。
+    Q_UNUSED(isX11);
+    this->reevaluateShapeMask();
+}
+
+// 重新评估"是否需要圆形蒙版"，并在结果发生变化时才应用。
+// 只有「自动」模式跟随桌面混成；「强制开/关」时结果恒定（自动判断不准时用来手动兜底）。
+void Widget::reevaluateShapeMask()
+{
+    // 只有 Xorg 需要：Wayland / macOS 半透明恒可用，从不加蒙版。
+    // 改由 updateUITimer 周期调用后，这里必须自带平台判断，否则会在别的平台上误加蒙版。
+    if (!QGuiApplication::platformName().startsWith(QLatin1String("xcb")))
+        return;
+
     bool needMask = false;
     switch (config->getShapeMask())
     {
-    case 1:   needMask = true;  break;      // 强制开启（自动判断不准时手动打开）
+    case 1:   needMask = true;  break;      // 强制开启
     case 2:   needMask = false; break;      // 强制关闭
-    default:                                // 自动
+    default:                                // 自动：跟随桌面混成
 #if defined(POPBALL_HAVE_X11)
         needMask = x11CompositingMissing();
 #endif
         break;
     }
-    Q_UNUSED(isX11);
+
+    // 状态没变就别重复 setMask/clearMask —— 那会触发多余的窗口系统调用
+    if (this->shapeMaskInitialized && needMask == this->shapeMaskApplied)
+        return;
+    this->shapeMaskInitialized = true;
+    this->shapeMaskApplied     = needMask;
     this->applyShapeMask(needMask);
 }
 
@@ -376,6 +403,14 @@ void Widget::onTimerIntervalForUpdateData()
 
 void Widget::onTimerIntervalForUpdateUI()
 {
+    // 桌面混成状态不必每次 UI 刷新都查（XGetSelectionOwner 是一次 X 往返）。
+    // 每 kCompositingCheckEveryUiTicks 次刷新查一次即可自适应（默认 10 × 450ms ≈ 4.5s）。
+    // reevaluateShapeMask() 内部已做平台判断，非 Xorg 平台会直接返回，零副作用。
+    if (++this->compositingTickCounter >= kCompositingCheckEveryUiTicks)
+    {
+        this->compositingTickCounter = 0;
+        this->reevaluateShapeMask();
+    }
     this->update();
 }
 

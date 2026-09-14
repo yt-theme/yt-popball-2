@@ -34,6 +34,11 @@ private:
     QGraphicsDropShadowEffect   *winShadow       = nullptr;
     QTimer                      *updateDataTimer = nullptr;
     QTimer                      *updateUITimer   = nullptr;
+    // X11：混成(compositing)状态探测搭在 updateUITimer 上，每 N 次 UI 刷新查一次
+    // （独立定时器已移除，避免多一个常驻唤醒；N 见 widget.cpp 的 kCompositingCheckEveryUiTicks）
+    int                          compositingTickCounter = 0;
+    bool                         shapeMaskApplied     = false;  // 最近一次应用的是否为"开蒙版"
+    bool                         shapeMaskInitialized = false;  // 是否已应用过（避免首帧重复）
     bool                        isMousePressed = false;
     QPoint                      curWindowPos;
 
@@ -67,6 +72,8 @@ public:
     void applyDesktopBehavior();
     // 圆形形状蒙版：桌面没开混成时，用它把窗口裁成圆的，避免露出黑色矩形
     void applyShapeMask(bool on);
+    // X11：重新评估"是否需要圆形蒙版"，结果变化时才应用（桌面混成开/关时自动调用）
+    void reevaluateShapeMask();
 
     // 构建右键菜单（在构造函数里调用一次）
     void buildContextMenu();

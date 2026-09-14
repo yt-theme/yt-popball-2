@@ -13,6 +13,8 @@
 #include <QIcon>
 #include <QPixmap>
 #include <QMessageBox>
+#include <QGuiApplication>
+#include <QScreen>
 #include <QtGlobal>
 
 // ---------------------------------------------------------------- 配置项定义

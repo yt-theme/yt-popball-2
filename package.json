@@ -1,0 +1,23 @@
+{
+  "name": "yt-popball-2",
+  "version": "1.0.0",
+  "private": true,
+  "description": "PopBall 系统监控球 —— 打包入口（Node 友好封装，实际构建由 package.sh 完成）",
+  "scripts": {
+    "pack": "node pack.js",
+    "build": "node pack.js",
+    "mac": "node pack.js mac",
+    "deb": "node pack.js deb",
+    "deb:x64": "node pack.js deb --linux-arch amd64",
+    "deb:arm": "node pack.js deb --linux-arch arm64",
+    "rpm": "node pack.js rpm",
+    "appimage": "node pack.js appimage",
+    "all": "node pack.js all"
+  },
+  "bin": {
+    "popball-pack": "pack.js"
+  },
+  "engines": {
+    "node": ">=14"
+  }
+}

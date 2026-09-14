@@ -36,21 +36,24 @@ qmake6 ../popball2.pro && make -j$(nproc)
 
 ```bash
 ./package.sh                 # Linux: deb+rpm+AppImage   macOS: dmg+zip
+./package.sh appimage        # 通用 AppImage（macOS 上经 Docker 构建，目标架构=本机架构）
 ./package.sh deb rpm         # 只打指定格式
 ./package.sh --version 1.2.0 # 指定版本号（默认读 .pro 里的 VERSION）
 ./package.sh --help
 ```
 
 在 Linux 机器上跑一次 `./package.sh` 就得到 deb / rpm / AppImage 三个安装包；
-在 macOS 上跑一次得到 dmg / zip。**同一份脚本两平台通用**，发布流程：
-Linux 上打一次 → macOS 上打一次 → 4 类安装包齐了。（跨平台无法交叉编译，
-rpm 需要装 `rpmbuild`，AppImage 首次运行会自动下载工具。）
+在 macOS 上跑一次得到 dmg / zip，**再加 `appimage` 目标即可经 Docker 额外产出 AppImage**。
+**同一份脚本两平台通用**，发布流程：Linux 上打一次 → macOS 上打一次 → 各格式齐活。
+（跨平台无法交叉编译；rpm 需要 `rpmbuild`；AppImage 用 `tools/` 里预置的
+linuxdeploy / appimagetool / runtime，缺失时才联网下载。注意 AppImage 只能在
+「目标架构 == 本机架构」下构建——linuxdeploy 不能跨架构。）
 
 | 目标 | 产物 | 说明 |
 |---|---|---|
 | `deb` | `popball2_<版本>_<架构>.deb` | Debian / Ubuntu |
 | `rpm` | `popball2-<版本>-1.<架构>.rpm` | Fedora / RHEL / openSUSE（需要 `rpmbuild`） |
-| `appimage` | `popball2-<版本>-<架构>.AppImage` | 通用 Linux（自动下载 linuxdeploy / appimagetool） |
+| `appimage` | `popball2-<版本>-<架构>.AppImage` | 通用 Linux，Qt 已内置；Linux 宿主原生构建，macOS 宿主经 Docker 构建 |
 | `mac` | `popball2-<版本>-macos-<架构>.dmg` / `.zip` | 已用 macdeployqt 内置 Qt，可独立分发 |
 
 产物统一输出到 `dist/`。macOS 包会做临时（ad-hoc）签名；正式分发请换成自己的开发者证书。
