@@ -184,28 +184,11 @@ void Widget::setPosition()
     this->setGeometry(config->getX(), config->getY(), config->getWidth(), config->getHeight());
 }
 
-void Widget::setUiFrame()
+// 屏幕边界限制与贴边吸附（setUiFrame 初始化时、以及每次拖动松手时调用）。
+// 只调整 shape 标记和几何位置，不碰窗口 flags / 半透明属性，
+// 因此可以安全地在窗口已显示后反复调用。
+void Widget::applyEdgeSnap()
 {
-    // ###################### 窗口类型 ######################
-    // 无边框 + 始终置顶 + 工具窗口（不占任务栏、不进 Dock / Cmd-Tab），
-    // 效果就类似 360 悬浮球。
-    //
-    // 注意：这里刻意不再使用 Qt::BypassWindowManagerHint。
-    // 它会让窗口完全绕过窗口管理器：在 X11 上合成器因此不接管该窗口，
-    // 半透明区域直接漏出黑色矩形（"关掉混成后小球旁出现黑框"的根因之一）；
-    // 在 Wayland 上它也没有意义。改用标准的 无边框 + 置顶 组合即可。
-    Qt::WindowFlags flags = Qt::FramelessWindowHint | Qt::WindowStaysOnTopHint | Qt::Tool;
-#if defined(Q_OS_MACOS)
-    // macOS：不接收键盘焦点，点小球不会把当前正在用的应用切走
-    flags |= Qt::WindowDoesNotAcceptFocus;
-#endif
-    this->setWindowFlags(flags);
-
-    // 半透明背景：必须在窗口真正创建之前设置
-    this->setAttribute(Qt::WA_TranslucentBackground);
-    this->setFixedSize(config->getWidth(), config->getHeight());
-    this->setWindowOpacity(config->getOpacity());
-
     QRect primaryScreenRect = QGuiApplication::primaryScreen()->geometry();
 
     // set default shape
@@ -241,6 +224,41 @@ void Widget::setUiFrame()
     }
     // set geometry
     this->setGeometry(this->config->getX(), this->config->getY(), this->config->getWidth(), this->config->getHeight());
+}
+
+void Widget::setUiFrame()
+{
+    // ###################### 窗口类型 ######################
+    // 无边框 + 始终置顶 + 工具窗口（不占任务栏、不进 Dock / Cmd-Tab），
+    // 效果就类似 360 悬浮球。
+    //
+    // 注意：这里刻意不再使用 Qt::BypassWindowManagerHint。
+    // 它会让窗口完全绕过窗口管理器：在 X11 上合成器因此不接管该窗口，
+    // 半透明区域直接漏出黑色矩形（"关掉混成后小球旁出现黑框"的根因之一）；
+    // 在 Wayland 上它也没有意义。改用标准的 无边框 + 置顶 组合即可。
+    // 窗口 flags 与半透明属性恒定不变，且必须在原生窗口创建之前设置。
+    // 切忌对已显示的窗口重复调用：setWindowFlags()/setAttribute(WA_TranslucentBackground)
+    // 会触发平台层重建窗口 —— X11 上 KWin 会解除对窗口的管理（WM_STATE 丢失），
+    // 重建后的半透明窗口不再被合成，表现为小球整窗透明、从桌面上"消失"。
+    if (!this->windowFrameInitialized)
+    {
+        Qt::WindowFlags flags = Qt::FramelessWindowHint | Qt::WindowStaysOnTopHint | Qt::Tool;
+#if defined(Q_OS_MACOS)
+        // macOS：不接收键盘焦点，点小球不会把当前正在用的应用切走
+        flags |= Qt::WindowDoesNotAcceptFocus;
+#endif
+        this->setWindowFlags(flags);
+
+        // 半透明背景：必须在窗口真正创建之前设置
+        this->setAttribute(Qt::WA_TranslucentBackground);
+        this->windowFrameInitialized = true;
+    }
+
+    this->setFixedSize(config->getWidth(), config->getHeight());
+    this->setWindowOpacity(config->getOpacity());
+
+    // 屏幕边界限制 / 贴边吸附
+    this->applyEdgeSnap();
 
 
     // shadow 投影
@@ -441,8 +459,10 @@ void Widget::mouseReleaseEvent(QMouseEvent *event)
     this->config->setX(this->frameGeometry().x());
     this->config->setY(this->frameGeometry().y());
 
-    // reset ui frame
-    this->setUiFrame();
+    // 只做边界限制/贴边吸附。
+    // 不能调 setUiFrame()：它会重设窗口 flags 与半透明属性，
+    // 触发原生窗口重建，KWin 解除管理后小球会整窗透明消失。
+    this->applyEdgeSnap();
 
     Q_UNUSED(event);
     this->isMousePressed = false;
