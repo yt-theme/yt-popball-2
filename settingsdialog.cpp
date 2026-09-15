@@ -229,6 +229,7 @@ void SettingsDialog::buildUi()
     root->addWidget(buildColorSection());
     root->addWidget(buildShowSection());
     root->addWidget(buildWindowSection());
+    root->addWidget(buildAsideSection());
     root->addWidget(buildChartSection());
     root->addWidget(buildAdvancedSection());
     root->addWidget(buildMonitorSection());
@@ -403,6 +404,88 @@ QWidget *SettingsDialog::buildWindowSection()
     auto *slHint = new QLabel(tr("* 阴影长度设为 0 表示不显示阴影"), box);
     slHint->setProperty("role", "hint");
     v->addWidget(slHint);
+
+    return box;
+}
+
+// 贴边竖条：拖到屏幕左右边缘后吸附成的圆角竖条，用窄柱图显示各指标
+QWidget *SettingsDialog::buildAsideSection()
+{
+    auto *box = new QWidget(this);
+    auto *v = new QVBoxLayout(box);
+    v->setContentsMargins(0, 0, 0, 0);
+    v->setSpacing(8);
+
+    auto *g = new QLabel(tr("贴边竖条"), box);
+    g->setProperty("section", "group");
+    v->addWidget(g);
+
+    chkSnapEdge = new QCheckBox(tr("拖到屏幕左右边缘时吸附成竖条"), box);
+    chkSnapEdge->setToolTip(tr("开启后把小球拖到屏幕左/右边缘，会吸附成一根圆角竖条，\n"
+                               "条内用窄柱图显示 CPU 占用 / 内存 / 交换分区。\n"
+                               "把竖条往屏幕里侧拖开、或单击竖条，即可变回小球。"));
+    v->addWidget(chkSnapEdge);
+
+    // 快捷档位：一次把"宽度 + 圆角"调到位，点完立即生效（可对着竖条看效果）
+    auto *pre = new QHBoxLayout();
+    pre->setSpacing(8);
+    auto *preLab = new QLabel(tr("快捷宽度"), box);
+    preLab->setMinimumWidth(58);
+    pre->addWidget(preLab);
+    struct SizePreset { const char *text; int width; int radius; };
+    static const SizePreset kSizePresets[] = {
+        { "窄 20",   20,  6 },
+        { "标准 30", 30,  8 },
+        { "宽 36",   36, 10 },
+    };
+    for (const SizePreset &p : kSizePresets) {
+        auto *b = new QPushButton(QString::fromUtf8(p.text), box);
+        b->setProperty("role", "preset");
+        b->setCursor(Qt::PointingHandCursor);
+        b->setToolTip(tr("竖条宽 %1 px、圆角 %2 px，点击立即生效").arg(p.width).arg(p.radius));
+        connect(b, &QPushButton::clicked, this, [this, p]() {
+            spinAsideWidth->setValue(p.width);
+            spinAsideRadius->setValue(p.radius);
+            applyChanges();     // 与预制配色一致：点一下直接应用，方便边看边调
+        });
+        pre->addWidget(b);
+    }
+    pre->addStretch(1);
+    v->addLayout(pre);
+
+    auto *sz = new QHBoxLayout();
+    sz->setSpacing(10);
+    sz->addWidget(new QLabel(tr("竖条宽×高"), box));
+    spinAsideWidth  = new QSpinBox(box); spinAsideWidth->setObjectName("asideWidth");
+    spinAsideWidth->setRange(14, 200);   spinAsideWidth->setSingleStep(2);
+    spinAsideWidth->setSuffix(tr(" px"));
+    spinAsideWidth->setToolTip(tr("贴边竖条的宽度。越窄越不挡视线，但要放得下 3 根窄柱，\n"
+                                  "建议 20 ~ 40 px"));
+    spinAsideHeight = new QSpinBox(box); spinAsideHeight->setObjectName("asideHeight");
+    spinAsideHeight->setRange(40, 800);  spinAsideHeight->setSingleStep(10);
+    spinAsideHeight->setSuffix(tr(" px"));
+    spinAsideHeight->setToolTip(tr("贴边竖条的高度"));
+    sz->addWidget(spinAsideWidth, 1);
+    sz->addWidget(spinAsideHeight, 1);
+    v->addLayout(sz);
+
+    auto *rd = new QHBoxLayout();
+    rd->setSpacing(10);
+    rd->addWidget(new QLabel(tr("圆角半径"), box));
+    spinAsideRadius = new QSpinBox(box); spinAsideRadius->setObjectName("asideRadius");
+    spinAsideRadius->setRange(0, 40);
+    spinAsideRadius->setSuffix(tr(" px"));
+    spinAsideRadius->setToolTip(tr("贴边竖条的圆角大小（0 = 直角）"));
+    rd->addWidget(spinAsideRadius, 1);
+    v->addLayout(rd);
+
+    auto *hint = new QLabel(tr("* 改完立即生效；圆角超过竖条宽度的一半时按一半显示"), box);
+    hint->setProperty("role", "hint");
+    v->addWidget(hint);
+
+    auto *hint2 = new QLabel(tr("* 拖动竖条离开边缘（或单击竖条）即可变回小球"), box);
+    hint2->setProperty("role", "hint");
+    v->addWidget(hint2);
 
     return box;
 }
@@ -631,6 +714,13 @@ void SettingsDialog::loadFromConfig()
     spinUiInterval->setValue(qBound(100, cfg->getUpdateUIInterval(), spinUiInterval->maximum()));
     const int mask = cfg->getShapeMask();
     comboShapeMask->setCurrentIndex((mask >= 0 && mask <= 2) ? mask : 0);
+
+    // 贴边竖条
+    chkSnapEdge->setChecked(cfg->getSnapToEdge() != 0);
+    spinAsideWidth->setValue(qBound(spinAsideWidth->minimum(),  cfg->getAsideWidth(),  spinAsideWidth->maximum()));
+    spinAsideHeight->setValue(qBound(spinAsideHeight->minimum(), cfg->getAsideHeight(), spinAsideHeight->maximum()));
+    spinAsideRadius->setValue(qBound(0, cfg->getAsideCornerRadius(), spinAsideRadius->maximum()));
+
     editMonitorCmd->setText(cfg->getSystemMonitorCmd());
 }
 
@@ -671,6 +761,12 @@ void SettingsDialog::loadDefaults()
     spinHeight->setValue(100);
     spinBorderWidth->setValue(2);
     spinShadowLen->setValue(0);           // shadow_radius
+
+    // 贴边竖条
+    chkSnapEdge->setChecked(true);        // snap_to_edge
+    spinAsideWidth->setValue(30);         // aside_width
+    spinAsideHeight->setValue(100);       // aside_height
+    spinAsideRadius->setValue(8);         // aside/corner_radius
 
     // 图表
     spinCpuLine->setValue(1.1);           // cpu_usage_width
@@ -747,6 +843,12 @@ void SettingsDialog::applyChanges()
     cfg->setUpdateDataInterval(spinDataInterval->value());
     cfg->setUpdateUIInterval(spinUiInterval->value());
     cfg->setShapeMask(comboShapeMask->currentIndex());
+
+    // 贴边竖条（aside_edge 由挂件自己记，这里不动）
+    cfg->setSnapToEdge(chkSnapEdge->isChecked() ? 1 : 0);
+    cfg->setAsideWidth(spinAsideWidth->value());
+    cfg->setAsideHeight(spinAsideHeight->value());
+    cfg->setAsideCornerRadius(spinAsideRadius->value());
 
     // 系统监视器命令：只允许“单条程序+参数”。含 shell 运算符的危险串不落盘，
     // 并提示用户（其余设置照常保存）。

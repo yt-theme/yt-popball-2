@@ -7,8 +7,11 @@
 #include <QPaintEvent>
 #include <QMouseEvent>
 #include <QPen>
+#include <QColor>
+#include <QSize>
 #include <QVector>
 #include <QGuiApplication>
+#include <QScreen>
 #include <QLineF>
 #include <QPointF>
 #include <QTimer>
@@ -20,6 +23,15 @@
 #include "config.h"
 #include "sysInfo.h"
 #include "settingsdialog.h"
+
+// 贴边竖条上的一根窄柱 = 一个指标
+// （拖动到屏幕左右边缘吸附成竖条后，用它代替小球上的曲线图）
+struct AsideMetric
+{
+    QString label;   // 指标名（鼠标悬停气泡里显示）
+    double  ratio;   // 当前值占比 0.0 ~ 1.0
+    QColor  color;   // 柱身/轨道颜色（取自配置里对应的指标颜色）
+};
 
 class Widget : public QWidget
 {
@@ -39,14 +51,20 @@ private:
     int                          compositingTickCounter = 0;
     bool                         shapeMaskApplied     = false;  // 最近一次应用的是否为"开蒙版"
     bool                         shapeMaskInitialized = false;  // 是否已应用过（避免首帧重复）
+    // 最近一次蒙版是按哪个形态做的：圆球和竖条的蒙版形状不同，
+    // 形态切换后即使"要不要蒙版"没变，也必须按新形状重做一次。
+    qint32                       shapeMaskAppliedShape = -1;
     // 窗口 flags / 半透明属性是否已在原生窗口创建前设置过。
     // 对已显示的窗口再次调用 setWindowFlags()/setAttribute(WA_TranslucentBackground)
     // 会触发平台层窗口重建：X11 上 KWin 会因此解除对窗口的管理（WM_STATE 丢失），
     // 重建后的半透明窗口不再被合成，小球整窗透明"消失"。这些 flags 恒定不变，
     // 只需在首次构造（show 之前）设置一次。
     bool                         windowFrameInitialized = false;
-    bool                        isMousePressed = false;
+    bool                         isMousePressed = false;
     QPoint                      curWindowPos;
+    // 按下时的全局光标位置。判断"沿边缘上下拖 / 往回拖脱离边缘 / 单击"必须用
+    // 全局坐标：拖动时窗口是跟着光标一起动的，窗口内坐标几乎不变。
+    QPoint                      pressGlobalPos;
 
     // history data
     QVector<quint64> mem_data_history;
@@ -76,6 +94,24 @@ public:
     void setUiFrame();
     // 仅做拖动松手后的屏幕边界限制与贴边吸附（不重设窗口 flags/属性，避免原生窗口重建）
     void applyEdgeSnap();
+
+    // ---------- 贴边竖条（SHAPE_ASIDE） ----------
+    // 某个形状对应的窗口尺寸（含四周为投影/半透明预留的留边）
+    QSize sizeForShape(qint32 shape) const;
+    // 窗口当前所在的屏幕区域（多显示器下按窗口中心取屏，取不到再退回主屏）
+    QRect currentScreenRect() const;
+    // 形态切换后若正开着形状蒙版，需要按新形状重做一次蒙版
+    void refreshMaskAfterShapeChange();
+    // 由"贴边竖条"变回小球：
+    //   keepUnderCursor = true  拖动脱离边缘：小球紧贴光标摆开，可以接着继续拖
+    //   keepUnderCursor = false 单击竖条：小球从边缘"弹"出来一点，不贴着边（否则松手又被吸回去）
+    void detachToCircle(const QPoint &globalCursor, bool keepUnderCursor);
+    // 竖条形态下要显示的各指标（顺序即柱子的左右顺序）
+    QVector<AsideMetric> collectAsideMetrics() const;
+    // 小球上的 LCD 在竖条形态下必须全部隐藏（窗口只有几十像素宽，LCD 会挤在竖条里）
+    void hideAllLcds();
+    // 绘制贴边竖条：圆角矩形 + 一组窄柱图
+    void drawAsideBar(QPainter &painter);
 
     // 桌面环境适配：不同平台/不同桌面（Xorg / Wayland / macOS）的窗口行为不同
     void applyDesktopBehavior();

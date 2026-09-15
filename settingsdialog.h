@@ -27,6 +27,7 @@ class QVBoxLayout;
  *   显示       [x]温度 [ ]频率 [x]网速
  *   窗口       不透明度 / 大小(宽x高) / 边框宽度
  *              阴影长度(0=无阴影) / 阴影颜色
+ *   贴边竖条   是否启用 / 快捷宽度(窄/标准/宽) / 竖条宽×高 / 圆角半径
  *   图表       CPU 折线宽度 / 图表行数
  *   高级       数据刷新间隔 / 界面刷新间隔 / 形状蒙版
  *
@@ -75,6 +76,7 @@ private:
     QWidget *buildColorSection();
     QWidget *buildShowSection();
     QWidget *buildWindowSection();
+    QWidget *buildAsideSection();
     QWidget *buildChartSection();
     QWidget *buildAdvancedSection();
     QWidget *buildMonitorSection();
@@ -107,6 +109,12 @@ private:
     QSpinBox *spinDataInterval = nullptr;
     QSpinBox *spinUiInterval   = nullptr;
     QComboBox *comboShapeMask  = nullptr;
+
+    // 贴边竖条
+    QCheckBox *chkSnapEdge      = nullptr;
+    QSpinBox  *spinAsideWidth   = nullptr;
+    QSpinBox  *spinAsideHeight  = nullptr;
+    QSpinBox  *spinAsideRadius  = nullptr;
 
     QLineEdit *editMonitorCmd  = nullptr;   // 右键菜单「系统监视器」自定义命令
 

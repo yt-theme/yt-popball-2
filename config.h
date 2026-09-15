@@ -6,6 +6,7 @@
 #include <QFile>
 #include <QDebug>
 #include <QDir>
+#include "macro_def.h"   // ASIDE_LEFT / ASIDE_RIGHT（贴边竖条记录吸附在哪一侧）
 
 class Config {
 private:
@@ -40,6 +41,13 @@ private:
     qint32 charts_rows;
     qint32 update_data_interval;
     qint32 update_ui_interval;
+
+    // [aside] 贴边竖条
+    // 把小球拖到屏幕左/右边缘时，吸附成一根圆角的竖条，用窄柱图显示各指标。
+    qint32 snap_to_edge;          // 1 = 启用贴边变竖条，0 = 关闭（始终是圆球）
+    qint32 aside_edge;            // 当前吸附在哪一侧：ASIDE_LEFT / ASIDE_RIGHT
+    qint32 aside_corner_radius;   // 竖条圆角半径（px）
+    // 注：竖条的宽/高沿用 [appearance] 里已有的 aside_width / aside_height
 
     // [components_show]
     qint8 cpu_temp_show;
@@ -94,6 +102,11 @@ public:
     void setUpdateDataInterval(qint32 val);
     void setUpdateUIInterval(qint32 val);
 
+    // [aside] 贴边竖条
+    void setSnapToEdge(qint32 val);
+    void setAsideEdge(qint32 val);
+    void setAsideCornerRadius(qint32 val);
+
     // [components_show]
     void setCpuTempShow(qint8 val);
     void setCpuFreqShow(qint8 val);
@@ -131,6 +144,11 @@ public:
     qint32  getChartsRows();
     qint32  getUpdateDataInterval();
     qint32  getUpdateUIInterval();
+
+    // [aside] 贴边竖条
+    qint32  getSnapToEdge();
+    qint32  getAsideEdge();
+    qint32  getAsideCornerRadius();
 
     // [components_show]
     qint8 getCpuTempShow();

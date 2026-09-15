@@ -66,6 +66,19 @@ QString formatNetSpeedField(double bytesPerSec)
 // 也不频繁打扰 X 服务器；用户切换混成后能在几秒内自动去/回黑框。
 constexpr int kCompositingCheckEveryUiTicks = 10;
 
+// ---------------- 贴边竖条（SHAPE_ASIDE）的几个距离常量 ----------------
+// 小球"可视边缘"离屏幕左右边缘这么近（px）就吸上去变成竖条。
+// 留一点容差，不用非得把球怼到屏幕外面才触发。
+constexpr int kAsideSnapThreshold = 12;
+// 竖条状态下，往屏幕里侧拖超过这么多像素算"要把球拉出来"。
+// 必须明显大于 kAsideSnapThreshold：松开时小球正好离边缘十几像素，
+// 否则松开又会被立刻吸回竖条，看起来像"拉不出来"。
+constexpr int kAsideDetachPx = 16;
+// 松开时总位移不超过这么多像素 = 单击（不移动），单击竖条 → 展开成小球
+constexpr int kAsideClickPx = 4;
+// 单击展开后小球离屏幕边缘留出的空隙（要比 kAsideSnapThreshold 大，免得一松手又吸回去）
+constexpr int kAsidePopOutGap = kAsideSnapThreshold + 8;
+
 #if defined(POPBALL_HAVE_X11)
 // X11：检测桌面上有没有「混成管理器(compositing manager)」在跑。
 // 没有混成时，WA_TranslucentBackground 不会被真正混合，小球四周就会露出一块
@@ -183,51 +196,314 @@ Widget::~Widget()
     delete this->netDownloadLCD;
 }
 
+// 某个形状对应的窗口尺寸。
+// 窗口比"看得见的形状"大一圈：四周留出 shadow_radius，用来放投影/半透明过渡。
+// 圆形形态 = 配置里的 width/height；竖条形态 = aside_width/aside_height + 留边，
+// 这样竖条本身（不含留边）正好是用户设置的宽高。
+QSize Widget::sizeForShape(qint32 shape) const
+{
+    if (shape == SHAPE_ASIDE && this->config->getSnapToEdge())
+        return QSize(this->config->getAsideWidth()  + this->config->getShadowRadius() * 2,
+                     this->config->getAsideHeight() + this->config->getShadowRadius() * 2);
+    return QSize(this->config->getWidth(), this->config->getHeight());
+}
+
+// 窗口当前所在的屏幕区域。多显示器时按窗口中心取屏，避免副屏上的球被吸到主屏边缘。
+QRect Widget::currentScreenRect() const
+{
+    if (QScreen *scr = QGuiApplication::screenAt(this->geometry().center()))
+        return scr->geometry();
+    if (QScreen *scr = QGuiApplication::primaryScreen())
+        return scr->geometry();
+    return QRect(0, 0, 1920, 1080);
+}
+
 void Widget::setPosition()
 {
-    this->setGeometry(config->getX(), config->getY(), config->getWidth(), config->getHeight());
+    const QSize s = this->sizeForShape(this->config->getShape());
+    this->setGeometry(this->config->getX(), this->config->getY(), s.width(), s.height());
 }
 
 // 屏幕边界限制与贴边吸附（setUiFrame 初始化时、以及每次拖动松手时调用）。
 // 只调整 shape 标记和几何位置，不碰窗口 flags / 半透明属性，
-// 因此可以安全地在窗口已显示后反复调用。
+// 因此可以安全地在窗口已显示后反复调用（setFixedSize/setGeometry 不会重建原生窗口）。
+//
+// 两种形态：
+//   SHAPE_CIRCLE —— 普通圆球，被限制在屏幕内
+//   SHAPE_ASIDE  —— 拖到屏幕左/右边缘后吸附成的圆角竖条，只能沿边缘上下移动
 void Widget::applyEdgeSnap()
 {
-    QRect primaryScreenRect = QGuiApplication::primaryScreen()->geometry();
+    const QRect  screen = this->currentScreenRect();
+    const qint32 sr     = this->config->getShadowRadius();   // 四周留边
+    // 屏幕的四条边（绝对坐标）。多显示器时副屏的 left/top 可能不为 0，
+    // 用 left+width 之类的相对量去算位置会整体偏掉，所以这里统一用绝对边界。
+    const qint32 scrLeft   = screen.left();
+    const qint32 scrRight  = screen.left() + screen.width();    // 右边界（不含）
+    const qint32 scrTop    = screen.top();
+    const qint32 scrBottom = screen.top() + screen.height();
 
-    // set default shape
-    this->config->setShape(SHAPE_CIRCLE);
+    qint32 shape = this->config->getShape();
+    // 关掉「贴边变竖条」时永远回到圆球
+    if (this->config->getSnapToEdge() == 0
+        || this->config->getAsideWidth() <= 0 || this->config->getAsideHeight() <= 0)
+        shape = SHAPE_CIRCLE;
 
-    // check y
-    if (this->config->getY() <= 0)
+    // ------------------------------------------------ 竖条形态
+    if (shape == SHAPE_ASIDE)
     {
-        this->config->setY(0);
-    }
-    if (this->config->getY() >= (primaryScreenRect.height() - this->frameGeometry().height()))
-    {
-        this->config->setY(primaryScreenRect.height() - this->frameGeometry().height());
-    }
+        const QSize s = this->sizeForShape(SHAPE_ASIDE);
+        const bool left = (this->config->getAsideEdge() == ASIDE_LEFT);
 
-    // windowif at aside
-    if ((this->config->getX() + this->frameGeometry().width()) >= primaryScreenRect.width()
-            || this->config->getX() <= 0)
-    {
-        // set shape
+        // 贴边：可视区域的外侧边缘正好落在屏幕边缘上
+        // （窗口左侧留边恒为 sr，所以左贴边时 x = scrLeft - sr；右贴边时右边要留出 sr）
+        qint32 x = left ? (scrLeft - sr) : (scrRight - this->config->getAsideWidth() - sr);
+        // 纵向：整根竖条都留在屏幕内
+        qint32 y = this->config->getY();
+        const qint32 minY = scrTop - sr;
+        const qint32 maxY = scrBottom - this->config->getAsideHeight() - sr;
+        y = qBound(minY, y, qMax(minY, maxY));
+
         this->config->setShape(SHAPE_ASIDE);
-        // check at aside left or right
-        // left
-        if (this->config->getX() <= 0)
+        this->config->setX(x);
+        this->config->setY(y);
+        this->hideAllLcds();
+        this->setFixedSize(s);
+        this->setGeometry(x, y, s.width(), s.height());
+        this->refreshMaskAfterShapeChange();
+        return;
+    }
+
+    // ------------------------------------------------ 圆形形态
+    const QSize s = this->sizeForShape(SHAPE_CIRCLE);
+    // 屏幕边界限制：以"可视区域"为准（可视区域 = 窗口去掉四周留边 sr）
+    qint32 x = qBound(scrLeft - sr, this->config->getX(),
+                      qMax(scrLeft - sr, scrRight - s.width() + sr));
+    qint32 y = qBound(scrTop - sr, this->config->getY(),
+                      qMax(scrTop - sr, scrBottom - s.height() + sr));
+
+    // 可视区域左右边缘
+    const qint32 visLeft  = x + sr;
+    const qint32 visRight = x + s.width() - sr;
+
+    qint32 snapEdge = -1;
+    if (visLeft <= scrLeft + kAsideSnapThreshold)
+        snapEdge = ASIDE_LEFT;
+    else if (visRight >= scrRight - kAsideSnapThreshold)
+        snapEdge = ASIDE_RIGHT;
+
+    if (snapEdge >= 0)
+    {
+        // 吸成竖条：纵向保持小球原来的中心，避免形态切换时上下跳
+        const qint32 asideW = this->config->getAsideWidth();
+        const qint32 asideH = this->config->getAsideHeight();
+        const QSize  as     = this->sizeForShape(SHAPE_ASIDE);
+
+        qint32 ax = (snapEdge == ASIDE_LEFT) ? (scrLeft - sr)
+                                             : (scrRight - asideW - sr);
+        qint32 ay = y + s.height() / 2 - asideH / 2;
+        const qint32 minY = scrTop - sr;
+        const qint32 maxY = scrBottom - asideH - sr;
+        ay = qBound(minY, ay, qMax(minY, maxY));
+
+        this->config->setAsideEdge(snapEdge);
+        this->config->setShape(SHAPE_ASIDE);
+        this->config->setX(ax);
+        this->config->setY(ay);
+        this->hideAllLcds();
+        this->setFixedSize(as);
+        this->setGeometry(ax, ay, as.width(), as.height());
+        this->refreshMaskAfterShapeChange();
+        return;
+    }
+
+    // 留在圆球形态
+    this->config->setShape(SHAPE_CIRCLE);
+    this->config->setX(x);
+    this->config->setY(y);
+    this->setToolTip(QString());          // 悬停气泡只属于竖条形态
+    this->setFixedSize(s);
+    this->setGeometry(x, y, s.width(), s.height());
+    this->refreshMaskAfterShapeChange();
+}
+
+// 形态变了（圆球 ↔ 竖条）之后，若正开着形状蒙版，必须按新形状重做一次：
+// 蒙版是按窗口尺寸画的，圆球的圆形蒙版套到竖条上会把竖条裁得只剩中间一坨。
+void Widget::refreshMaskAfterShapeChange()
+{
+    if (!this->shapeMaskApplied)
+        return;
+    this->applyShapeMask(true);
+}
+
+// 小球上的 LCD（温度/频率/网速）在竖条形态下一律隐藏：
+// 竖条只有几十像素宽，LCD 会被挤在里面显示成一堆残缺数字。
+void Widget::hideAllLcds()
+{
+    if (this->cpuTempLCD     != nullptr && !this->cpuTempLCD->isHidden())     this->cpuTempLCD->hide();
+    if (this->cpuFreqLCD     != nullptr && !this->cpuFreqLCD->isHidden())     this->cpuFreqLCD->hide();
+    if (this->netUploadLCD   != nullptr && !this->netUploadLCD->isHidden())   this->netUploadLCD->hide();
+    if (this->netDownloadLCD != nullptr && !this->netDownloadLCD->isHidden()) this->netDownloadLCD->hide();
+}
+
+// 由"贴边竖条"变回小球。
+// keepUnderCursor = true  → 拖动脱离：小球紧贴光标摆开，松手后接着就能继续拖
+// keepUnderCursor = false → 单击展开：小球从边缘"弹"出来一点，不贴着边缘
+void Widget::detachToCircle(const QPoint &globalCursor, bool keepUnderCursor)
+{
+    const QSize  s   = this->sizeForShape(SHAPE_CIRCLE);
+    const qint32 sr  = this->config->getShadowRadius();
+    const QRect  screen = this->currentScreenRect();
+    const bool   left   = (this->config->getAsideEdge() == ASIDE_LEFT);
+
+    // 小球"可视区域"靠边缘的那条边要落在屏幕的哪个 x 上
+    const qint32 nearEdge = keepUnderCursor
+                            ? globalCursor.x()
+                            : (left ? screen.left() + kAsidePopOutGap
+                                    : screen.left() + screen.width() - kAsidePopOutGap);
+
+    const qint32 x = left ? (nearEdge - sr) : (nearEdge - (s.width() - sr));
+    const qint32 y = keepUnderCursor
+                     ? (globalCursor.y() - s.height() / 2)
+                     : (this->config->getY() + this->config->getAsideHeight() / 2 - s.height() / 2);
+
+    this->config->setShape(SHAPE_CIRCLE);
+    this->setFixedSize(s);
+    this->move(x, y);
+    this->config->setX(x);
+    this->config->setY(y);
+
+    // 抓取点定在"靠边缘那条边、光标所在高度"上：
+    // 拖动位移算法用的是窗口内坐标，形态刚变完必须同步一次，才不会有跳变
+    this->curWindowPos   = QPoint(left ? sr : (s.width() - sr), globalCursor.y() - y);
+    this->pressGlobalPos = globalCursor;
+
+    this->refreshMaskAfterShapeChange();
+    this->setToolTip(QString());
+    this->update();
+}
+
+// 竖条上要画的各指标。顺序 = 柱子的左右顺序：CPU 占用 / 内存 / 交换分区。
+// 内存或交换分区在本机拿不到时（比如没有交换分区）对应柱子直接不画。
+QVector<AsideMetric> Widget::collectAsideMetrics() const
+{
+    QVector<AsideMetric> metrics;
+
+    // CPU 占用（百分比）
+    {
+        double usage = this->cpuUsage_data_history.isEmpty()
+                       ? this->sysInfo->getCpuUsage()
+                       : this->cpuUsage_data_history.back();
+        if (!qIsFinite(usage)) usage = 0.0;                  // 首次采样没有基准，可能是 NaN
+        metrics.append({ QStringLiteral("CPU"),
+                         qBound(0.0, usage / 100.0, 1.0),
+                         QColor(this->config->getCpuUsageColor()) });
+    }
+
+    // 内存
+    {
+        const quint64 total = this->sysInfo->getMemTotal();
+        const quint64 used  = this->mem_data_history.isEmpty()
+                              ? this->sysInfo->getMemUsed()
+                              : this->mem_data_history.back();
+        if (this->sysInfo->isMemAvailable() && total > 0)
+            metrics.append({ QStringLiteral("内存"),
+                             qBound(0.0, double(used) / double(total), 1.0),
+                             QColor(this->config->getMemColor()) });
+    }
+
+    // 交换分区
+    {
+        const quint64 total = this->sysInfo->getSwapTotal();
+        const quint64 used  = this->swap_data_history.isEmpty()
+                              ? this->sysInfo->getSwapUsed()
+                              : this->swap_data_history.back();
+        if (this->sysInfo->isSwapAvailable() && total > 0)
+            metrics.append({ QStringLiteral("交换"),
+                             qBound(0.0, double(used) / double(total), 1.0),
+                             QColor(this->config->getSwapColor()) });
+    }
+
+    return metrics;
+}
+
+// 绘制贴边竖条：圆角矩形 + 一组窄柱图。
+// 一根柱子 = 一个指标，柱高与当前值成正比；柱底固定，柱顶随数值上下走。
+void Widget::drawAsideBar(QPainter &painter)
+{
+    const qint32 bw = this->config->getMainBorderWidth();
+    const qint32 sr = this->config->getShadowRadius();
+
+    // 竖条矩形：与圆形形态同样地内缩"边框一半 + 留边"，
+    // 这样贴边时条身正好压在屏幕边缘上、投影留在屏幕外。
+    const QRectF bar(sr + bw / 2.0, sr + bw / 2.0,
+                     this->width()  - bw - sr * 2,
+                     this->height() - bw - sr * 2);
+    if (bar.width() <= 2.0 || bar.height() <= 2.0)
+        return;
+
+    qreal radius = qBound(qreal(0.0), qreal(this->config->getAsideCornerRadius()),
+                          qMin(bar.width(), bar.height()) / 2.0);
+
+    QPainterPath barPath;
+    barPath.addRoundedRect(bar, radius, radius);
+
+    // 条身 + 边框（复用小球的主色/边框色，皮肤保持一致）
+    painter.setBrush(QColor(this->config->getMainColor()));
+    painter.setPen(QPen(QColor(this->config->getMainBorderColor()), bw,
+                        Qt::SolidLine, Qt::SquareCap, Qt::RoundJoin));
+    painter.drawPath(barPath);
+
+    painter.save();
+    painter.setClipPath(barPath);       // 柱子不许画出圆角之外
+    painter.setPen(Qt::NoPen);
+
+    const QVector<AsideMetric> metrics = this->collectAsideMetrics();
+    const int n = metrics.size();
+
+    // 内边距：圆角越大留得越多，柱子不会顶到圆角上；
+    // 但条子做得很窄时（用户可把宽度调到 20px 上下），内边距必须跟着缩，
+    // 否则左右一扣就没地方画柱子了。所以再叠一个"占条宽比例"的上限。
+    const qreal padX = qMax<qreal>(2.0, qMin(radius * 0.45, bar.width()  * 0.18));
+    const qreal padY = qMax<qreal>(3.0, qMin(radius * 0.35, bar.height() * 0.06));
+    const QRectF inner = bar.adjusted(padX, padY, -padX, -padY);
+
+    if (n > 0 && inner.width() > 1.0 && inner.height() > 2.0)
+    {
+        qreal gap  = qBound<qreal>(1.5, inner.width() * 0.11, 3.5);
+        qreal colW = (inner.width() - gap * (n - 1)) / n;
+        if (colW < 1.5) { gap = 0.0; colW = inner.width() / n; }   // 指标多/条窄时不留缝
+
+        for (int i = 0; i < n; ++i)
         {
-            this->config->setX(0 - this->config->getShadowRadius());
-        }
-        // right
-        if ((this->config->getX() + this->frameGeometry().width()) >= primaryScreenRect.width())
-        {
-            this->config->setX(primaryScreenRect.width() - this->frameGeometry().width() + this->config->getShadowRadius());
+            const qreal x = inner.left() + i * (colW + gap);
+
+            // 轨道：整条浅色底，让人看出"满格"在哪。
+            // 必须够淡：太实的话柱子占三成也会被读成满格。
+            QColor trackColor = metrics[i].color;
+            trackColor.setAlpha(qBound(22, qRound(trackColor.alpha() * 0.14), 40));
+            QPainterPath trackPath;
+            trackPath.addRoundedRect(QRectF(x, inner.top(), colW, inner.height()),
+                                     colW / 2.0, colW / 2.0);
+            painter.fillPath(trackPath, trackColor);
+
+            // 柱身：柱高 = 占比 × 可用高度（有序号也保证至少看得见一小截）
+            if (metrics[i].ratio <= 0.0)
+                continue;
+            qreal h = inner.height() * metrics[i].ratio;
+            if (metrics[i].ratio > 0.005 && h < colW)
+                h = colW;
+            h = qMin(h, inner.height());
+
+            QColor barColor = metrics[i].color;
+            barColor.setAlpha(255);      // 指标色在配置里可能带透明度，窄柱上必须实心才看得清
+            const qreal r2 = qMin(colW / 2.0, h / 2.0);
+            QPainterPath colPath;
+            colPath.addRoundedRect(QRectF(x, inner.bottom() - h, colW, h), r2, r2);
+            painter.fillPath(colPath, barColor);
         }
     }
-    // set geometry
-    this->setGeometry(this->config->getX(), this->config->getY(), this->config->getWidth(), this->config->getHeight());
+
+    painter.restore();
 }
 
 void Widget::setUiFrame()
@@ -258,7 +534,8 @@ void Widget::setUiFrame()
         this->windowFrameInitialized = true;
     }
 
-    this->setFixedSize(config->getWidth(), config->getHeight());
+    // 起始尺寸按当前形态取：上次退出时若停在贴边竖条，这次也要以竖条尺寸起步
+    this->setFixedSize(this->sizeForShape(this->config->getShape()));
     this->setWindowOpacity(config->getOpacity());
 
     // 屏幕边界限制 / 贴边吸附
@@ -354,7 +631,7 @@ void Widget::applyDesktopBehavior()
     this->reevaluateShapeMask();
 }
 
-// 重新评估"是否需要圆形蒙版"，并在结果发生变化时才应用。
+// 重新评估"是否需要形状蒙版"，并在结果发生变化时才应用。
 // 只有「自动」模式跟随桌面混成；「强制开/关」时结果恒定（自动判断不准时用来手动兜底）。
 void Widget::reevaluateShapeMask()
 {
@@ -375,15 +652,21 @@ void Widget::reevaluateShapeMask()
         break;
     }
 
-    // 状态没变就别重复 setMask/clearMask —— 那会触发多余的窗口系统调用
-    if (this->shapeMaskInitialized && needMask == this->shapeMaskApplied)
+    // 状态没变就别重复 setMask/clearMask —— 那会触发多余的窗口系统调用。
+    // 但形态（圆球 ↔ 竖条）变了必须重做：蒙版是按窗口尺寸画的，形状不对会裁错。
+    const qint32 shape = this->config->getShape();
+    if (this->shapeMaskInitialized && needMask == this->shapeMaskApplied
+        && shape == this->shapeMaskAppliedShape)
         return;
-    this->shapeMaskInitialized = true;
-    this->shapeMaskApplied     = needMask;
+    this->shapeMaskInitialized    = true;
+    this->shapeMaskApplied        = needMask;
+    this->shapeMaskAppliedShape   = shape;
     this->applyShapeMask(needMask);
 }
 
-// 圆形形状蒙版
+// 形状蒙版：桌面没开混成时，把窗口裁成"看得见的形状"，
+// 没用上的透明区域直接被裁掉，桌面就不会透出黑色矩形。
+//   圆球形态 → 圆形蒙版    竖条形态 → 圆角矩形蒙版
 void Widget::applyShapeMask(bool on)
 {
     if (!on)
@@ -401,7 +684,7 @@ void Widget::applyShapeMask(bool on)
         this->winShadow->setEnabled(false);
     this->setWindowOpacity(1.0);
 
-    // 画一个圆取它的 alpha 蒙版：范围正好覆盖小球(含边框)。
+    // 画一个形状取它的 alpha 蒙版：范围正好覆盖小球/竖条(含边框)。
     // 内缩 1px 是为了避开抗锯齿边缘残留的半透明像素 —— 没混成时那圈会显示成黑边。
     const qint32 sr = config->getShadowRadius();
     QImage maskImg(this->size(), QImage::Format_ARGB32_Premultiplied);
@@ -411,9 +694,20 @@ void Widget::applyShapeMask(bool on)
         p.setRenderHint(QPainter::Antialiasing, false);
         p.setPen(Qt::NoPen);
         p.setBrush(Qt::white);
-        p.drawEllipse(QRect(sr, sr,
-                            this->width()  - sr * 2,
-                            this->height() - sr * 2).adjusted(1, 1, -1, -1));
+
+        const QRect shapeRect = QRect(sr, sr,
+                                      this->width()  - sr * 2,
+                                      this->height() - sr * 2).adjusted(1, 1, -1, -1);
+        if (config->getShape() == SHAPE_ASIDE)
+        {
+            const qreal radius = qBound(qreal(0.0), qreal(config->getAsideCornerRadius()),
+                                        qMin(shapeRect.width(), shapeRect.height()) / 2.0);
+            p.drawRoundedRect(shapeRect, radius, radius);
+        }
+        else
+        {
+            p.drawEllipse(shapeRect);
+        }
     }
     this->setMask(QBitmap::fromImage(maskImg.createAlphaMask()));
 }
@@ -441,6 +735,7 @@ void Widget::mousePressEvent(QMouseEvent *event)
     if (event->button() == Qt::LeftButton) {
         this->isMousePressed = true;
         this->curWindowPos = event->pos();
+        this->pressGlobalPos = event->globalPosition().toPoint();
     } else if (event->button() == Qt::RightButton) {
         // 右键弹出菜单（设置 / 退出）
         if (this->contextMenu != nullptr) {
@@ -451,17 +746,59 @@ void Widget::mousePressEvent(QMouseEvent *event)
 
 void Widget::mouseMoveEvent(QMouseEvent *event)
 {
-    if (this->isMousePressed == true)
+    if (this->isMousePressed != true)
+        return;
+
+    // ---------------- 竖条形态：只沿边缘上下走 ----------------
+    if (this->config->getShape() == SHAPE_ASIDE)
     {
-        this->move(event->pos() - this->curWindowPos + this->pos());
+        const QPoint globalPos = event->globalPosition().toPoint();
+        const QPoint delta     = globalPos - this->pressGlobalPos;
+        // "往屏幕里侧"的位移（左贴边看 +x，右贴边看 -x）
+        const int inward = (this->config->getAsideEdge() == ASIDE_LEFT) ? delta.x() : -delta.x();
+
+        // 往屏幕里侧拖够远 → 把球拉出来（变回圆球，之后正常拖动）
+        if (inward > kAsideDetachPx)
+        {
+            this->detachToCircle(globalPos, true);
+            return;
+        }
+
+        // 否则算"沿着边缘上下拖"：横向始终吸附在边缘上，只跟随纵向，手感更像被吸住
+        const QRect  screen = this->currentScreenRect();
+        const qint32 sr     = this->config->getShadowRadius();
+        const bool   left   = (this->config->getAsideEdge() == ASIDE_LEFT);
+        const qint32 glueX  = left ? (screen.left() - sr)
+                                   : (screen.left() + screen.width() - this->config->getAsideWidth() - sr);
+        const qint32 newY   = event->pos().y() - this->curWindowPos.y() + this->pos().y();
+
+        // 纵向限制在屏幕内（可视区域不越界）
+        const qint32 minY = screen.top() - sr;
+        const qint32 maxY = screen.top() + screen.height() - this->config->getAsideHeight() - sr;
+        this->move(glueX, qBound(minY, newY, qMax(minY, maxY)));
+        this->config->setX(glueX);
+        this->config->setY(this->pos().y());
+        return;
     }
+
+    // ---------------- 圆球形态：自由拖动 ----------------
+    this->move(event->pos() - this->curWindowPos + this->pos());
 }
 
 void Widget::mouseReleaseEvent(QMouseEvent *event)
 {
+    const QPoint globalPos = event->globalPosition().toPoint();
+
+    // 竖条形态下"按下-松开"基本没移动 = 单击 → 展开成小球（竖条没有别的单击行为）
+    if (this->config->getShape() == SHAPE_ASIDE)
+    {
+        if ((globalPos - this->pressGlobalPos).manhattanLength() <= kAsideClickPx)
+            this->detachToCircle(globalPos, false);
+    }
+
     // store to config
-    this->config->setX(this->frameGeometry().x());
-    this->config->setY(this->frameGeometry().y());
+    this->config->setX(this->pos().x());
+    this->config->setY(this->pos().y());
 
     // 只做边界限制/贴边吸附。
     // 不能调 setUiFrame()：它会重设窗口 flags 与半透明属性，
@@ -968,6 +1305,17 @@ void Widget::updateDataAndHistory()
     // swap history
     if ((swap_data_history.size() + 1) >= config->getChartsRows()) swap_data_history.pop_front();
     this->swap_data_history.push_back(this->sysInfo->getSwapUsed());
+
+    // 竖条形态下柱子本身没有文字，鼠标悬停时用气泡给出各指标的具体百分比
+    if (this->config->getShape() == SHAPE_ASIDE)
+    {
+        const QVector<AsideMetric> metrics = this->collectAsideMetrics();
+        QStringList parts;
+        for (const AsideMetric &m : metrics)
+            parts << QStringLiteral("%1 %2%").arg(m.label).arg(qRound(m.ratio * 100.0));
+        if (!parts.isEmpty())
+            this->setToolTip(parts.join(QStringLiteral("\n")));
+    }
 }
 
 void Widget::paintEvent(QPaintEvent *)
@@ -978,8 +1326,15 @@ void Widget::paintEvent(QPaintEvent *)
     // ui shape
     switch (this->config->getShape())
     {
+    // 贴边竖条：圆角矩形 + 窄柱图（小球上的 LCD 一律隐藏）
+    case SHAPE_ASIDE:
+    {
+        this->hideAllLcds();
+        this->drawAsideBar(painter);
+        painter.end();
+        break;
+    }
     case SHAPE_CIRCLE:
-    case SHAPE_ASIDE: // tmp
     {
 
         qint32 main_border_width    = config->getMainBorderWidth();
@@ -1141,29 +1496,6 @@ void Widget::paintEvent(QPaintEvent *)
         painter.end();
         break;
     }
-//    case SHAPE_ASIDE:
-//    {
-//        this->cpuFreqLCD->hide();
-//        qint32 main_border_width    = config->getMainBorderWidth();
-//        qint32 shadow_radius        = config->getShadowRadius();
-//        qint32 main_width           = config->getWidth();
-//        qint32 main_height          = config->getHeight();
-
-//        // main color
-//        painter.setBrush(QColor(config->getMainColor()));
-//        QPen pen(QColor(config->getMainBorderColor()), main_border_width, Qt::SolidLine, Qt::SquareCap, Qt::RoundJoin);
-//        painter.setPen(pen);
-//        painter.drawEllipse(
-//                    main_border_width/2 + shadow_radius,
-//                    main_border_width/2 + shadow_radius,
-//                    main_width  - main_border_width - (shadow_radius * 2),
-//                    main_height - main_border_width - (shadow_radius * 2) );
-
-
-
-//        painter.end();
-//        break;
-//    }
 
     default: break;
 

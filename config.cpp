@@ -59,8 +59,8 @@ void Config::readConfig()
     this->y                     = this->settingsObj->value("/position/y").toInt();
     this->width                 = this->settingsObj->value("/appearance/width").toInt();
     this->height                = this->settingsObj->value("/appearance/height").toInt();
-    this->aside_width           = this->settingsObj->value("/appearance/aside_width").toInt();
-    this->aside_height          = this->settingsObj->value("/appearance/aside_height").toInt();
+    this->aside_width           = this->settingsObj->value("/appearance/aside_width", 30).toInt();
+    this->aside_height          = this->settingsObj->value("/appearance/aside_height", 100).toInt();
     this->opacity               = this->settingsObj->value("/appearance/opacity").toDouble();
     this->shadow_radius         = this->settingsObj->value("/appearance/shadow_radius", 0).toInt();
     // 新增键：老配置文件里可能没有，必须给默认值，否则读出来是空/0
@@ -79,6 +79,12 @@ void Config::readConfig()
     this->charts_rows           = this->settingsObj->value("/appearance/charts_rows").toInt();
     this->update_data_interval  = this->settingsObj->value("/timer/update_data_interval").toInt();
     this->update_ui_interval    = this->settingsObj->value("/timer/update_ui_interval").toInt();
+
+    // [aside] 贴边竖条
+    // 这几个键是后加的，老配置文件里没有，必须给默认值（0 = 关闭会把功能关掉）
+    this->snap_to_edge          = this->settingsObj->value("/aside/snap_to_edge", 1).toInt();
+    this->aside_edge            = this->settingsObj->value("/aside/aside_edge", ASIDE_RIGHT).toInt();
+    this->aside_corner_radius   = this->settingsObj->value("/aside/corner_radius", 8).toInt();
 
     // [components_show]
     this->cpu_temp_show         = this->settingsObj->value("/components_show/cpu_temp_show").toInt();
@@ -230,6 +236,25 @@ void Config::setUpdateUIInterval(qint32 val)
     this->update_ui_interval = val;
 }
 
+// [aside] 贴边竖条
+void Config::setSnapToEdge(qint32 val)
+{
+    this->settingsObj->setValue("/aside/snap_to_edge", val);
+    this->snap_to_edge = val;
+}
+
+void Config::setAsideEdge(qint32 val)
+{
+    this->settingsObj->setValue("/aside/aside_edge", val);
+    this->aside_edge = val;
+}
+
+void Config::setAsideCornerRadius(qint32 val)
+{
+    this->settingsObj->setValue("/aside/corner_radius", val);
+    this->aside_corner_radius = val;
+}
+
 // [components_show]
 void Config::setCpuTempShow(qint8 val)
 {
@@ -369,6 +394,22 @@ qint32 Config::getUpdateDataInterval()
 qint32 Config::getUpdateUIInterval()
 {
     return this->update_ui_interval;
+}
+
+// [aside] 贴边竖条
+qint32 Config::getSnapToEdge()
+{
+    return this->snap_to_edge;
+}
+
+qint32 Config::getAsideEdge()
+{
+    return this->aside_edge;
+}
+
+qint32 Config::getAsideCornerRadius()
+{
+    return this->aside_corner_radius;
 }
 
 // [components_show]
