@@ -57,6 +57,7 @@ macx: HEADERS += macwindow.h
 # 只是自动检测失效 —— 这时可以在配置里用 shape_mask=1 手动打开蒙版。
 unix:!macx {
     packagesExist(x11) {
+        CONFIG += link_pkgconfig
         DEFINES += POPBALL_HAVE_X11
         PKGCONFIG += x11
     }

@@ -39,6 +39,12 @@ private:
     int                          compositingTickCounter = 0;
     bool                         shapeMaskApplied     = false;  // 最近一次应用的是否为"开蒙版"
     bool                         shapeMaskInitialized = false;  // 是否已应用过（避免首帧重复）
+    // 窗口 flags / 半透明属性是否已在原生窗口创建前设置过。
+    // 对已显示的窗口再次调用 setWindowFlags()/setAttribute(WA_TranslucentBackground)
+    // 会触发平台层窗口重建：X11 上 KWin 会因此解除对窗口的管理（WM_STATE 丢失），
+    // 重建后的半透明窗口不再被合成，小球整窗透明"消失"。这些 flags 恒定不变，
+    // 只需在首次构造（show 之前）设置一次。
+    bool                         windowFrameInitialized = false;
     bool                        isMousePressed = false;
     QPoint                      curWindowPos;
 
@@ -68,6 +74,8 @@ public:
 
     void setPosition();
     void setUiFrame();
+    // 仅做拖动松手后的屏幕边界限制与贴边吸附（不重设窗口 flags/属性，避免原生窗口重建）
+    void applyEdgeSnap();
 
     // 桌面环境适配：不同平台/不同桌面（Xorg / Wayland / macOS）的窗口行为不同
     void applyDesktopBehavior();
