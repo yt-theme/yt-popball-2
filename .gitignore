@@ -64,3 +64,7 @@ compile_commands.json
 
 # 项目内部工作记忆（不公开）
 .workbuddy/
+popball2.app/Contents/Info.plist
+popball2.app/Contents/MacOS/popball2
+popball2.app/Contents/PkgInfo
+popball2.app/Contents/Resources/popball2.icns

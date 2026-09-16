@@ -25,6 +25,7 @@ RUN unset HTTP_PROXY HTTPS_PROXY http_proxy https_proxy 2>/dev/null; \
         qt6-base-dev \
         qt6-base-dev-tools \
         qt6-l10n-tools \
+        libqt6sql6-sqlite \
         qmake6 \
         dpkg-dev \
         rpm \

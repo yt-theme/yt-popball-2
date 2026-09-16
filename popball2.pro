@@ -2,6 +2,15 @@ QT       += core gui
 
 greaterThan(QT_MAJOR_VERSION, 4): QT += widgets
 
+# 剪贴板历史持久化用 QtSql(QSQLITE)。
+# 用 qtHaveModule 守卫：万一目标环境没装 Qt6 的 Sql 开发包，也照样能构建/运行，
+# 只是历史不落盘（代码里按 POPBALL2_HAVE_QT_SQL 退化）。
+# 注意：Linux 运行时还需要 QSQLITE 插件包（Debian/Ubuntu: libqt6sql6-sqlite）。
+qtHaveModule(sql) {
+    QT += sql
+    DEFINES += POPBALL2_HAVE_QT_SQL
+}
+
 CONFIG += c++17
 
 # 版本号：自动从 package.json 读取（单一来源，改 package.json 即全局生效）
@@ -13,19 +22,23 @@ isEmpty(VERSION): VERSION = 0.0.0
 #DEFINES += QT_DISABLE_DEPRECATED_BEFORE=0x060000    # disables all the APIs deprecated before Qt 6.0.0
 
 SOURCES += \
+    clipstore.cpp \
     config.cpp \
     main.cpp \
     settingsdialog.cpp \
     sysInfo.cpp \
-    widget.cpp
+    widget.cpp \
+    popdock.cpp
 
 HEADERS += \
+    clipstore.h \
     config.h \
     macro_def.h \
     settingsdialog.h \
     struct_def.h \
     sysInfo.h \
-    widget.h
+    widget.h \
+    popdock.h
 
 TRANSLATIONS += \
     popball2_zh_CN.ts

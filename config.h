@@ -37,6 +37,7 @@ private:
     QString cpu_freq_color;
     QString cpu_temp_color;
     QString net_speed_color;
+    QString disk_io_color;          // 磁盘读写速度文字颜色
 
     qint32 charts_rows;
     qint32 update_data_interval;
@@ -53,6 +54,15 @@ private:
     qint8 cpu_temp_show;
     qint8 cpu_freq_show;
     qint8 net_speed_show;
+    qint8 disk_io_show;            // 1=显示磁盘读写速度, 0=隐藏
+
+    // [disk] 磁盘读写速度统计哪块盘
+    qint32  disk_io_mode;          // 0=IO 最高的盘（默认）, 1=指定盘
+    QString disk_io_name;          // mode=1 时指定的磁盘设备名
+
+    // [ui] 界面偏好
+    // 数据中转站面板的展示布局：0=图标网格（默认）1=列表 2=详细
+    qint32  dock_view_style;
 
     // [window]
     // 形状蒙版：桌面没开混成(compositing)时，半透明窗口会露出黑色矩形底，
@@ -97,6 +107,7 @@ public:
     void setCpuFreqColor(QString val);
     void setCpuTempColor(QString val);
     void setNetSpeedColor(QString val);
+    void setDiskIoColor(QString val);
 
     void setChartsRows(qint32 val);
     void setUpdateDataInterval(qint32 val);
@@ -111,6 +122,12 @@ public:
     void setCpuTempShow(qint8 val);
     void setCpuFreqShow(qint8 val);
     void setNetSpeedShow(qint8 val);
+    void setDiskIoShow(qint8 val);
+    void setDiskIoMode(qint32 val);
+    void setDiskIoName(QString val);
+
+    // [ui]
+    void setDockViewStyle(qint32 val);
 
     // [window]
     void setShapeMask(qint32 val);
@@ -140,6 +157,7 @@ public:
     QString getCpuFreqColor();
     QString getCpuTempColor();
     QString getNetSpeedColor();
+    QString getDiskIoColor();
 
     qint32  getChartsRows();
     qint32  getUpdateDataInterval();
@@ -154,6 +172,12 @@ public:
     qint8 getCpuTempShow();
     qint8 getCpuFreqShow();
     qint8 getNetSpeedShow();
+    qint8 getDiskIoShow();
+    qint32  getDiskIoMode();
+    QString getDiskIoName();
+
+    // [ui]
+    qint32 getDockViewStyle();
 
     // [window]
     qint32 getShapeMask();

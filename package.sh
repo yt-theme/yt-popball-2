@@ -512,7 +512,8 @@ Priority: optional
 Architecture: $DEB_ARCH
 Maintainer: popball2 <noreply@example.com>
 Installed-Size: $size
-Depends: libc6, libqt6core6 | libqt6core6t64, libqt6gui6 | libqt6gui6t64, libqt6widgets6 | libqt6widgets6t64
+Depends: libc6, libqt6core6 | libqt6core6t64, libqt6gui6 | libqt6gui6t64, libqt6widgets6 | libqt6widgets6t64, libqt6sql6 | libqt6sql6t64
+Recommends: libqt6sql6-sqlite
 Description: Floating desktop system monitor ball
  A small always-on-top desktop ball that visualises memory and swap usage
  as area charts, plus CPU usage, CPU temperature and network throughput.

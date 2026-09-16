@@ -1,8 +1,11 @@
 #include "widget.h"
 
+#include "popdock.h"
+
 #include <QBitmap>
 #include <QImage>
 #include <QRegion>
+#include <QMimeData>
 #include <QMessageBox>
 #include <QCoreApplication>
 #include <QDir>
@@ -10,6 +13,7 @@
 #include <QHash>
 #include <QProcess>
 #include <QStandardPaths>
+#include <QtMath>
 
 #if defined(POPBALL_HAVE_X11)
 #  include <QtGui/qguiapplication_platform.h>
@@ -61,7 +65,8 @@ QString formatNetSpeedField(double bytesPerSec)
     return s;
 }
 
-// X11 混成状态探测频率：每 N 次 updateUITimer 触发查一次。
+// 磁盘 IO 速度格式化：MB/s、保留两位小数、居中文本（UI 不显示单位，纯数值）。
+//   返回如 "12.34" / "123.45" 的字符串；超过 999999 时钳住，避免数字过宽被圆边切掉。
 // update_ui_interval 默认 450ms，N=10 ≈ 每 4.5s 查一次 —— 不额外占一个定时器、
 // 也不频繁打扰 X 服务器；用户切换混成后能在几秒内自动去/回黑框。
 constexpr int kCompositingCheckEveryUiTicks = 10;
@@ -74,10 +79,12 @@ constexpr int kAsideSnapThreshold = 12;
 // 必须明显大于 kAsideSnapThreshold：松开时小球正好离边缘十几像素，
 // 否则松开又会被立刻吸回竖条，看起来像"拉不出来"。
 constexpr int kAsideDetachPx = 16;
-// 松开时总位移不超过这么多像素 = 单击（不移动），单击竖条 → 展开成小球
-constexpr int kAsideClickPx = 4;
 // 单击展开后小球离屏幕边缘留出的空隙（要比 kAsideSnapThreshold 大，免得一松手又吸回去）
 constexpr int kAsidePopOutGap = kAsideSnapThreshold + 8;
+
+// 按下后总位移不超过这么多像素 = 单击（用于"单击球/竖条开关 PopDock 面板"的判定）。
+// 超过它就算拖动：拖动会立刻收起面板，避免面板挡着球。
+constexpr int kBallClickPx = 4;
 
 #if defined(POPBALL_HAVE_X11)
 // X11：检测桌面上有没有「混成管理器(compositing manager)」在跑。
@@ -111,6 +118,8 @@ Widget::Widget(QWidget *parent)
     this->config = new Config();
     // get system info
     this->sysInfo = new SysInfo();
+    // 磁盘读写：按配置选定生效盘（0=IO最高的盘，1=指定盘）
+    this->sysInfo->setDiskSelection(config->getDiskIoMode(), config->getDiskIoName());
 
     // update data timer
     this->updateDataTimer = new QTimer();
@@ -129,32 +138,66 @@ Widget::Widget(QWidget *parent)
     this->cpuTempLCD->setDigitCount(5);
     this->cpuTempLCD->setMode(QLCDNumber::Dec);
     this->cpuTempLCD->setSegmentStyle(QLCDNumber::Flat);
-    this->cpuTempLCD->setGeometry(0, config->getHeight()/5.9, config->getWidth(), config->getWidth()/5.5);
     this->cpuTempLCD->display("00'c");
     // cpu freq LCD
     this->cpuFreqLCD = new QLCDNumber(this);
     this->cpuFreqLCD->setDigitCount(9);
     this->cpuFreqLCD->setMode(QLCDNumber::Dec);
     this->cpuFreqLCD->setSegmentStyle(QLCDNumber::Flat);
-    this->cpuFreqLCD->setGeometry(0, config->getHeight()/5.7 + config->getWidth()/5.5, config->getWidth(), config->getWidth()/8);
     this->cpuFreqLCD->display("000000000");
     // net upload LCD
     this->netUploadLCD = new QLCDNumber(this);
     this->netUploadLCD->setDigitCount(7);   // "u 01.23" 共 7 字符（小数点占 1 位）
     this->netUploadLCD->setMode(QLCDNumber::Dec);
     this->netUploadLCD->setSegmentStyle(QLCDNumber::Flat);
-    this->netUploadLCD->setGeometry(0, config->getHeight()/5.7 + config->getWidth()/5.5 * 1.9, config->getWidth(), config->getWidth()/6.5);
     this->netUploadLCD->display("u 00.00");
     // net downlod LCD
     this->netDownloadLCD = new QLCDNumber(this);
     this->netDownloadLCD->setDigitCount(7);
     this->netDownloadLCD->setMode(QLCDNumber::Dec);
     this->netDownloadLCD->setSegmentStyle(QLCDNumber::Flat);
-    this->netDownloadLCD->setGeometry(0, config->getHeight()/5.7 + config->getWidth()/5.5*2.8, config->getWidth(), config->getWidth()/6.5);
     this->netDownloadLCD->display("d 00.00");
+    // 磁盘总速度 LCD：MB/s、两位小数（数值本身已是 MB，单位无法用数码字体呈现故省略）
+    this->diskIoLCD = new QLCDNumber(this);
+    this->diskIoLCD->setDigitCount(6);          // "123.45" 共 6 字符预留
+    this->diskIoLCD->setMode(QLCDNumber::Dec);
+    this->diskIoLCD->setSegmentStyle(QLCDNumber::Flat);
+    this->diskIoLCD->display("0.00");
+
+    // 各行按"当前可见行"自适应排布（首帧 paintEvent 会按真实显隐再收紧一次）
+    this->applyLcdLayout();
 
     // LCD 前景色（设置里改颜色后也会重新套用）
     this->applyLcdStyle();
+
+    // hover 300ms 弹出的工具/中转站面板：球上停留 / 拖文件到球上 → 打开面板
+    this->hoverTimer = new QTimer(this);
+    this->hoverTimer->setSingleShot(true);
+    this->hoverTimer->setInterval(300);
+    connect(this->hoverTimer, &QTimer::timeout, this, &Widget::onHoverTimeout);
+    this->hideTimer = new QTimer(this);
+    this->hideTimer->setSingleShot(true);
+    this->hideTimer->setInterval(250);
+    connect(this->hideTimer, &QTimer::timeout, this, &Widget::onHideTimeout);
+
+    // 轻量轮询：即使窗口/应用未激活（如 macOS 后台不投递 enter/move 事件），
+    // 也靠全局光标坐标判断是否在球/面板上，从而在未激活时移上去也能弹出面板。
+    this->hoverPollTimer = new QTimer(this);
+    this->hoverPollTimer->setInterval(100);
+    connect(this->hoverPollTimer, &QTimer::timeout, this, &Widget::onHoverPoll);
+    this->hoverPollTimer->start();
+
+    this->popDock = new PopDock(this);
+    connect(this->popDock, &PopDock::mouseEntered, this, &Widget::cancelHidePopDock);
+    connect(this->popDock, &PopDock::mouseLeft,   this, &Widget::scheduleHidePopDock);
+    // 面板里正在操作（右键菜单 / 拖出条目）时取消已排队的收起
+    connect(this->popDock, &PopDock::interactionStarted, this, &Widget::cancelHidePopDock);
+    // 中转站面板的展示布局（图标/列表/详细）：按配置回填，用户切换时落盘
+    connect(this->popDock, &PopDock::viewStyleChanged, this, [this](int style) {
+        this->config->setDockViewStyle(style);
+    });
+    this->popDock->setViewStyle(this->config->getDockViewStyle());
+    this->setAcceptDrops(true);   // 允许把文件拖到球上
 
     // 右键菜单（设置 / 退出）——只构建一次，右键时直接弹出
     this->buildContextMenu();
@@ -165,12 +208,86 @@ Widget::Widget(QWidget *parent)
 // 不重摆的话小球变大了数字还挤在原来的小区域里
 void Widget::applyLcdLayout()
 {
+    this->relayoutVisibleLcds();
+}
+
+// 依 lcdRowMask 把"当前可见"的信息行自上而下均匀铺在球内。
+//   只显示 3 行时行高自动变大，5 行时自动压缩——既不留空洞，也不会被挤出球外
+//   （原实现用固定 h/5.7 + n*w/5.5 的公式，加到磁盘两行后第 6 行 y 已超过球高）。
+void Widget::relayoutVisibleLcds()
+{
     const qint32 w = config->getWidth();
     const qint32 h = config->getHeight();
-    this->cpuTempLCD->setGeometry(0, h/5.9, w, w/5.5);
-    this->cpuFreqLCD->setGeometry(0, h/5.7 + w/5.5, w, w/8);
-    this->netUploadLCD->setGeometry(0, h/5.7 + w/5.5 * 1.9, w, w/6.5);
-    this->netDownloadLCD->setGeometry(0, h/5.7 + w/5.5*2.8, w, w/6.5);
+
+    // mask 为 0 时（还没跑过 paintEvent）按"全显示"先摆一套合理几何，首帧后会按真实显隐收紧
+    const quint8 mask = (this->lcdRowMask != 0) ? this->lcdRowMask : quint8(0x1F);
+    int visible = 0;
+    for (int i = 0; i < ROW_COUNT; ++i)
+        if (mask & (1 << i)) ++visible;
+    if (visible <= 0) return;
+
+    // 行高上限同时参考宽度和高度，避免可见行少时字体被撑得离谱
+    const double maxRowH = qMin(double(w) / 5.0, double(h) / 5.5);
+    const double avail   = double(h) * 0.84;      // 可用于信息行的总高度（居中区域）
+    const double rowH    = qMin(maxRowH, avail / visible);
+
+    // 行按"类"分组：网速的上行/下行属于同一类（类内不加间距、贴在一起），
+    // 温度 / 频率 / 磁盘各自成类。富余空间只匀给类与类之间的间隔，
+    // 所以"温度+网速"、"温度+频率"时上下带间距，网速上下行之间没有空隙。
+    const int group[ROW_COUNT] = { 0, 1, 2, 3, 3 };   // NET_UP / NET_DOWN 同组
+    int classGapCount = 0;
+    int prevGroup = -1;
+    for (int i = 0; i < ROW_COUNT; ++i) {
+        if (!(mask & (1 << i))) continue;
+        if (prevGroup >= 0 && group[i] != prevGroup) ++classGapCount;
+        prevGroup = group[i];
+    }
+    const double gap = (classGapCount > 0)
+                       ? qMax(0.0, qMin((avail - rowH * visible) / classGapCount, rowH * 0.9))
+                       : 0.0;
+    const double totalH  = rowH * visible + gap * classGapCount;
+    const double startY  = (h - totalH) / 2.0;   // 整体垂直居中
+    const double r       = qMin(double(w), double(h)) / 2.0;
+
+    double y = startY;
+    prevGroup = -1;
+    for (int i = 0; i < ROW_COUNT; ++i) {
+        if (!(mask & (1 << i))) continue;
+        // 跨"类"才插间距；同一类内（网速上下行）贴在一起
+        if (prevGroup >= 0 && group[i] != prevGroup) y += gap;
+
+        // 球是圆的：越靠上/下的行可用宽度越窄，按该行中心高度处的弦长收缩左右边界，
+        // 免得文字被球体圆边切掉两头。
+        const double cy = y + rowH / 2.0;
+        const double dy = qAbs(cy - double(h) / 2.0);
+        const double halfChord = (dy < r) ? qSqrt(r * r - dy * dy) : 0.0;
+        const double usable = qMax(double(w) * 0.35, halfChord * 2.0 * 0.98);
+
+        const QRect rect(qRound((w - usable) / 2.0), qRound(y),
+                         qRound(usable), qRound(rowH));
+        this->lcdRowRect[i] = rect;
+        y += rowH;
+        prevGroup = group[i];
+    }
+
+    // 各信息行都是 QLCDNumber（它会把数字按控件尺寸缩放）
+    const double netScale = 0.82;   // 网速行比温度/频率小一点，但比之前略大（用户要求"再大一点点"）
+    QLCDNumber *lcds[ROW_COUNT] = {
+        this->cpuTempLCD, this->cpuFreqLCD,
+        this->diskIoLCD,                          // 磁盘行也用 LCD 数码字体（与其它行一致）
+        this->netUploadLCD, this->netDownloadLCD
+    };
+    for (int i = 0; i < ROW_COUNT; ++i) {
+        if (!(mask & (1 << i)) || lcds[i] == nullptr) continue;
+        QRect r = this->lcdRowRect[i];
+        if (i == ROW_DISK || i == ROW_NET_UP || i == ROW_NET_DOWN) {
+            // 磁盘行与网速行：同样压缩高度并垂直居中，使数字字号一致（用户要求"硬盘速度字大小和网速一样"）
+            const int hh = qMax(1, qRound(r.height() * netScale));
+            r.setTop(r.top() + (r.height() - hh) / 2);
+            r.setHeight(hh);
+        }
+        lcds[i]->setGeometry(r);
+    }
 }
 
 // 把配置里的前景色套到各 LCD
@@ -180,6 +297,7 @@ void Widget::applyLcdStyle()
     this->cpuFreqLCD->setStyleSheet("border: 0;color:" + config->getCpuFreqColor() + ";");
     this->netUploadLCD->setStyleSheet("border: 0;color:" + config->getNetSpeedColor() + ";");
     this->netDownloadLCD->setStyleSheet("border: 0;color:" + config->getNetSpeedColor() + ";");
+    this->diskIoLCD->setStyleSheet("border: 0;color:" + config->getDiskIoColor() + ";");
 }
 
 Widget::~Widget()
@@ -194,6 +312,8 @@ Widget::~Widget()
     delete this->cpuFreqLCD;
     delete this->netUploadLCD;
     delete this->netDownloadLCD;
+    delete this->diskIoLCD;
+    // popDock 以 this 为父对象，由 Qt 在 QWidget 析构时自动回收，这里不可重复 delete
 }
 
 // 某个形状对应的窗口尺寸。
@@ -335,7 +455,7 @@ void Widget::refreshMaskAfterShapeChange()
     this->applyShapeMask(true);
 }
 
-// 小球上的 LCD（温度/频率/网速）在竖条形态下一律隐藏：
+// 小球上的 LCD（温度/频率/磁盘/网速）在竖条形态下一律隐藏：
 // 竖条只有几十像素宽，LCD 会被挤在里面显示成一堆残缺数字。
 void Widget::hideAllLcds()
 {
@@ -343,6 +463,7 @@ void Widget::hideAllLcds()
     if (this->cpuFreqLCD     != nullptr && !this->cpuFreqLCD->isHidden())     this->cpuFreqLCD->hide();
     if (this->netUploadLCD   != nullptr && !this->netUploadLCD->isHidden())   this->netUploadLCD->hide();
     if (this->netDownloadLCD != nullptr && !this->netDownloadLCD->isHidden()) this->netDownloadLCD->hide();
+    if (this->diskIoLCD      != nullptr && !this->diskIoLCD->isHidden())      this->diskIoLCD->hide();
 }
 
 // 由"贴边竖条"变回小球。
@@ -733,6 +854,11 @@ void Widget::onTimerIntervalForUpdateUI()
 void Widget::mousePressEvent(QMouseEvent *event)
 {
     if (event->button() == Qt::LeftButton) {
+        // 不在这里立刻收起面板：先记住按下前面板开没开，松手时若判定为"单击"
+        // 就做开/关切换；只有真的开始拖动（见 mouseMoveEvent）才收起面板。
+        this->dockWasVisibleOnPress = (this->popDock != nullptr && this->popDock->isVisible());
+        this->pressMoved = false;
+        this->cancelHidePopDock();
         this->isMousePressed = true;
         this->curWindowPos = event->pos();
         this->pressGlobalPos = event->globalPosition().toPoint();
@@ -748,6 +874,15 @@ void Widget::mouseMoveEvent(QMouseEvent *event)
 {
     if (this->isMousePressed != true)
         return;
+
+    // 位移一旦超过单击阈值就视为"真的在拖动"：收起面板（别挡着球），
+    // 之后松手也不再触发"单击开关面板"。
+    if (!this->pressMoved &&
+        (event->globalPosition().toPoint() - this->pressGlobalPos).manhattanLength() > kBallClickPx) {
+        this->pressMoved = true;
+        if (this->popDock != nullptr && this->popDock->isVisible())
+            this->popDock->hideAnimated();      // 拖动开始：划入收起，别挡着球
+    }
 
     // ---------------- 竖条形态：只沿边缘上下走 ----------------
     if (this->config->getShape() == SHAPE_ASIDE)
@@ -787,14 +922,10 @@ void Widget::mouseMoveEvent(QMouseEvent *event)
 
 void Widget::mouseReleaseEvent(QMouseEvent *event)
 {
-    const QPoint globalPos = event->globalPosition().toPoint();
-
-    // 竖条形态下"按下-松开"基本没移动 = 单击 → 展开成小球（竖条没有别的单击行为）
-    if (this->config->getShape() == SHAPE_ASIDE)
-    {
-        if ((globalPos - this->pressGlobalPos).manhattanLength() <= kAsideClickPx)
-            this->detachToCircle(globalPos, false);
-    }
+    // 贴边竖条形态：单击不再还原成小球 —— 只有拖动到内侧超过阈值(kAsideDetachPx)
+    // 才会由 mouseMoveEvent 里的 detachToCircle 变回圆球（用户明确要求）。
+    // 单击竖条/圆球改为"开关 PopDock 面板"。
+    this->dragOpening = false;
 
     // store to config
     this->config->setX(this->pos().x());
@@ -805,8 +936,211 @@ void Widget::mouseReleaseEvent(QMouseEvent *event)
     // 触发原生窗口重建，KWin 解除管理后小球会整窗透明消失。
     this->applyEdgeSnap();
 
-    Q_UNUSED(event);
+    // 单击（按下后没有拖动）= 开关面板：原本没开就打开，原本开着就收起。
+    // 拖动过（pressMoved）则不动面板，避免拖完球又被弹出面板。
+    const bool wasClick = (!this->pressMoved && event->button() == Qt::LeftButton);
+    if (wasClick && this->popDock != nullptr) {
+        if (this->dockWasVisibleOnPress || this->popDock->isVisible())
+            this->popDock->hideAnimated();
+        else
+            this->showPopDock();
+    }
+    this->pressMoved = false;
+    this->dockWasVisibleOnPress = false;
+
     this->isMousePressed = false;
+}
+
+// ---------------------------------------------------------------- hover 弹出的工具/中转站面板
+void Widget::enterEvent(QEnterEvent *event)
+{
+    Q_UNUSED(event);
+    this->cancelHidePopDock();                 // 回到球上取消隐藏计时（轮询另担弹出职责）
+}
+
+void Widget::leaveEvent(QEvent *event)
+{
+    Q_UNUSED(event);
+    // 注：hoverTimer 的启停与隐藏调度统一由 onHoverPoll() 负责（兼容未激活窗口），
+    // 这里仅保留隐藏的快速触发，轮询也会兜底。
+    if (this->popDock != nullptr && this->popDock->isVisible())
+        this->scheduleHidePopDock();
+}
+
+// 轮询检测光标是否落在"悬浮球或面板"上。即使窗口/应用未激活（后台窗口收不到
+// enter/move 事件），用全局光标坐标也能判定，从而实现"未激活时移上去也弹窗"。
+void Widget::onHoverPoll()
+{
+    if (this->popDock == nullptr)
+        return;
+    const QPoint gp = QCursor::pos();
+    const bool overBall = this->geometry().contains(gp);
+    // 收起动画进行中窗口正在移动，命中判定要按"落点矩形"算，
+    // 否则光标停在面板上却因为窗口正在滑走而被判成"离开了"。
+    // 另外：面板里正在操作（右键菜单/拖拽）时一律当作"还在面板上"，不能收起。
+    const bool locked = this->popDock->isInteractionLocked();
+    const bool overDock = locked
+                          || (this->popDock->isVisible()
+                              && (this->popDock->geometry().contains(gp)
+                                  || this->popDock->targetRect().contains(gp)));
+    const bool over = overBall || overDock;
+
+    if (over == this->cursorOverUi)
+        return;                                // 状态未变，避免重复重置 300ms 计时
+    this->cursorOverUi = over;
+
+    if (over) {
+        this->cancelHidePopDock();
+        if (!this->popDock->isVisible() && !this->isMousePressed)
+            this->hoverTimer->start();         // 停留 300ms 才弹
+    } else {
+        this->hoverTimer->stop();
+        if (this->popDock->isVisible())
+            this->scheduleHidePopDock();       // 离开球与面板 → 延迟隐藏
+    }
+}
+
+void Widget::onHoverTimeout()
+{
+    if (this->isMousePressed) return;          // 正在拖动小球时不弹
+    this->showPopDock();
+}
+
+void Widget::onHideTimeout()
+{
+    if (this->popDock == nullptr)
+        return;
+    // 用户正在面板里操作（右键菜单弹出、拖出条目）→ 取消这次收起，别打断他
+    if (this->popDock->isInteractionLocked())
+        return;
+    this->popDock->hideAnimated();      // 离开球与面板 → 划入收起
+}
+
+void Widget::scheduleHidePopDock()
+{
+    // 面板里正在操作时不排收起：菜单/拖拽期间光标会离开面板（移到菜单上），
+    // 那次"离开"不该被当成"用户走开了"。
+    if (this->popDock != nullptr && this->popDock->isInteractionLocked())
+        return;
+    if (this->hideTimer != nullptr)
+        this->hideTimer->start();
+}
+
+void Widget::cancelHidePopDock()
+{
+    if (this->hideTimer != nullptr)
+        this->hideTimer->stop();
+    // 光标又回到球/面板上时，正在播放的收起动画要立刻撤销，否则面板会"擦身而过"地消失
+    if (this->popDock != nullptr)
+        this->popDock->cancelHideAnimation();
+}
+
+void Widget::showPopDock()
+{
+    if (this->popDock == nullptr)
+        return;
+
+    const QPoint target = this->popDockTargetPos();     // 见下方"智能定位"
+
+    // 尺寸：屏幕装不下就收缩（小屏/投影分辨率下不至于溢出屏幕）
+    // 注意每次先按首选尺寸算落点，再按屏幕夹一次，避免用在旧尺寸上算出来的位置。
+    this->popDock->showAnimated(target, this->geometry());
+    this->popDock->raise();
+    this->popDock->activateWindow();                    // 拿到焦点，Ctrl+V 粘贴才生效
+}
+
+// 面板落点：按人机工程学摆放 ——
+//   1) 用 availableGeometry（自动避开菜单栏 / Dock / 任务栏）并留安全边距；
+//   2) 横向优先放在"空间更大的一侧"，保证不压住悬浮球；两侧都放不下时选更宽的一侧；
+//   3) 纵向与球的中心对齐，再夹紧在屏内（球靠上/靠下时面板自动贴齐屏幕内边）；
+//   4) 屏幕比面板还小时收缩面板尺寸，宁可挤一点也不要溢出屏幕。
+QPoint Widget::popDockTargetPos()
+{
+    const QRect ball = this->geometry();
+
+    QScreen *scr = QGuiApplication::screenAt(ball.center());
+    if (scr == nullptr)
+        scr = QGuiApplication::primaryScreen();
+    const QRect sr = scr->availableGeometry();
+
+    const int margin = 12;      // 与屏幕边缘的安全边距
+    const int gap    = 10;      // 与悬浮球之间的间隙（不压住球）
+
+    // ---- 尺寸自适应 ----
+    int pw = qMin(PopDock::kPreferredWidth,  qMax(240, sr.width()  - margin * 2));
+    int ph = qMin(PopDock::kPreferredHeight, qMax(260, sr.height() - margin * 2));
+    if (this->popDock != nullptr)
+        this->popDock->setFixedSize(pw, ph);
+
+    // ---- 横向：选空间更大的一侧 ----
+    const int spaceL = ball.left() - sr.left();          // 球左侧可用宽度
+    const int spaceR = sr.right() - ball.right();        // 球右侧可用宽度
+    const int need   = pw + gap;
+    bool toRight = (spaceR >= spaceL);                   // 默认开在空间更大的一侧
+    if (toRight && spaceR < need)
+        toRight = false;                                 // 右侧不够 → 翻到左侧
+    else if (!toRight && spaceL < need)
+        toRight = (spaceR >= spaceL);                    // 左侧也不够 → 谁宽用谁
+
+    int x = toRight ? (ball.right() + gap) : (ball.left() - gap - pw);
+    const int minX = sr.left() + margin;
+    const int maxX = qMax(minX, sr.right() - pw - margin);
+    x = qBound(minX, x, maxX);
+
+    // ---- 纵向：与球中心对齐，再夹紧在屏内 ----
+    int y = ball.center().y() - ph / 2;
+    const int minY = sr.top() + margin;
+    const int maxY = qMax(minY, sr.bottom() - ph - margin);
+    y = qBound(minY, y, maxY);
+
+    return QPoint(x, y);
+}
+
+// 把文件拖到球上（停留 300ms 自动开面板）/ 直接松手落到球上也收下
+void Widget::dragEnterEvent(QDragEnterEvent *event)
+{
+    const QMimeData *md = event->mimeData();
+    if (md->hasUrls() || md->hasImage() || md->hasText()) {
+        event->acceptProposedAction();
+        this->dragOpening = true;
+        if (this->popDock == nullptr || !this->popDock->isVisible())
+            this->hoverTimer->start();          // 拖到球上 300ms 自动开面板
+    } else {
+        event->ignore();
+    }
+}
+
+void Widget::dragMoveEvent(QDragMoveEvent *event)
+{
+    const QMimeData *md = event->mimeData();
+    if (md->hasUrls() || md->hasImage() || md->hasText())
+        event->acceptProposedAction();
+    else
+        event->ignore();
+}
+
+void Widget::dropEvent(QDropEvent *event)
+{
+    this->dragOpening = false;
+    const QMimeData *md = event->mimeData();
+    if (md->hasUrls()) {
+        QStringList paths;
+        for (const QUrl &u : md->urls())
+            paths << u.toLocalFile();
+        if (this->popDock) { this->popDock->addFiles(paths); this->showPopDock(); }
+        event->acceptProposedAction();
+    } else if (md->hasImage()) {
+        if (this->popDock) {
+            this->popDock->addImage(qvariant_cast<QImage>(md->imageData()));
+            this->showPopDock();
+        }
+        event->acceptProposedAction();
+    } else if (md->hasText()) {
+        if (this->popDock) { this->popDock->addText(md->text()); this->showPopDock(); }
+        event->acceptProposedAction();
+    } else {
+        event->ignore();
+    }
 }
 
 // ---------------------------------------------------------------- 右键菜单
@@ -830,7 +1164,7 @@ void Widget::onMenuSettings()
 {
     // 打开扁平化风格的设置窗口（非模态，方便边改边看小球效果）
     if (this->settingsDialog == nullptr) {
-        this->settingsDialog = new SettingsDialog(this->config, this);
+        this->settingsDialog = new SettingsDialog(this->config, this->sysInfo, this);
         connect(this->settingsDialog, &SettingsDialog::settingsApplied,
                 this, &Widget::onSettingsApplied);
     }
@@ -1271,6 +1605,8 @@ void Widget::onMenuSystemMonitor()
 // 设置保存后：把新颜色套到 LCD、按新的不透明度/显示项重刷界面
 void Widget::onSettingsApplied()
 {
+    // 磁盘读写：设置里可能改了"统计哪块盘"
+    this->sysInfo->setDiskSelection(config->getDiskIoMode(), config->getDiskIoName());
     this->applyLcdLayout();   // 尺寸可能变了
     this->applyLcdStyle();
     this->setUiFrame();       // 不透明度/阴影/定时器/形状蒙版在这里重套
@@ -1367,10 +1703,14 @@ void Widget::paintEvent(QPaintEvent *)
                        0, 360);
         painter.setClipPath(clipPath);
 
+        // 本轮各 LCD 行的"应显示"位图：决定竖直排布（见 relayoutVisibleLcds）
+        quint8 lcdMask = 0;
+
         // cpu freq LCD（平台/发行版取不到频率时不显示）
         if (config->getCpuFreqShow() == SHOW && this->sysInfo->isCpuFreqAvailable())
         {
             this->cpuFreqLCD->display(QString("CPU %1").arg(qRound(this->sysInfo->getCpuFreq())));
+            lcdMask |= (1 << ROW_FREQ);
             if (this->cpuFreqLCD->isHidden())
             {
                 this->cpuFreqLCD->show();
@@ -1388,6 +1728,7 @@ void Widget::paintEvent(QPaintEvent *)
         if (config->getCpuTempShow() == SHOW && this->sysInfo->isCpuTemperatureAvailable())
         {
             this->cpuTempLCD->display(QString("%1'c").arg(qRound(this->sysInfo->getCpuTemperature())));
+            lcdMask |= (1 << ROW_TEMP);
             if (this->cpuTempLCD->isHidden())
             {
                 this->cpuTempLCD->show();
@@ -1414,6 +1755,7 @@ void Widget::paintEvent(QPaintEvent *)
                 QString("u %1").arg(formatNetSpeedField(this->sysInfo->getTransmit() / seconds)));
             this->netDownloadLCD->display(
                 QString("d %1").arg(formatNetSpeedField(this->sysInfo->getReceive() / seconds)));
+            lcdMask |= (1 << ROW_NET_UP) | (1 << ROW_NET_DOWN);
 
             if (this->netUploadLCD->isHidden() || this->netDownloadLCD->isHidden())
             {
@@ -1428,6 +1770,19 @@ void Widget::paintEvent(QPaintEvent *)
                 this->netUploadLCD->hide();
                 this->netDownloadLCD->hide();
             }
+        }
+
+        // 磁盘总速度：读+写之和，MB/s、居中文本、两位小数（实际绘制在下方 charts 之后）
+        if (config->getDiskIoShow() == SHOW && this->sysInfo->isDiskIoAvailable())
+        {
+            lcdMask |= (1 << ROW_DISK);
+        }
+
+        // 可见行集合变了（开关了某个指标 / 某项可用性刚探测出来）→ 重排竖直布局
+        if (lcdMask != this->lcdRowMask)
+        {
+            this->lcdRowMask = lcdMask;
+            this->relayoutVisibleLcds();
         }
 
         // mem charts（内存不可用或总量为 0 时不绘制，避免除零）
@@ -1492,6 +1847,25 @@ void Widget::paintEvent(QPaintEvent *)
         cpuUsagePath.lineTo(0, main_height);
         painter.fillPath(cpuUsagePath, QColor(this->config->getCpuUsageColor()));
 
+        // 磁盘总速度：读+写之和，用 LCD 数码字体显示 MB/s 数值（两位小数）。
+        // QLCDNumber 画不出字母，单位"MB/s"省略，数值本身已是 MB/s。
+        if (config->getDiskIoShow() == SHOW && this->sysInfo->isDiskIoAvailable())
+        {
+            const int intervalMs = this->config->getUpdateDataInterval();
+            const double seconds = intervalMs > 0 ? intervalMs / 1000.0 : 1.0;
+            const double total = this->sysInfo->getDiskReadBytes() + this->sysInfo->getDiskWriteBytes();
+            const double mb = total / seconds / (1024.0 * 1024.0);   // MB/s
+            const QString val = QString::number(mb, 'f', 2);          // 如 "12.34"
+            this->diskIoLCD->setDigitCount(val.length());
+            this->diskIoLCD->display(val);
+            if (this->diskIoLCD->isHidden())
+                this->diskIoLCD->show();
+        }
+        else
+        {
+            if (!this->diskIoLCD->isHidden())
+                this->diskIoLCD->hide();
+        }
 
         painter.end();
         break;

@@ -87,9 +87,14 @@ chmod +x popball2-1.0.0-x86_64.AppImage
 - 包的 `Depends` 已声明：
   ```
   libc6, libqt6core6 | libqt6core6t64,
-  libqt6gui6 | libqt6gui6t64, libqt6widgets6 | libqt6widgets6t64
+  libqt6gui6 | libqt6gui6t64, libqt6widgets6 | libqt6widgets6t64,
+  libqt6sql6 | libqt6sql6t64
   ```
   （`*t64` 是 64 位时间制式变体，Debian 13 / Ubuntu 24.04+ 用；用 `|` 兼容两种）
+- **剪贴板历史（SQLite）**：程序用 QtSql 的 QSQLITE 驱动把中转站内容持久化到
+  `~/.popball2_clipboard.db`。deb 里以 `Recommends: libqt6sql6-sqlite` 声明驱动插件
+  （apt 默认会装上；用 `--no-install-recommends` 时不会装）。缺这个插件时程序**照常运行**，
+  只是历史不落盘（启动日志里会有一行提示）。Fedora 的 sqlite 驱动包含在 `qt6-qtbase` 里，无需额外包。
 - 用 **apt** 安装时会**自动从仓库下载并装好**这些 Qt6 运行库（含它们传递依赖的
   libgl、fontconfig、xkbcommon 等）。所以「装上就能用」。
 

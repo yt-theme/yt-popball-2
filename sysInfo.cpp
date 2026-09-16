@@ -7,6 +7,7 @@
 
 #if defined(Q_OS_MACOS)
 #include <IOKit/IOKitLib.h>
+#include <CoreFoundation/CoreFoundation.h>
 #endif
 
 /* =====================================================================================
@@ -761,6 +762,45 @@ void SysInfo::updateSysinfo()
     this->receive_last  = rx;
     this->transmit_last = tx;
 
+    // ---------------------------------------------------------------------- 磁盘 IO
+    // /proc/diskstats：各字段含义（内核文档 Documentation/admin-guide/iostats.rst）
+    //   字段 3(读完成次数)  5(读扇区数)  6(写完成次数)  9(写扇区数)
+    // 扇区大小通常 512 字节，部分新设备可能 4K；这里统一按 512 算（与 iostat 一致）
+    // 逐盘统计累计读/写字节，再交给 finalizeDiskIo() 选出生效盘。
+    const QString diskText = readTextFile(QStringLiteral("/proc/diskstats"));
+    QHash<QString, QPair<quint64, quint64>> diskDelta;   // 设备名 -> (本间隔读字节, 写字节)
+    for (const QString &line : diskText.split(QLatin1Char('\n'), Qt::SkipEmptyParts)) {
+        const QStringList f = line.split(QRegularExpression(QStringLiteral("\\s+")), Qt::SkipEmptyParts);
+        if (f.size() < 13) continue;
+        // 跳过分区（主设备名的分区号）、ramdisk、loop、cdrom 等
+        const QString name = f.value(2);
+        if (name.contains(QLatin1Char('p')) && name.size() > 2) {
+            bool allDigit = true;
+            for (int i = 1; i < name.size(); ++i)
+                if (!name.at(i).isDigit()) { allDigit = false; break; }
+            if (allDigit) continue;   // sda1, nvme0n1p2 这类分区跳过
+        }
+        if (name.startsWith(QLatin1String("loop")) ||
+            name.startsWith(QLatin1String("ram"))  ||
+            name.startsWith(QLatin1String("zram")) ||
+            name.startsWith(QLatin1String("sr"))) continue;
+        // 友好显示名：/sys/block/<dev>/device/model（每块盘只读一次，之后复用）
+        if (!this->diskLabelMap.contains(name)) {
+            const QString model = readTextFile(QStringLiteral("/sys/block/%1/device/model").arg(name));
+            if (!model.isEmpty())
+                this->diskLabelMap.insert(name, name + QStringLiteral(" · ") + model);
+        }
+        const quint64 rdTotal = f.at(5).toULongLong() * 512;   // 累计读字节
+        const quint64 wrTotal = f.at(9).toULongLong() * 512;   // 累计写字节
+        DiskIoStat &s = this->diskStats[name];
+        const quint64 rdDelta = (rdTotal >= s.read_total)  ? (rdTotal  - s.read_total)  : 0;
+        const quint64 wrDelta = (wrTotal >= s.write_total) ? (wrTotal - s.write_total) : 0;
+        s.read_total  = rdTotal;
+        s.write_total = wrTotal;
+        diskDelta.insert(name, qMakePair(rdDelta, wrDelta));
+    }
+    this->finalizeDiskIo(diskDelta);
+
     this->lastUpdateTime = QDateTime::currentMSecsSinceEpoch();
 }
 
@@ -938,6 +978,80 @@ void SysInfo::updateSysinfo()
         this->transmit_last = tx;
     }
 
+    // ---------------------------------------------------------------------- 磁盘 IO（macOS：IOKit 枚举所有 IOBlockStorageDriver，按 BSD 名逐盘统计）
+    //  注意两个容易踩的点（已核对 ioreg 实测结构）：
+    //   1) 累计字节在 IOBlockStorageDriver 的 "Statistics" 字典里，键是 "Bytes (Read)" / "Bytes (Write)"，
+    //      而不是 "Statistics.ReadBytes" 这种点号拼法。
+    //   2) "BSD Name"（disk0/disk6…）不在 driver 自身，而在它的子节点 IOMedia（整盘）上。
+    {
+        QHash<QString, QPair<quint64, quint64>> diskDelta;   // 设备名 -> (本间隔读字节, 写字节)
+        io_iterator_t iter = IO_OBJECT_NULL;
+        const kern_return_t kr = IOServiceGetMatchingServices(kIOMainPortDefault,
+            IOServiceMatching("IOBlockStorageDriver"), &iter);
+        if (kr == KERN_SUCCESS && iter != IO_OBJECT_NULL) {
+            io_object_t obj = 0;
+            while ((obj = IOIteratorNext(iter)) != 0) {
+                // 1) BSD 名 + 介质名：在 driver 的子节点 IOMedia（Whole=Yes，即整盘）上取
+                QString bsdName, mediaName;
+                io_iterator_t kids = IO_OBJECT_NULL;
+                if (IORegistryEntryGetChildIterator(obj, kIOServicePlane, &kids) == KERN_SUCCESS) {
+                    io_object_t kid = 0;
+                    while ((kid = IOIteratorNext(kids)) != 0) {
+                        CFStringRef nameRef = (CFStringRef)IORegistryEntryCreateCFProperty(
+                            kid, CFSTR("BSD Name"), kCFAllocatorDefault, 0);
+                        if (nameRef) {
+                            const CFIndex len = CFStringGetLength(nameRef);
+                            if (len > 0) {
+                                // BSD 名都是 ASCII，转 UTF-8 读即可
+                                QByteArray buf(int(len) * 4 + 1, 0);
+                                if (CFStringGetCString(nameRef, buf.data(), buf.size(), kCFStringEncodingUTF8))
+                                    bsdName = QString::fromUtf8(buf.constData());
+                            }
+                            CFRelease(nameRef);
+                        }
+                        // 取该介质在注册表里的条目名（如 "APPLE SSD AP0256Q Media"），用于友好显示
+                        char entryName[128] = {0};
+                        if (IORegistryEntryGetName(kid, entryName) == KERN_SUCCESS && entryName[0] != 0)
+                            mediaName = QString::fromUtf8(entryName);
+                        IOObjectRelease(kid);
+                        if (!bsdName.isEmpty()) break;
+                    }
+                    IOObjectRelease(kids);
+                }
+                // 取不到 BSD 名就跳过（避免多块盘混叠到同一个 key 上，导致差值失真）
+                if (bsdName.isEmpty()) { IOObjectRelease(obj); continue; }
+
+                if (!mediaName.isEmpty()) this->diskLabelMap.insert(bsdName, bsdName + QStringLiteral(" · ") + mediaName);
+
+                // 2) 累计读写字节：Statistics 字典
+                quint64 totalRead = 0, totalWrite = 0;
+                CFMutableDictionaryRef props = nullptr;
+                if (IORegistryEntryCreateCFProperties(obj, &props, kCFAllocatorDefault, 0) == KERN_SUCCESS && props) {
+                    CFDictionaryRef stats = (CFDictionaryRef)CFDictionaryGetValue(props, CFSTR("Statistics"));
+                    if (stats && CFGetTypeID(stats) == CFDictionaryGetTypeID()) {
+                        CFNumberRef rdNum = (CFNumberRef)CFDictionaryGetValue(stats, CFSTR("Bytes (Read)"));
+                        CFNumberRef wrNum = (CFNumberRef)CFDictionaryGetValue(stats, CFSTR("Bytes (Write)"));
+                        double val = 0.0;
+                        if (rdNum && CFNumberGetValue(rdNum, kCFNumberDoubleType, &val)) totalRead  = quint64(val);
+                        val = 0.0;
+                        if (wrNum && CFNumberGetValue(wrNum, kCFNumberDoubleType, &val)) totalWrite = quint64(val);
+                    }
+                    CFRelease(props);
+                }
+                IOObjectRelease(obj);
+
+                DiskIoStat &s = this->diskStats[bsdName];
+                const quint64 rdDelta = (totalRead  >= s.read_total)  ? (totalRead  - s.read_total)  : 0;
+                const quint64 wrDelta = (totalWrite >= s.write_total) ? (totalWrite - s.write_total) : 0;
+                s.read_total  = totalRead;
+                s.write_total = totalWrite;
+                diskDelta.insert(bsdName, qMakePair(rdDelta, wrDelta));
+            }
+            IOObjectRelease(iter);
+        }
+        this->finalizeDiskIo(diskDelta);
+    }
+
     this->lastUpdateTime = QDateTime::currentMSecsSinceEpoch();
 }
 
@@ -1053,6 +1167,106 @@ void SysInfo::updateSysinfo()
         this->transmit_last = tx;
     }
 
+    // ---------------------------------------------------------------------- 磁盘 IO（Windows：WMI 查物理磁盘的每秒速率，逐盘统计）
+    // Win32_PerfFormattedData_PerfDisk_PhysicalDisk 给的是"每秒"速率（非累计），
+    // 所以按采样间隔秒数换算成本间隔字节数（rate × seconds），与 Linux/macOS 口径一致。
+    {
+        static bool wmiTried = false;
+        static bool wmiOk = false;
+        if (!wmiTried) {
+            wmiTried = true;
+            HRESULT hrInit = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+            if (hrInit == RPC_E_CHANGED_MODE)
+                hrInit = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+            const bool needUninit = (hrInit == S_OK || hrInit == S_FALSE);
+            CoInitializeSecurity(nullptr, -1, nullptr, nullptr,
+                RPC_C_AUTHN_LEVEL_DEFAULT, RPC_C_IMP_LEVEL_IMPERSONATE, nullptr, EOAC_NONE, nullptr);
+
+            IWbemLocator *wmiLoc = nullptr;
+            const HRESULT hrCo = CoCreateInstance(CLSID_WbemLocator, nullptr, CLSCTX_INPROC_SERVER,
+                IID_IWbemLocator, reinterpret_cast<void **>(&wmiLoc));
+            if (SUCCEEDED(hrCo) && wmiLoc) {
+                BSTR ns = SysAllocString(L"root\\cimv2");
+                IWbemServices *svc = nullptr;
+                if (ns && wmiLoc->ConnectServer(ns, nullptr, nullptr, nullptr, 0, nullptr, nullptr, &svc) == WBEM_S_NO_ERROR) {
+                    BSTR lang = SysAllocString(L"WQL");
+                    BSTR query = SysAllocString(
+                        L"SELECT Name, DiskReadBytesPersec, DiskWriteBytesPersec FROM Win32_PerfFormattedData_PerfDisk_PhysicalDisk");
+                    IEnumWbemClassObject *enumObj = nullptr;
+                    if (lang && query && svc->ExecQuery(lang, query, WBEM_FLAG_FORWARD_ONLY, nullptr, &enumObj) == WBEM_S_NO_ERROR) {
+                        wmiOk = true;
+                        enumObj->Release();
+                    }
+                    if (lang) SysFreeString(lang);
+                    if (query) SysFreeString(query);
+                    svc->Release();
+                }
+                if (ns) SysFreeString(ns);
+                wmiLoc->Release();
+            }
+            if (needUninit) CoUninitialize();
+        }
+
+        const qint64 nowMs = QDateTime::currentMSecsSinceEpoch();
+        double sec = (this->diskLastSampleMs > 0) ? (nowMs - this->diskLastSampleMs) / 1000.0 : 1.0;
+        if (sec <= 0.0) sec = 1.0;
+        this->diskLastSampleMs = nowMs;
+
+        QHash<QString, QPair<quint64, quint64>> diskDelta;   // 设备名 -> (本间隔读字节, 写字节)
+        if (wmiOk) {
+            HRESULT hrInit = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+            if (hrInit == RPC_E_CHANGED_MODE)
+                hrInit = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+            const bool needUninit2 = (hrInit == S_OK || hrInit == S_FALSE);
+            CoInitializeSecurity(nullptr, -1, nullptr, nullptr,
+                RPC_C_AUTHN_LEVEL_DEFAULT, RPC_C_IMP_LEVEL_IMPERSONATE, nullptr, EOAC_NONE, nullptr);
+
+            IWbemLocator *wmiLoc = nullptr;
+            const HRESULT hrCo = CoCreateInstance(CLSID_WbemLocator, nullptr, CLSCTX_INPROC_SERVER,
+                IID_IWbemLocator, reinterpret_cast<void **>(&wmiLoc));
+            if (SUCCEEDED(hrCo) && wmiLoc) {
+                BSTR ns = SysAllocString(L"root\\cimv2");
+                IWbemServices *svc = nullptr;
+                if (ns && wmiLoc->ConnectServer(ns, nullptr, nullptr, nullptr, 0, nullptr, nullptr, &svc) == WBEM_S_NO_ERROR) {
+                    BSTR lang = SysAllocString(L"WQL");
+                    BSTR query = SysAllocString(
+                        L"SELECT Name, DiskReadBytesPersec, DiskWriteBytesPersec FROM Win32_PerfFormattedData_PerfDisk_PhysicalDisk");
+                    IEnumWbemClassObject *enumObj = nullptr;
+                    if (lang && query && svc->ExecQuery(lang, query, WBEM_FLAG_FORWARD_ONLY, nullptr, &enumObj) == WBEM_S_NO_ERROR) {
+                        IWbemClassObject *obj = nullptr;
+                        ULONG gotCnt = 0;
+                        while (enumObj->Next(WBEM_INFINITE, 1, &obj, &gotCnt) == WBEM_S_NO_ERROR && gotCnt) {
+                            VARIANT vn, vr, vw;
+                            VariantInit(&vn); VariantInit(&vr); VariantInit(&vw);
+                            QString diskName;
+                            if (obj->Get(L"Name", 0, &vn, nullptr, nullptr) == WBEM_S_NO_ERROR && vn.vt == VT_BSTR)
+                                diskName = QString::fromWCharArray(vn.bstrVal);
+                            quint64 rdRate = 0, wrRate = 0;
+                            if (obj->Get(L"DiskReadBytesPersec", 0, &vr, nullptr, nullptr) == WBEM_S_NO_ERROR && vr.vt == VT_UI8)
+                                rdRate = vr.ullVal;
+                            if (obj->Get(L"DiskWriteBytesPersec", 0, &vw, nullptr, nullptr) == WBEM_S_NO_ERROR && vw.vt == VT_UI8)
+                                wrRate = vw.ullVal;
+                            VariantClear(&vn); VariantClear(&vr); VariantClear(&vw);
+                            obj->Release();
+                            // WMI 会返回 "_Total" 这个汇总伪实例，跳过，否则它会和真实盘一起进列表
+                            if (diskName.isEmpty() || diskName == QLatin1String("_Total")) continue;
+                            // 速率(B/s) × 间隔秒数 = 本间隔字节数
+                            diskDelta.insert(diskName, qMakePair(quint64(rdRate * sec), quint64(wrRate * sec)));
+                        }
+                        enumObj->Release();
+                    }
+                    if (lang) SysFreeString(lang);
+                    if (query) SysFreeString(query);
+                    svc->Release();
+                }
+                if (ns) SysFreeString(ns);
+                wmiLoc->Release();
+            }
+            if (needUninit2) CoUninitialize();
+        }
+        this->finalizeDiskIo(diskDelta);
+    }
+
     this->lastUpdateTime = QDateTime::currentMSecsSinceEpoch();
 }
 
@@ -1072,8 +1286,78 @@ double     SysInfo::getCpuUsage()      { return this->cpuUsage; }
 double     SysInfo::getCpuTemperature(){ return this->cpuTemperature; }
 qulonglong SysInfo::getReceive()       { return this->receive; }
 qulonglong SysInfo::getTransmit()      { return this->transmit; }
+qulonglong SysInfo::getDiskReadBytes()  { return this->disk_read; }
+qulonglong SysInfo::getDiskWriteBytes() { return this->disk_write; }
+
+// 设置生效盘：mode 0 = IO 最高的盘, 1 = 指定盘(name)
+void SysInfo::setDiskSelection(qint8 mode, const QString &name)
+{
+    this->diskSelectMode = mode;
+    this->diskSelectName = name;
+}
+
+// 当前生效的磁盘名（供悬浮球 tooltip / 设置回显）
+QString SysInfo::getDiskActiveName() const
+{
+    return this->diskActiveName;
+}
+
+// 最近一次能取到的磁盘名列表（供设置 UI 填充下拉框）
+QStringList SysInfo::getDiskNames() const
+{
+    return this->diskAvailableNames;
+}
+
+// 磁盘的友好显示名（取不到时返回原名本身）
+QString SysInfo::getDiskLabel(const QString &name) const
+{
+    const QString label = this->diskLabelMap.value(name);
+    return label.isEmpty() ? name : label;
+}
+
+// 公共收尾：根据各盘本间隔 (读,写) 差值，按"指定盘 / IO 最高的盘"选出生效盘。
+void SysInfo::finalizeDiskIo(const QHash<QString, QPair<quint64, quint64>> &delta)
+{
+    this->diskAvailableNames.clear();
+    for (auto it = delta.begin(); it != delta.end(); ++it) {
+        const QString &name = it.key();
+        DiskIoStat &s = this->diskStats[name];
+        s.read_speed  = it.value().first;
+        s.write_speed = it.value().second;
+        s.seen = true;
+        this->diskAvailableNames.append(name);
+    }
+
+    // 选生效盘
+    QString active;
+    if (this->diskSelectMode == 1 && this->diskStats.contains(this->diskSelectName)
+        && this->diskStats.value(this->diskSelectName).seen) {
+        active = this->diskSelectName;          // 指定盘且当前存在
+    } else {
+        // IO 最高的盘：读+写 速度最大者；并列或全 0 时取第一个 seen 的盘
+        quint64 best = 0;
+        bool first = true;
+        for (auto it = this->diskStats.begin(); it != this->diskStats.end(); ++it) {
+            if (!it.value().seen) continue;
+            const quint64 io = it.value().read_speed + it.value().write_speed;
+            if (first || io > best) { best = io; active = it.key(); first = false; }
+        }
+    }
+
+    if (!active.isEmpty()) {
+        this->diskActiveName = active;
+        this->disk_read  = this->diskStats.value(active).read_speed;
+        this->disk_write = this->diskStats.value(active).write_speed;
+        this->diskIoOk = true;
+    } else {
+        this->diskActiveName.clear();
+        this->disk_read = this->disk_write = 0;
+        this->diskIoOk = false;
+    }
+}
 
 bool SysInfo::isMemAvailable()            { return this->memOk; }
 bool SysInfo::isSwapAvailable()           { return this->swapOk; }
 bool SysInfo::isCpuFreqAvailable()        { return this->cpuFreqOk; }
 bool SysInfo::isCpuTemperatureAvailable() { return this->cpuTemperatureOk; }
+bool SysInfo::isDiskIoAvailable()         { return this->diskIoOk; }

@@ -76,6 +76,7 @@ void Config::readConfig()
     this->cpu_freq_color        = this->settingsObj->value("/appearance/cpu_freq_color").toString();
     this->cpu_temp_color        = this->settingsObj->value("/appearance/cpu_temp_color").toString();
     this->net_speed_color       = this->settingsObj->value("/appearance/net_speed_color").toString();
+    this->disk_io_color         = this->settingsObj->value("/appearance/disk_io_color", "#fff").toString();
     this->charts_rows           = this->settingsObj->value("/appearance/charts_rows").toInt();
     this->update_data_interval  = this->settingsObj->value("/timer/update_data_interval").toInt();
     this->update_ui_interval    = this->settingsObj->value("/timer/update_ui_interval").toInt();
@@ -90,12 +91,34 @@ void Config::readConfig()
     this->cpu_temp_show         = this->settingsObj->value("/components_show/cpu_temp_show").toInt();
     this->cpu_freq_show         = this->settingsObj->value("/components_show/cpu_freq_show").toInt();
     this->net_speed_show        = this->settingsObj->value("/components_show/net_speed_show").toInt();
+    // 磁盘读写默认不展示（用户可在设置里勾选「磁盘读写」打开）
+    this->disk_io_show          = this->settingsObj->value("/components_show/disk_io_show", 0).toInt();
+
+    // [disk]
+    this->disk_io_mode          = this->settingsObj->value("/disk/disk_io_mode", 0).toInt();
+    this->disk_io_name          = this->settingsObj->value("/disk/disk_io_name", "").toString();
+
+    // [ui] 数据中转站面板的展示布局（0=图标 1=列表 2=详细）
+    this->dock_view_style       = this->settingsObj->value("/ui/dock_view_style", 0).toInt();
 
     // [window]
     this->shape_mask            = this->settingsObj->value("/window/shape_mask").toInt();
 
     // [system_monitor]
     this->system_monitor_cmd    = this->settingsObj->value("/system_monitor/cmd").toString().trimmed();
+
+    // ---------------- 老配置的一次性迁移 ----------------
+    // 磁盘读写速度在早期版本里默认是"显示"的，现在改成默认不显示（要的人自己去设置里勾）。
+    // 已存在的配置里存着旧默认值 1，若不迁移用户会以为"改了默认值却没生效"。
+    // 用 [meta] config_version 只迁一次，之后不再覆盖用户的主动选择。
+    const int cfgVersion = this->settingsObj->value("/meta/config_version", 1).toInt();
+    if (cfgVersion < 2)
+    {
+        this->settingsObj->setValue("/components_show/disk_io_show", 0);
+        this->settingsObj->setValue("/meta/config_version", 2);
+        this->settingsObj->sync();
+        this->disk_io_show = 0;
+    }
 }
 
 
@@ -217,6 +240,11 @@ void Config::setNetSpeedColor(QString val)
     this->settingsObj->setValue("/appearance/net_speed_color", val);
     this->net_speed_color = val;
 }
+void Config::setDiskIoColor(QString val)
+{
+    this->settingsObj->setValue("/appearance/disk_io_color", val);
+    this->disk_io_color = val;
+}
 
 void Config::setChartsRows(qint32 val)
 {
@@ -270,6 +298,30 @@ void Config::setNetSpeedShow(qint8 val)
 {
     this->settingsObj->setValue("/components_show/net_speed_show", val);
     this->net_speed_show = val;
+}
+void Config::setDiskIoShow(qint8 val)
+{
+    this->settingsObj->setValue("/components_show/disk_io_show", val);
+    this->disk_io_show = val;
+}
+
+// [disk]
+void Config::setDiskIoMode(qint32 val)
+{
+    this->settingsObj->setValue("/disk/disk_io_mode", val);
+    this->disk_io_mode = val;
+}
+void Config::setDiskIoName(QString val)
+{
+    this->settingsObj->setValue("/disk/disk_io_name", val);
+    this->disk_io_name = val;
+}
+
+// [ui]
+void Config::setDockViewStyle(qint32 val)
+{
+    this->settingsObj->setValue("/ui/dock_view_style", val);
+    this->dock_view_style = val;
 }
 
 // [window]
@@ -380,6 +432,10 @@ QString Config::getNetSpeedColor()
 {
     return this->net_speed_color;
 }
+QString Config::getDiskIoColor()
+{
+    return this->disk_io_color;
+}
 
 qint32 Config::getChartsRows()
 {
@@ -424,6 +480,26 @@ qint8 Config::getCpuFreqShow()
 qint8 Config::getNetSpeedShow()
 {
     return this->net_speed_show;
+}
+qint8 Config::getDiskIoShow()
+{
+    return this->disk_io_show;
+}
+
+// [disk]
+qint32 Config::getDiskIoMode()
+{
+    return this->disk_io_mode;
+}
+QString Config::getDiskIoName()
+{
+    return this->disk_io_name;
+}
+
+// [ui]
+qint32 Config::getDockViewStyle()
+{
+    return this->dock_view_style;
 }
 
 // [window]

@@ -16,6 +16,8 @@
 #include "config.h"
 
 class QVBoxLayout;
+class QRadioButton;
+class SysInfo;
 
 /*
  * 扁平化风格的设置窗口（可滚动）
@@ -24,7 +26,8 @@ class QVBoxLayout;
  *              [薄荷][落日橙][极光紫]
  *   颜色       主球背景/球体边框/内存图/交换分区/CPU占用/
  *              阴影/温度文字/频率文字/网速文字  （点色块取色）
- *   显示       [x]温度 [ ]频率 [x]网速
+ *   显示       [x]温度 [ ]频率 [x]网速 [x]磁盘读写
+ *              磁盘 (•)IO最高的盘 ( )指定磁盘 [下拉]
  *   窗口       不透明度 / 大小(宽x高) / 边框宽度
  *              阴影长度(0=无阴影) / 阴影颜色
  *   贴边竖条   是否启用 / 快捷宽度(窄/标准/宽) / 竖条宽×高 / 圆角半径
@@ -40,7 +43,7 @@ class SettingsDialog : public QDialog
 {
     Q_OBJECT
 public:
-    explicit SettingsDialog(Config *cfg, QWidget *parent = nullptr);
+    explicit SettingsDialog(Config *cfg, SysInfo *sysInfo = nullptr, QWidget *parent = nullptr);
 
     // 从当前配置重新载入（显示前调用，保证内容是最新的）
     void loadFromConfig();
@@ -90,12 +93,19 @@ private:
     void setConfigColor(const QString &key, const QString &value);
     void applyChanges();   // 把界面上的值写回 Config 并通知挂件刷新
 
-    Config *cfg = nullptr;
+    Config  *cfg     = nullptr;
+    SysInfo *sysInfo = nullptr;   // 用于取磁盘名列表（可能为空）
     QList<ColorRow> rows;
 
     QCheckBox *chkTemp = nullptr;
     QCheckBox *chkFreq = nullptr;
     QCheckBox *chkNet  = nullptr;
+    QCheckBox *chkDiskIo = nullptr;
+
+    // 磁盘读写统计哪块盘
+    QRadioButton *radDiskAuto    = nullptr;   // IO 最高的盘（默认）
+    QRadioButton *radDiskManual  = nullptr;   // 指定盘
+    QComboBox    *comboDiskName  = nullptr;   // 磁盘名下拉
 
     QSlider *opacitySlider = nullptr;
     QLabel  *opacityLabel  = nullptr;

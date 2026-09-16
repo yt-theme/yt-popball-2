@@ -18,6 +18,8 @@
 #include <QtGlobal>
 #include <QFileDialog>
 #include <QStandardPaths>
+#include <QRadioButton>
+#include "sysInfo.h"
 
 // ---------------------------------------------------------------- 配置项定义
 namespace {
@@ -34,6 +36,7 @@ const ColorDef kColors[] = {
     { "cpu_temp_color",    "温度文字" },
     { "cpu_freq_color",    "频率文字" },
     { "net_speed_color",   "网速文字" },
+    { "disk_io_color",     "磁盘IO文字" },
 };
 const int kColorCount = int(sizeof(kColors) / sizeof(kColors[0]));
 
@@ -153,8 +156,8 @@ QComboBox QAbstractItemView {
 )";
 
 // ---------------------------------------------------------------- 构造
-SettingsDialog::SettingsDialog(Config *cfg, QWidget *parent)
-    : QDialog(parent), cfg(cfg)
+SettingsDialog::SettingsDialog(Config *cfg, SysInfo *sysInfo, QWidget *parent)
+    : QDialog(parent), cfg(cfg), sysInfo(sysInfo)
 {
     setWindowTitle(tr("设置"));
     setModal(false);
@@ -333,11 +336,49 @@ QWidget *SettingsDialog::buildShowSection()
     chkTemp = new QCheckBox(tr("CPU 温度"), box);
     chkFreq = new QCheckBox(tr("CPU 频率"), box);
     chkNet  = new QCheckBox(tr("网速"), box);
+    chkDiskIo = new QCheckBox(tr("磁盘读写"), box);
     row->addWidget(chkTemp);
     row->addWidget(chkFreq);
     row->addWidget(chkNet);
+    row->addWidget(chkDiskIo);
     row->addStretch(1);
     v->addLayout(row);
+
+    // ---- 磁盘读写统计哪块盘 ----
+    auto *drow = new QHBoxLayout();
+    drow->setSpacing(10);
+    auto *dlabel = new QLabel(tr("磁盘"), box);
+    drow->addWidget(dlabel);
+
+    radDiskAuto   = new QRadioButton(tr("IO 最高的盘"), box);
+    radDiskManual = new QRadioButton(tr("指定磁盘"), box);
+    comboDiskName = new QComboBox(box);
+    radDiskAuto->setObjectName(QStringLiteral("diskAuto"));
+    radDiskManual->setObjectName(QStringLiteral("diskManual"));
+    comboDiskName->setObjectName(QStringLiteral("diskName"));
+    comboDiskName->setMinimumWidth(150);
+    comboDiskName->setSizeAdjustPolicy(QComboBox::AdjustToContents);
+    drow->addWidget(radDiskAuto);
+    drow->addWidget(radDiskManual);
+    drow->addWidget(comboDiskName);
+    drow->addStretch(1);
+    v->addLayout(drow);
+
+    // 填充磁盘列表（显示友好名，userData 存设备名）
+    const QStringList diskNames = (this->sysInfo != nullptr)
+        ? this->sysInfo->getDiskNames() : QStringList();
+    for (const QString &n : diskNames)
+        comboDiskName->addItem(this->sysInfo->getDiskLabel(n), n);
+    // 若配置里指定的盘当前不在列表（未挂载/未采样到），也补进去，避免回显丢失
+    const QString cfgName = this->cfg->getDiskIoName();
+    if (!cfgName.isEmpty() && !diskNames.contains(cfgName))
+        comboDiskName->addItem(cfgName, cfgName);
+
+    // 只有在"指定磁盘"时才允许改下拉（与其它控件一致：点应用/确定才生效）
+    comboDiskName->setEnabled(radDiskManual->isChecked());
+    connect(radDiskManual, &QRadioButton::toggled, this, [this](bool on) {
+        comboDiskName->setEnabled(on);
+    });
 
     return box;
 }
@@ -649,9 +690,9 @@ void SettingsDialog::applyPreset(int index)
     if (index < 0 || index >= kPresetCount)
         return;
     const PresetDef &p = kPresets[index];
-    // 顺序与 kColors 一致（含阴影），文字三色统一白色
+    // 顺序与 kColors 一致（含阴影），文字四色统一白色
     const char *values[kColorCount] = {
-        p.main, p.border, p.mem, p.swap, p.cpu, p.shadow, p.text, p.text, p.text
+        p.main, p.border, p.mem, p.swap, p.cpu, p.shadow, p.text, p.text, p.text, p.text
     };
     if (rows.size() != kColorCount)
         return;
@@ -674,6 +715,7 @@ QString SettingsDialog::configColor(const QString &key) const
     if (key == QLatin1String("cpu_temp_color"))    return cfg->getCpuTempColor();
     if (key == QLatin1String("cpu_freq_color"))    return cfg->getCpuFreqColor();
     if (key == QLatin1String("net_speed_color"))   return cfg->getNetSpeedColor();
+    if (key == QLatin1String("disk_io_color"))     return cfg->getDiskIoColor();
     return QStringLiteral("#FF000000");
 }
 
@@ -688,6 +730,7 @@ void SettingsDialog::setConfigColor(const QString &key, const QString &value)
     else if (key == QLatin1String("cpu_temp_color"))    cfg->setCpuTempColor(value);
     else if (key == QLatin1String("cpu_freq_color"))    cfg->setCpuFreqColor(value);
     else if (key == QLatin1String("net_speed_color"))   cfg->setNetSpeedColor(value);
+    else if (key == QLatin1String("disk_io_color"))     cfg->setDiskIoColor(value);
 }
 
 // ---------------------------------------------------------------- 载入
@@ -702,6 +745,28 @@ void SettingsDialog::loadFromConfig()
     chkTemp->setChecked(cfg->getCpuTempShow() == 1);
     chkFreq->setChecked(cfg->getCpuFreqShow() == 1);
     chkNet->setChecked(cfg->getNetSpeedShow() == 1);
+    chkDiskIo->setChecked(cfg->getDiskIoShow() == 1);
+
+    // 磁盘选择：刷新列表并回显（每次打开设置都重新取一次磁盘名）
+    {
+        const QString curName = cfg->getDiskIoName();
+        comboDiskName->blockSignals(true);
+        comboDiskName->clear();
+        const QStringList names = (this->sysInfo != nullptr)
+            ? this->sysInfo->getDiskNames() : QStringList();
+        for (const QString &n : names)
+            comboDiskName->addItem(this->sysInfo->getDiskLabel(n), n);
+        if (!curName.isEmpty() && !names.contains(curName))
+            comboDiskName->addItem(curName, curName);
+        const int idx = comboDiskName->findData(curName);
+        if (idx >= 0) comboDiskName->setCurrentIndex(idx);
+        comboDiskName->blockSignals(false);
+
+        const bool manual = (cfg->getDiskIoMode() == 1);
+        radDiskManual->setChecked(manual);
+        radDiskAuto->setChecked(!manual);
+        comboDiskName->setEnabled(manual);
+    }
 
     opacitySlider->setValue(int(qBound(0.5, cfg->getOpacity(), 1.0) * 100));
     spinWidth->setValue(qBound(spinWidth->minimum(),  cfg->getWidth(),  spinWidth->maximum()));
@@ -742,6 +807,7 @@ void SettingsDialog::loadDefaults()
         { "cpu_temp_color",    "#fff" },
         { "cpu_freq_color",    "#fff" },
         { "net_speed_color",   "#fff" },
+        { "disk_io_color",     "#fff" },
     };
     for (int i = 0; i < kColorCount; ++i) {
         rows[i].color = QColor(QString::fromLatin1(kColorDefs[i].val));
@@ -754,6 +820,11 @@ void SettingsDialog::loadDefaults()
     chkTemp->setChecked(true);
     chkFreq->setChecked(false);
     chkNet->setChecked(true);
+    chkDiskIo->setChecked(false);   // 磁盘读写默认不展示，需要的人自己勾
+    // 磁盘选择：默认 = IO 最高的盘
+    radDiskAuto->setChecked(true);
+    radDiskManual->setChecked(false);
+    comboDiskName->setEnabled(false);
 
     // 窗口
     opacitySlider->setValue(91);          // 0.91
@@ -832,6 +903,14 @@ void SettingsDialog::applyChanges()
     cfg->setCpuTempShow(chkTemp->isChecked() ? 1 : 0);
     cfg->setCpuFreqShow(chkFreq->isChecked() ? 1 : 0);
     cfg->setNetSpeedShow(chkNet->isChecked() ? 1 : 0);
+    cfg->setDiskIoShow(chkDiskIo->isChecked() ? 1 : 0);
+    // 磁盘选择：0 = IO 最高的盘（默认）, 1 = 指定盘
+    if (radDiskManual->isChecked()) {
+        cfg->setDiskIoMode(1);
+        cfg->setDiskIoName(comboDiskName->currentData().toString());
+    } else {
+        cfg->setDiskIoMode(0);
+    }
     cfg->setOpacity(opacitySlider->value() / 100.0);
     cfg->setWidth(spinWidth->value());
     cfg->setHeight(spinHeight->value());
