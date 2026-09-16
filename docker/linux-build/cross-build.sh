@@ -85,20 +85,36 @@ echo ">>> 资源 .qrc -> .cpp（--name 区分，避免 qInitResources 符号冲�
 printf '<RCC><qresource prefix="/translations"><file>popball2_zh_CN.qm</file></qresource></RCC>' > trans.qrc
 "$RCC" --name trans          trans.qrc          -o qrc_trans.cpp
 
-echo ">>> moc（Q_OBJECT 头文件：settingsdialog.h / widget.h）"
+echo ">>> moc（Q_OBJECT 头文件：settingsdialog.h / widget.h / popdock.h / clipstore.h）"
 "$MOC" $QTI settingsdialog.h -o moc_settingsdialog.cpp
 "$MOC" $QTI widget.h -o moc_widget.cpp
+"$MOC" $QTI popdock.h -o moc_popdock.cpp
+"$MOC" $QTI clipstore.h -o moc_clipstore.cpp
 
 echo ">>> 交叉编译 amd64 二进制"
 X11_CFLAGS="$(pkg-config --cflags x11 2>/dev/null || true)"
 X11_LIBS="$(pkg-config --libs x11 2>/dev/null || true)"
 DEFINES=""
 [ -n "$X11_LIBS" ] && DEFINES="-DPOPBALL_HAVE_X11"
+# 与 .pro 的 qtHaveModule(sql) 守卫一致：仅当交叉环境里有 amd64 的 QtSql 头文件时
+# 才启用剪贴板历史持久化（POPBALL2_HAVE_QT_SQL）；否则 clipstore 退化为不落盘
+# （预置交叉镜像常只带 qt6-base-dev 核心头，没有 QtSql）。
+SQL_LIBS=""
+if [ -f "$QTINC/QtSql/QSqlDatabase" ]; then
+    DEFINES="$DEFINES -DPOPBALL2_HAVE_QT_SQL"
+    SQL_LIBS="-lQt6Sql"
+    # clipstore.cpp 用 `#include <QSqlDatabase>`（不带 QtSql/ 前缀），
+    # 必须把 QtSql 的 include 目录加进编译路径，否则 "QSqlDatabase: No such file or directory"。
+    QTI="$QTI -I$QTINC/QtSql"
+    echo ">>> QtSql 头文件已找到 → 启用剪贴板历史持久化"
+else
+    echo ">>> WARN: 未找到 $QTINC/QtSql/QSqlDatabase → 剪贴板历史退化为内存模式（不落盘）"
+fi
 x86_64-linux-gnu-g++ -fPIC -std=c++17 $DEFINES $QTI $X11_CFLAGS \
-    config.cpp main.cpp settingsdialog.cpp sysInfo.cpp widget.cpp \
-    moc_settingsdialog.cpp moc_widget.cpp \
+    clipstore.cpp config.cpp main.cpp popdock.cpp settingsdialog.cpp sysInfo.cpp widget.cpp \
+    moc_popdock.cpp moc_settingsdialog.cpp moc_widget.cpp moc_clipstore.cpp \
     qrc_default_config.cpp qrc_resources.cpp qrc_trans.cpp \
-    -o popball2 -lQt6Widgets -lQt6Gui -lQt6Core $X11_LIBS
+    -o popball2 -lQt6Widgets -lQt6Gui $SQL_LIBS -lQt6Core $X11_LIBS
 echo ">>> 产物架构（应为 x86-64）:"
 readelf -h popball2 | grep -E "Machine:|Class:" || file popball2
 echo ">>> 需要的动态库（应含 amd64 的 libQt6*）:"
@@ -138,5 +154,5 @@ Description: Floating desktop system monitor ball
  as area charts, plus CPU usage, CPU temperature and network throughput.
 EOF
 dpkg-deb --root-owner-group --build "$STAGE" "$OUT/popball2_${VERSION}_amd64.deb"
-rm -rf "$STAGE" qrc_default_config.cpp qrc_resources.cpp qrc_trans.cpp trans.qrc popball2_zh_CN.qm moc_settingsdialog.cpp moc_widget.cpp popball2
+rm -rf "$STAGE" qrc_default_config.cpp qrc_resources.cpp qrc_trans.cpp trans.qrc popball2_zh_CN.qm moc_settingsdialog.cpp moc_widget.cpp moc_popdock.cpp moc_clipstore.cpp popball2
 echo ">>> 完成: $OUT/popball2_${VERSION}_amd64.deb"
