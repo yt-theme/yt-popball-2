@@ -11,6 +11,14 @@ qtHaveModule(sql) {
     DEFINES += POPBALL2_HAVE_QT_SQL
 }
 
+# 视频悬停预览播放用 QtMultimedia。同样用 qtHaveModule 守卫：
+# 没有该模块时编译不进去，运行时退化成"静态封面 + 提示双击用系统播放器打开"。
+# 注意：Linux 上播放还需要 gstreamer 及其插件（见 DEPENDENCIES.md）。
+qtHaveModule(multimedia) {
+    QT += multimedia
+    DEFINES += POPBALL2_HAVE_QT_MULTIMEDIA
+}
+
 CONFIG += c++17
 
 # 版本号：自动从 package.json 读取（单一来源，改 package.json 即全局生效）

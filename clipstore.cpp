@@ -88,6 +88,11 @@ bool ClipStore::open(const QString &dbPath)
         qWarning() << "[ClipStore] 建索引失败:" << q.lastError().text();
     }
 
+    // 记住库里已有的最大 used_at：后续写入都从这里往上递增，
+    // 老库（可能带并列时间戳）也能平滑接续。
+    if (q.exec(QStringLiteral("SELECT COALESCE(MAX(used_at),0) FROM clips")) && q.next())
+        m_lastUsed = q.value(0).toLongLong();
+
     m_ready = true;
     return true;
 #else
@@ -104,7 +109,13 @@ qint64 ClipStore::put(int kind, const QString &hash, const QString &title,
     if (!m_ready)
         return -1;
 #ifdef POPBALL2_HAVE_QT_SQL
-    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    // used_at 严格递增：同一毫秒内连着写多条（一次复制多个文件、文件+文本混合）时，
+    // 也绝不产生并列的时间戳。并列会让 `ORDER BY used_at DESC` 退化成"次序随机"，
+    // 这正是"面板里的顺序和重启回填后的顺序对不上"的根因，而且不同平台的
+    // 时间精度/时区差异会让它表现得更随机。取 max(当前时间, 上一个 + 1) 即可。
+    const qint64 now  = QDateTime::currentMSecsSinceEpoch();
+    const qint64 used = (now > m_lastUsed) ? now : (m_lastUsed + 1);
+    m_lastUsed = used;
     // 同 hash 直接 UPSERT：只把 used_at 顶到最新（重复内容不新增行，提到最前）
     const QString sql = QStringLiteral(
         "INSERT INTO clips(kind,hash,title,text,path,png,bytes,used_at,created_at)"
@@ -124,8 +135,8 @@ qint64 ClipStore::put(int kind, const QString &hash, const QString &title,
     q.bindValue(QStringLiteral(":path"),    path.isEmpty() ? QVariant() : path);
     q.bindValue(QStringLiteral(":png"),     png.isEmpty() ? QVariant() : png);
     q.bindValue(QStringLiteral(":bytes"),   bytes);
-    q.bindValue(QStringLiteral(":used"),    now);
-    q.bindValue(QStringLiteral(":created"), now);
+    q.bindValue(QStringLiteral(":used"),    used);
+    q.bindValue(QStringLiteral(":created"), used);
     if (!q.exec()) {
         m_lastError = q.lastError().text();
         qWarning() << "[ClipStore] 写入失败:" << m_lastError;
@@ -155,10 +166,12 @@ QVector<ClipRecord> ClipStore::recent(int limit) const
 #ifdef POPBALL2_HAVE_QT_SQL
     QSqlDatabase db = QSqlDatabase::database(m_connName, false);
     QSqlQuery q(db);
-    // 列表回填不取 png 大字段（图片按需用 pngOf() 取），避免一次性读一堆二进制
+    // 列表回填不取 png 大字段（图片按需用 pngOf() 取），避免一次性读一堆二进制。
+    // 排序与面板里的规则完全一致：最近使用在前；并列（老库遗留）时按 id 倒序，
+    // 保证任何平台、任何时候读出来的次序都一样。
     q.prepare(QStringLiteral(
         "SELECT id,kind,hash,title,text,path,bytes,used_at FROM clips"
-        " ORDER BY used_at DESC LIMIT :n"));
+        " ORDER BY used_at DESC, id DESC LIMIT :n"));
     q.bindValue(QStringLiteral(":n"), limit);
     if (!q.exec()) {
         qWarning() << "[ClipStore] 读取失败:" << q.lastError().text();
@@ -217,6 +230,47 @@ bool ClipStore::remove(qint64 id)
 #endif
 }
 
+bool ClipStore::updateText(qint64 id, const QString &hash, const QString &title,
+                           const QString &text)
+{
+    if (!m_ready || id <= 0)
+        return false;
+#ifdef POPBALL2_HAVE_QT_SQL
+    QSqlDatabase db = QSqlDatabase::database(m_connName, false);
+
+    // hash 上有 UNIQUE：若"另一行"已经占着这个 hash（用户把内容改成了和另一条一样），
+    // 先删掉那一行再更新，否则 UPDATE 会因唯一约束失败。
+    // 这与面板里的去重语义一致：同样的内容只留最近使用的那一条。
+    {
+        QSqlQuery q(db);
+        q.prepare(QStringLiteral("DELETE FROM clips WHERE hash=:hash AND id<>:id"));
+        q.bindValue(QStringLiteral(":hash"), hash);
+        q.bindValue(QStringLiteral(":id"),   id);
+        if (!q.exec())
+            qWarning() << "[ClipStore] 合并重复行失败:" << q.lastError().text();
+    }
+
+    QSqlQuery q(db);
+    q.prepare(QStringLiteral(
+        "UPDATE clips SET hash=:hash, title=:title, text=:text, bytes=:bytes WHERE id=:id"));
+    q.bindValue(QStringLiteral(":hash"),  hash);
+    q.bindValue(QStringLiteral(":title"), title);
+    q.bindValue(QStringLiteral(":text"),  text);
+    q.bindValue(QStringLiteral(":bytes"), text.toUtf8().size());
+    q.bindValue(QStringLiteral(":id"),    id);
+    if (!q.exec()) {
+        m_lastError = q.lastError().text();
+        qWarning() << "[ClipStore] 更新文本失败:" << m_lastError;
+        return false;
+    }
+    // used_at 有意不动：编辑不算"重新使用"，顺序保持原样（顺序只在重新复制时提升）
+    return true;
+#else
+    Q_UNUSED(id); Q_UNUSED(hash); Q_UNUSED(title); Q_UNUSED(text);
+    return false;
+#endif
+}
+
 void ClipStore::prune(int keep)
 {
     if (!m_ready)
@@ -228,7 +282,7 @@ void ClipStore::prune(int keep)
     QSqlQuery q(db);
     q.prepare(QStringLiteral(
         "DELETE FROM clips WHERE id NOT IN"
-        " (SELECT id FROM clips ORDER BY used_at DESC LIMIT :n)"));
+        " (SELECT id FROM clips ORDER BY used_at DESC, id DESC LIMIT :n)"));
     q.bindValue(QStringLiteral(":n"), keep);
     if (!q.exec())
         qWarning() << "[ClipStore] 清理旧记录失败:" << q.lastError().text();

@@ -19,7 +19,9 @@
 #include <QDateTime>
 #include <QGuiApplication>
 #include <QImage>
+#include <QImageReader>
 #include <QBuffer>
+#include <QProcess>
 #include <QPixmap>
 #include <QPainter>
 #include <QPolygonF>
@@ -41,6 +43,32 @@
 #include <QHideEvent>
 #include <QResizeEvent>
 #include <QEvent>
+#include <QCloseEvent>
+#include <QPlainTextEdit>
+#include <QShortcut>
+#include <QKeySequence>
+#include <QTextDocument>
+#include <QTextCursor>
+#include <QSignalBlocker>
+
+#ifdef POPBALL2_HAVE_QT_MULTIMEDIA
+#include <QMediaPlayer>
+#include <QVideoSink>
+#include <QVideoFrame>
+#endif
+
+// 文本条目的展示名：取**第一段非空内容**，太长才截断。
+// 不用"整篇压成一行再截 24 字"——那样多行文本的名字会被下一行的开头挤满，很难认。
+static QString textLabelFor(const QString &text)
+{
+    const QStringList lines = text.split(QLatin1Char('\n'));
+    for (const QString &ln : lines) {
+        const QString t = ln.trimmed();
+        if (!t.isEmpty())
+            return t.size() > 28 ? t.left(28) + QStringLiteral("…") : t;
+    }
+    return QObject::tr("(空文本)");
+}
 
 // ---------------- 小工具：人类可读的文件大小 ----------------
 static QString humanSize(qint64 bytes)
@@ -55,6 +83,16 @@ static QString humanSize(qint64 bytes)
     return QStringLiteral("%1 GB").arg(bytes / (kb * kb * kb), 0, 'f', 2);
 }
 
+// ---------------- 小工具：把 pixmap 等比缩放后居中画进 rect ----------------
+static void drawContain(QPainter *p, const QPixmap &pm, const QRect &rect)
+{
+    if (pm.isNull() || rect.isEmpty())
+        return;
+    const QPixmap sc = pm.scaled(rect.size(), Qt::KeepAspectRatio, Qt::SmoothTransformation);
+    p->drawPixmap(rect.left() + (rect.width() - sc.width()) / 2,
+                  rect.top() + (rect.height() - sc.height()) / 2, sc);
+}
+
 // ---------------- 小工具：QImage -> PNG 字节 ----------------
 static QByteArray imageToPng(const QImage &img)
 {
@@ -65,6 +103,23 @@ static QByteArray imageToPng(const QImage &img)
     buf.open(QIODevice::WriteOnly);
     img.save(&buf, "PNG");
     return ba;
+}
+
+// 带尺寸读图片文件：只解码到需要的大小（几十兆的手机原图整张解码既慢又吃内存）。
+// setAutoTransform 让 EXIF 方向生效（手机拍的照片常靠它才能摆正）。
+static QImage readImageScaled(const QString &path, const QSize &box)
+{
+    if (path.isEmpty() || !QFileInfo::exists(path))
+        return QImage();
+    QImageReader reader(path);
+    reader.setAutoTransform(true);
+    const QSize src = reader.size();
+    if (src.isValid()) {
+        const QSize target = src.scaled(box, Qt::KeepAspectRatio);
+        if (target.isValid() && target != src)
+            reader.setScaledSize(target);
+    }
+    return reader.read();
 }
 
 // ============================ TsItemDelegate ============================
@@ -79,7 +134,7 @@ static QByteArray imageToPng(const QImage &img)
 class TsItemDelegate : public QStyledItemDelegate
 {
 public:
-    enum Mode { IconCells, ListRows, DetailRows };
+    enum Mode { IconCells, ListRows, DetailRows, PreviewCells };
 
     explicit TsItemDelegate(QObject *parent = nullptr)
         : QStyledItemDelegate(parent)
@@ -100,20 +155,38 @@ public:
     QSize sizeHint(const QStyleOptionViewItem &opt, const QModelIndex &idx) const override
     {
         switch (m_mode) {
-        case IconCells:  return m_iconCellSet ? m_iconCell : QSize(74, 88);
-        case DetailRows: return QSize(180, 48);
-        case ListRows:   break;
+        case IconCells:
+            return m_iconCellSet ? m_iconCell : QSize(74, 88);
+        case PreviewCells:
+            return m_iconCellSet ? m_iconCell : QSize(148, 148);
+        case DetailRows:
+            return QSize(180, 48);
+        case ListRows:
+            break;
         }
         return QStyledItemDelegate::sizeHint(opt, idx);
     }
 
     void paint(QPainter *p, const QStyleOptionViewItem &opt, const QModelIndex &idx) const override
     {
-        if (m_mode != DetailRows) {
+        switch (m_mode) {
+        case IconCells:
+        case ListRows:
             QStyledItemDelegate::paint(p, opt, idx);
             return;
+        case DetailRows:
+            paintDetail(p, opt, idx);
+            return;
+        case PreviewCells:
+            paintPreview(p, opt, idx);
+            return;
         }
+    }
 
+private:
+    // 详细：两行（加粗名称 + 灰色副标题）
+    void paintDetail(QPainter *p, const QStyleOptionViewItem &opt, const QModelIndex &idx) const
+    {
         p->save();
         p->setRenderHint(QPainter::Antialiasing, true);
         const QRect r = opt.rect.adjusted(1, 1, -1, -1);
@@ -162,10 +235,152 @@ public:
         p->restore();
     }
 
-private:
+    // 预览：只有图标 —— 文本渲染成"一页纸"，图片/视频给大图缩略，其它文件放大系统图标
+    void paintPreview(QPainter *p, const QStyleOptionViewItem &opt, const QModelIndex &idx) const
+    {
+        p->save();
+        p->setRenderHint(QPainter::Antialiasing, true);
+
+        const QRect card = opt.rect.adjusted(3, 3, -3, -3);
+        QColor bg(255, 255, 255, 12);
+        if (opt.state & QStyle::State_Selected)
+            bg = QColor(58, 110, 165, 190);
+        else if (opt.state & QStyle::State_MouseOver)
+            bg = QColor(255, 255, 255, 28);
+        p->setPen(Qt::NoPen);
+        p->setBrush(bg);
+        p->drawRoundedRect(card, 9, 9);
+
+        const QVariantMap d = idx.data(Qt::UserRole).toMap();
+        const TsType type = TsType(d.value(QStringLiteral("type")).toInt());
+        const QString key  = d.value(QStringLiteral("dedup")).toString();
+        const qreal dpr    = opt.widget ? opt.widget->devicePixelRatioF() : 1.0;
+        const QRect inner  = card.adjusted(5, 5, -5, -5);
+
+        switch (type) {
+        case TsType::Image: {
+            const QPixmap pm = imageThumb(key, d.value(QStringLiteral("path")).toString(),
+                                          inner.size(), dpr);
+            if (!pm.isNull())
+                drawContain(p, pm, inner);
+            break;
+        }
+        case TsType::Text: {
+            const QPixmap pm = docThumb(key, d.value(QStringLiteral("text")).toString(),
+                                        inner.size(), dpr);
+            if (!pm.isNull())
+                drawContain(p, pm, inner);
+            break;
+        }
+        case TsType::Video:
+        case TsType::File: {
+            // 图片文件（.jpg/.png…）直接给**真实缩略图** —— 否则只剩一枚"JPEG 文档"
+            // 图标，完全看不出内容（用户反馈的正是这个）。
+            const QString path = d.value(QStringLiteral("path")).toString();
+            QPixmap pm;
+            if (TransferStation::isImageFile(path))
+                pm = imageThumb(key, path, inner.size(), dpr);
+            if (pm.isNull()) {
+                // 视频条目的图标里已经带了播放按钮（见 TransferStation::videoIcon）；
+                // 其它文件放大系统图标 —— 都用"取大号图标再等比缩放"保证清晰。
+                const QIcon ic = qvariant_cast<QIcon>(idx.data(Qt::DecorationRole));
+                const int want = qMax(64, qMin(inner.width(), inner.height()));
+                pm = ic.pixmap(QSize(want * dpr, want * dpr));
+                if (pm.isNull())
+                    pm = ic.pixmap(want, want);
+            }
+            if (!pm.isNull()) {
+                pm.setDevicePixelRatio(dpr);
+                drawContain(p, pm, inner);
+            }
+            break;
+        }
+        }
+        p->restore();
+    }
+
+    // 图片缩略图：带 scaledSize 读文件，避免把几十兆的原图整张解码
+    QPixmap imageThumb(const QString &key, const QString &path,
+                       const QSize &box, qreal dpr) const
+    {
+        if (path.isEmpty() || !QFileInfo::exists(path))
+            return QPixmap();
+        const QSize want(qMax(32, int(box.width() * dpr)), qMax(32, int(box.height() * dpr)));
+        const QString ck = QStringLiteral("img:%1@%2x%3").arg(key).arg(want.width()).arg(want.height());
+        auto it = m_cache.constFind(ck);
+        if (it != m_cache.constEnd())
+            return it.value();
+
+        QImageReader reader(path);
+        reader.setAutoTransform(true);
+        const QSize src = reader.size();
+        if (src.isValid()) {
+            QSize target = src.scaled(want, Qt::KeepAspectRatio);
+            reader.setScaledSize(target);
+        }
+        const QImage img = reader.read();
+        const QPixmap pm = img.isNull() ? QPixmap() : QPixmap::fromImage(img);
+        cachePut(ck, pm);
+        return pm;
+    }
+
+    // 文本缩略图：像 macOS Quick Look 那样把内容渲染成"一页纸"
+    QPixmap docThumb(const QString &key, const QString &text,
+                     const QSize &box, qreal dpr) const
+    {
+        if (text.trimmed().isEmpty())
+            return QPixmap();
+        const QSize want(qMax(48, int(box.width() * dpr)), qMax(48, int(box.height() * dpr)));
+        const QString ck = QStringLiteral("doc:%1@%2x%3").arg(key).arg(want.width()).arg(want.height());
+        auto it = m_cache.constFind(ck);
+        if (it != m_cache.constEnd())
+            return it.value();
+
+        // 先按 3 倍尺寸画一页纸（真实文字），再缩放下来 —— 这样才像"文档预览"而不是几条灰线
+        const int W = 360;
+        const int H = qMax(W, int(W * 1.32));
+        QImage page(W, H, QImage::Format_ARGB32_Premultiplied);
+        page.fill(Qt::transparent);
+        {
+            QPainter pp(&page);
+            pp.setRenderHint(QPainter::Antialiasing, true);
+            pp.setPen(Qt::NoPen);
+            pp.setBrush(QColor(0xf6, 0xf6, 0xf3));          // 纸
+            pp.drawRoundedRect(QRectF(0, 0, W, H), 10, 10);
+            pp.setBrush(QColor(0xd6, 0xdb, 0xe0));          // 标题条
+            pp.drawRoundedRect(QRectF(20, 20, W * 0.52, 14), 4, 4);
+            pp.setBrush(QColor(0xe4, 0xe8, 0xec));          // 副标题条
+            pp.drawRoundedRect(QRectF(20, 42, W * 0.32, 9), 3, 3);
+
+            QFont f = pp.font();
+            f.setPixelSize(13);
+            pp.setFont(f);
+            pp.setPen(QColor(0x3a, 0x40, 0x48));
+            QString body = text;
+            if (body.size() > 1400)
+                body = body.left(1400);
+            pp.drawText(QRect(20, 66, W - 40, H - 86),
+                        Qt::AlignLeft | Qt::AlignTop | Qt::TextWordWrap, body);
+            pp.end();
+        }
+        const QPixmap pm = QPixmap::fromImage(
+            page.scaled(want, Qt::KeepAspectRatio, Qt::SmoothTransformation));
+        cachePut(ck, pm);
+        return pm;
+    }
+
+    void cachePut(const QString &key, const QPixmap &pm) const
+    {
+        if (m_cache.size() > 240)          // 防止面板宽度来回变时无限堆积
+            m_cache.clear();
+        m_cache.insert(key, pm);
+    }
+
     Mode   m_mode       = IconCells;
     QSize  m_iconCell;
     bool   m_iconCellSet = false;
+    // 缩略图缓存：paint 是 const 的，所以这里用 mutable（内容与绘制结果无关的纯缓存）
+    mutable QHash<QString, QPixmap> m_cache;
 };
 
 // ============================ TransferStation ============================
@@ -219,12 +434,15 @@ TransferStation::TransferStation(QWidget *parent)
     setViewStyle(IconView);
 }
 
-// 图标网格：目标是一行 kIconColumns 列（默认 4）。
+// 网格单元格：按当前布局决定列数（图标 4 列 / 预览 2 列）与尺寸。
 // 单元格宽度按当前控件宽度算（预留滚动条），并同步给委托 sizeHint —— 两者必须一致。
 void TransferStation::updateIconGrid()
 {
-    if (m_viewStyle != IconView)
+    if (m_viewStyle != IconView && m_viewStyle != PreviewView)
         return;
+
+    const bool preview = (m_viewStyle == PreviewView);
+    const int  cols    = preview ? int(kPreviewColumns) : int(kIconColumns);
 
     int w = this->width();
     if (w <= 0 && parentWidget() != nullptr)
@@ -233,10 +451,10 @@ void TransferStation::updateIconGrid()
         w = 300;
 
     const int kScrollBarAllow = 10;              // 给垂直滚动条留位置，避免"有滚动条就少一列"
-    const int avail = qMax(kIconColumns * 52, w - kScrollBarAllow);
-    const int cellW = qMax(52, avail / kIconColumns);
+    const int avail = qMax(cols * 52, w - kScrollBarAllow);
+    const int cellW = qMax(preview ? 96 : 52, avail / cols);
     const int iconPx = qBound(30, cellW - 26, 54);
-    const int cellH = iconPx + 40;               // 图标 + 两行文字
+    const int cellH = preview ? cellW : iconPx + 40;   // 预览模式用方格（缩略图铺满）
 
     if (cellW == m_iconCell.width() && cellH == m_iconCell.height() && iconPx == m_iconPx)
         return;
@@ -255,16 +473,19 @@ void TransferStation::resizeEvent(QResizeEvent *e)
     updateIconGrid();                            // 面板变宽/变窄（小屏收缩）时重算列宽
 }
 
-// 切换展示布局：图标（默认）/ 列表 / 详细
+// 切换展示布局：图标（默认）/ 列表 / 详细 / 预览
 void TransferStation::setViewStyle(ViewStyle style)
 {
     m_viewStyle = style;
-    m_delegate->setMode(style == DetailView ? TsItemDelegate::DetailRows
-                                            : (style == ListView ? TsItemDelegate::ListRows
-                                                                 : TsItemDelegate::IconCells));
+    m_delegate->setMode(style == DetailView  ? TsItemDelegate::DetailRows
+                        : style == ListView   ? TsItemDelegate::ListRows
+                        : style == PreviewView ? TsItemDelegate::PreviewCells
+                                              : TsItemDelegate::IconCells);
 
     switch (style) {
     case IconView:
+    case PreviewView: {
+        const bool preview = (style == PreviewView);
         setViewMode(QListView::IconMode);
         // IconMode 的自然流向就是 LeftToRight（按行铺满再换行）；
         // 设成 TopToBottom 会变成"先竖着排满一列再换下一列"，不是网格观感。
@@ -275,10 +496,11 @@ void TransferStation::setViewStyle(ViewStyle style)
         // gridSize 负责摆放间距，两者取同一组值才不会错位。
         setUniformItemSizes(true);
         setSpacing(0);
-        setWordWrap(true);
+        setWordWrap(!preview);          // 预览模式不画文字，关掉换行
         setTextElideMode(Qt::ElideRight);
         updateIconGrid();
         break;
+    }
     case ListView:
     case DetailView:
         setViewMode(QListView::ListMode);
@@ -304,9 +526,9 @@ QString TransferStation::subtitleFor(const QVariantMap &data)
     const TsType type = TsType(data.value(QStringLiteral("type")).toInt());
     const QString path = data.value(QStringLiteral("path")).toString();
 
-    if (type == TsType::File) {
+    if (type == TsType::Video || type == TsType::File) {
         QFileInfo fi(path);
-        QString s = QObject::tr("文件");
+        QString s = (type == TsType::Video) ? QObject::tr("视频") : QObject::tr("文件");
         if (fi.exists())
             s += QStringLiteral(" · ") + humanSize(fi.size());
         const QString dir = QDir::toNativeSeparators(fi.absolutePath());
@@ -346,28 +568,73 @@ QString TransferStation::tooltipFor(const QVariantMap &data)
     return tip;
 }
 
+// ---------------- 排序：一条规则贯穿所有布局 ----------------
+// 每个条目挂一个 rank（最近使用时刻，ms）。列表自上而下 **非递增**，即"最新的在最前"。
+// 为什么不写成"新的一定 insertItem(0)"：
+//   历史回填是一批"由新到旧"的记录，逐条插到最前会把整批顺序颠倒；而按 rank 插到
+//   正确位置则**与传入顺序无关** —— 乱序传入也得到同一结果，于是图标/列表/详细/预览
+//   四种布局（同一个 model）看到的顺序天然一致，重启回填后也不会变。
+// 只用整数比较，不依赖文件时间/本地时间格式 ⇒ Linux / macOS / Windows 表现一致。
+qint64 TransferStation::rankOf(const QListWidgetItem *it)
+{
+    if (it == nullptr)
+        return 0;
+    return it->data(Qt::UserRole).toMap().value(QStringLiteral("rank")).toLongLong();
+}
+
+void TransferStation::noteRank(qint64 rank)
+{
+    if (rank > m_lastRank)
+        m_lastRank = rank;
+}
+
+qint64 TransferStation::nextRank()
+{
+    // 比"系统当前时间"和"列表里已有的最大 rank"都大 ⇒ 严格递增。
+    // 这样即便系统时钟被回拨（休眠唤醒/时区切换/跨平台时间精度不同），
+    // 或者同一毫秒内连着来好几条，新条目也一定排在最前。
+    const qint64 now = QDateTime::currentMSecsSinceEpoch();
+    m_lastRank = qMax(now, m_lastRank + 1);
+    return m_lastRank;
+}
+
+int TransferStation::orderedRow(qint64 rank) const
+{
+    // 找到第一条"比它旧"的条目，插在它前面。相同 rank 时返回的位置在所有
+    // 同 rank 条目之后 ⇒ 先来的仍在前（稳定），次序因此完全确定。
+    int i = 0;
+    for (; i < count(); ++i) {
+        const QListWidgetItem *it = item(i);
+        if (it != nullptr && rankOf(it) < rank)
+            break;
+    }
+    return i;
+}
+
 void TransferStation::appendItem(const QIcon &icon, const QString &text,
-                                 TsType type, const QVariantMap &data, bool toTop)
+                                 TsType type, const QVariantMap &data, qint64 rank)
 {
     // 关键：这里不能给 item 传 parent。
     // 一旦传了 parent，item 会立刻被追加进列表（view 已绑定），此后
     // QListWidget::insertItem(row, item) 对"已经属于某个 view"的 item 是空操作，
-    // toTop 就永远不会生效——新条目会一直掉到末尾（用户看到的"没显示出来"）。
+    // 位置就永远定不下来——新条目会一直掉到末尾（用户看到的"没显示出来"）。
     auto *it = new QListWidgetItem(icon, text);
+    const qint64 r = (rank >= 0) ? rank : nextRank();     // <0 = 取"当前最新"
     QVariantMap d = data;
     d[QStringLiteral("type")]     = int(type);
+    d[QStringLiteral("rank")]     = r;
     d[QStringLiteral("subtitle")] = subtitleFor(d);
     it->setData(Qt::UserRole, d);
     it->setToolTip(tooltipFor(d));
     it->setFlags(it->flags() | Qt::ItemIsDragEnabled);
 
-    if (toTop)
-        insertItem(0, it);
-    else
-        addItem(it);
+    const int row = orderedRow(r);
+    insertItem(row, it);
+    noteRank(r);
 
-    // 新条目滚入可见区：否则列表已滚过时新条目会落在视口外，看起来"没加进去"
-    if (toTop)
+    // 只让"最新的那条"滚进可见区：否则列表已滚过时新条目落在视口外，
+    // 看起来像"没加进去"。历史回填（插在中间/末尾）不打断你当前的浏览位置。
+    if (row == 0)
         scrollToItem(it, QAbstractItemView::PositionAtTop);
     emit stationChanged();
 }
@@ -415,15 +682,41 @@ void TransferStation::addFileItem(const QString &path)
     addFileItemEx(path, -1);
 }
 
-void TransferStation::addFileItemEx(const QString &path, qint64 dbId)
+// 一批文件按给定顺序成组入列。每条都会"提到最前"，所以倒着加：
+// 复制 A,B,C ⇒ 面板里就是 A,B,C（不做的话会变成 C,B,A，预览布局里看着尤其乱）。
+// 库里的 used_at 也按同一顺序递增 ⇒ 重启回填后顺序仍然一致。
+void TransferStation::addFileItems(const QStringList &paths)
+{
+    for (int i = paths.size() - 1; i >= 0; --i)
+        addFileItem(paths.at(i));
+}
+
+void TransferStation::addFileItemEx(const QString &path, qint64 dbId, qint64 rank)
 {
     QFileInfo fi(path);
     if (!fi.exists())
         return;
-    QFileIconProvider prov;
-    QIcon icon = prov.icon(fi);
-    if (icon.isNull())
-        icon = prov.icon(QFileIconProvider::File);
+
+    // 视频文件单独成一类：图标带播放按钮，预览模式给封面帧
+    const bool   video = isVideoFile(path);
+    const TsType type  = video ? TsType::Video : TsType::File;
+
+    QIcon icon;
+    if (video) {
+        icon = videoIcon(QPixmap());            // 先胶片占位，封面帧异步回来再换
+    } else if (isImageFile(path)) {
+        // 图片文件给**真实缩略图**，不要系统那枚"JPEG 文档"图标
+        // （用户反馈：预览布局里 .jpg 应该看到图，而不是一个 JPEG 图标）
+        const QPixmap pm = imageFileThumb(path);
+        if (!pm.isNull())
+            icon = QIcon(pm);
+    }
+    if (icon.isNull()) {
+        QFileIconProvider prov;
+        icon = prov.icon(fi);
+        if (icon.isNull())
+            icon = prov.icon(QFileIconProvider::File);
+    }
 
     const QString key = QStringLiteral("f:") + QDir::cleanPath(path);
     const bool fromHistory = (dbId >= 0);
@@ -441,7 +734,10 @@ void TransferStation::addFileItemEx(const QString &path, qint64 dbId)
     d[QStringLiteral("dedup")] = key;
     if (rowId > 0)
         d[QStringLiteral("dbId")] = rowId;
-    appendItem(icon, fi.fileName(), TsType::File, d, /*toTop=*/!fromHistory);
+    appendItem(icon, fi.fileName(), type, d, rank);
+
+    if (video)
+        requestVideoThumb(key, path);
 }
 
 void TransferStation::addImageItem(const QImage &image, const QString &name)
@@ -449,7 +745,8 @@ void TransferStation::addImageItem(const QImage &image, const QString &name)
     addImageItemEx(image, name, -1);
 }
 
-void TransferStation::addImageItemEx(const QImage &image, const QString &name, qint64 dbId)
+void TransferStation::addImageItemEx(const QImage &image, const QString &name, qint64 dbId,
+                                     qint64 rank)
 {
     if (image.isNull())
         return;
@@ -478,7 +775,7 @@ void TransferStation::addImageItemEx(const QImage &image, const QString &name, q
     d[QStringLiteral("dedup")] = key;
     if (rowId > 0)
         d[QStringLiteral("dbId")] = rowId;
-    appendItem(QIcon(pm), label, TsType::Image, d, /*toTop=*/!fromHistory);
+    appendItem(QIcon(pm), label, TsType::Image, d, rank);
 }
 
 void TransferStation::addTextItem(const QString &text, const QString &label)
@@ -486,12 +783,12 @@ void TransferStation::addTextItem(const QString &text, const QString &label)
     addTextItemEx(text, label, -1);
 }
 
-void TransferStation::addTextItemEx(const QString &text, const QString &label, qint64 dbId)
+void TransferStation::addTextItemEx(const QString &text, const QString &label, qint64 dbId,
+                                    qint64 rank)
 {
     if (text.isEmpty())
         return;
-    const QString flat  = text.simplified();
-    const QString l     = label.isEmpty() ? flat.left(24) : label;
+    const QString l     = label.isEmpty() ? textLabelFor(text) : label;
     const QString key   = QStringLiteral("t:") + text;
     const bool fromHistory = (dbId >= 0);
     removeExisting(key);                 // 相同文本去重，提升到顶部
@@ -508,30 +805,32 @@ void TransferStation::addTextItemEx(const QString &text, const QString &label, q
     d[QStringLiteral("dedup")] = key;
     if (rowId > 0)
         d[QStringLiteral("dbId")] = rowId;
-    appendItem(QIcon(textIcon()), l, TsType::Text, d, /*toTop=*/!fromHistory);
+    appendItem(QIcon(textIcon()), l, TsType::Text, d, rank);
 }
 
-// 历史回填：records 已按"最近使用时间倒序"，这里按同样顺序追加到列表末尾
-// （调用时列表里已有的条目都比库里的新，追加不会打乱"新的在前"）。
+// 历史回填：每条按自己的 usedAt 插到正确位置（不是无脑追加到末尾）。
+// 好处：**与传入顺序无关** —— 无论库里怎么给、给了几批，最终次序都一样，
+// 与库里 `recent()` 的排序（used_at DESC, id DESC）完全对应，重启前后一致。
 void TransferStation::loadRecords(const QVector<ClipRecord> &records)
 {
     for (const ClipRecord &r : records) {
         if (hasDedup(r.hash))
             continue;
+        const qint64 rank = qMax<qint64>(1, r.usedAt);   // 老库里 usedAt=0 的历史排到最旧
         switch (r.kind) {
         case ClipStore::TextKind:
             if (!r.text.isEmpty())
-                addTextItemEx(r.text, r.title, r.id);
+                addTextItemEx(r.text, r.title, r.id, rank);
             break;
         case ClipStore::FileKind:
             if (!r.path.isEmpty() && QFileInfo::exists(r.path))
-                addFileItemEx(r.path, r.id);
+                addFileItemEx(r.path, r.id, rank);
             break;
         case ClipStore::ImageKind: {
             const QByteArray png = (m_store != nullptr) ? m_store->pngOf(r.id) : QByteArray();
             const QImage img = QImage::fromData(png, "PNG");
             if (!img.isNull())
-                addImageItemEx(img, r.title, r.id);
+                addImageItemEx(img, r.title, r.id, rank);
             break;
         }
         default:
@@ -564,6 +863,185 @@ QString TransferStation::saveImageTemp(const QImage &img)
                       QString::number(QDateTime::currentMSecsSinceEpoch()) + ".png";
     img.save(p, "PNG");
     return p;
+}
+
+// ---------------- 扩展名分类（视频要单独显示播放标识） ----------------
+bool TransferStation::isVideoFile(const QString &path)
+{
+    static const QSet<QString> exts = {
+        QStringLiteral("mp4"), QStringLiteral("m4v"), QStringLiteral("mov"),
+        QStringLiteral("mkv"), QStringLiteral("webm"), QStringLiteral("avi"),
+        QStringLiteral("wmv"), QStringLiteral("flv"), QStringLiteral("mpg"),
+        QStringLiteral("mpeg"), QStringLiteral("3gp"), QStringLiteral("ts"),
+        QStringLiteral("m2ts"), QStringLiteral("rmvb"), QStringLiteral("ogv")
+    };
+    return exts.contains(QFileInfo(path).suffix().toLower());
+}
+
+bool TransferStation::isImageFile(const QString &path)
+{
+    static const QSet<QString> exts = {
+        QStringLiteral("png"), QStringLiteral("jpg"), QStringLiteral("jpeg"),
+        QStringLiteral("gif"), QStringLiteral("bmp"), QStringLiteral("webp"),
+        QStringLiteral("tif"), QStringLiteral("tiff"), QStringLiteral("heic"),
+        QStringLiteral("ico"), QStringLiteral("svg")
+    };
+    return exts.contains(QFileInfo(path).suffix().toLower());
+}
+
+QPixmap TransferStation::videoThumbFor(const QString &dedupKey) const
+{
+    return m_videoThumbs.value(dedupKey);
+}
+
+// 视频条目图标：封面帧（或胶片占位图）+ 居中播放按钮。
+// 播放按钮直接烘进图标里，这样图标/列表/详细/预览 四种布局都能看到"这是个视频"。
+QPixmap TransferStation::imageFileThumb(const QString &path)
+{
+    if (path.isEmpty())
+        return QPixmap();
+    const auto cached = m_imageFileThumbs.constFind(path);
+    if (cached != m_imageFileThumbs.constEnd())
+        return cached.value();
+
+    // 图标布局最大也就 48px（高 dpi 96），128 足够清晰；预览布局不走这里，
+    // 由委托按单元格实际大小现取（见 TsItemDelegate::imageThumb）。
+    constexpr int kThumbPx = 128;
+    const QImage img = readImageScaled(path, QSize(kThumbPx, kThumbPx));
+    if (img.isNull())
+        return QPixmap();          // 读不了（缺插件的 svg/heic、损坏文件）→ 调用方退回系统图标
+
+    const QPixmap pm = QPixmap::fromImage(img);
+    if (m_imageFileThumbs.size() > 200)     // 与委托里的缓存同一策略：超了整体清掉
+        m_imageFileThumbs.clear();
+    m_imageFileThumbs.insert(path, pm);
+    return pm;
+}
+
+QIcon TransferStation::videoIcon(const QPixmap &frame)
+{
+    const int S = 128;
+    QPixmap pm(S, S);
+    pm.fill(Qt::transparent);
+    QPainter p(&pm);
+    p.setRenderHint(QPainter::Antialiasing, true);
+
+    const QRect card(2, 2, S - 4, S - 4);
+    p.setPen(Qt::NoPen);
+    QLinearGradient g(card.topLeft(), card.bottomRight());
+    g.setColorAt(0, QColor(58, 64, 74));
+    g.setColorAt(1, QColor(28, 32, 38));
+    p.setBrush(g);
+    p.drawRoundedRect(card, 10, 10);
+
+    if (!frame.isNull()) {
+        const QPixmap sc = frame.scaled(card.size(), Qt::KeepAspectRatio,
+                                       Qt::SmoothTransformation);
+        p.drawPixmap(card.center().x() - sc.width() / 2,
+                     card.center().y() - sc.height() / 2, sc);
+        p.setBrush(QColor(0, 0, 0, 80));            // 压暗一点，让播放按钮更醒目
+        p.drawRoundedRect(card, 10, 10);
+    } else {
+        // 胶片感占位：几条竖带
+        p.setBrush(QColor(255, 255, 255, 24));
+        for (int i = 0; i < 3; ++i)
+            p.drawRoundedRect(QRect(card.left() + 12 + i * 34, card.top() + 14,
+                                    24, card.height() - 28), 3, 3);
+    }
+
+    // 居中播放按钮
+    const QPoint c = card.center();
+    p.setBrush(QColor(0, 0, 0, 130));
+    p.setPen(QPen(QColor(255, 255, 255, 225), 2.4));
+    p.drawEllipse(c, 24, 24);
+    p.setPen(Qt::NoPen);
+    p.setBrush(QColor(255, 255, 255, 240));
+    QPolygonF tri;
+    tri << QPointF(c.x() - 8, c.y() - 12) << QPointF(c.x() - 8, c.y() + 12)
+        << QPointF(c.x() + 13, c.y());
+    p.drawPolygon(tri);
+    return QIcon(pm);
+}
+
+// 异步生成视频封面帧。两条路：
+//   1) 有 ffmpeg 就用它抽一帧（纯命令行、跨平台、可自动化验证）；
+//   2) 没有 ffmpeg 时，macOS 退回 Quick Look（qlmanage -t，效果同 Finder 里的预览，
+//      顺带也支持 PDF/文档，但需要 QuickLook 服务，某些受限环境下跑不了）。
+// 两条都不可用就保持胶片占位图（不反复尝试）。
+void TransferStation::requestVideoThumb(const QString &dedupKey, const QString &path)
+{
+    if (dedupKey.isEmpty() || path.isEmpty())
+        return;
+    if (m_videoThumbs.contains(dedupKey) || m_videoThumbPending.contains(dedupKey)
+        || m_videoThumbFailed.contains(dedupKey))
+        return;
+
+    const QString outDir = QStandardPaths::writableLocation(QStandardPaths::TempLocation)
+                           + QStringLiteral("/popball2_thumbs");
+    QDir().mkpath(outDir);
+
+    QString expected;
+    QString program;
+    QStringList args;
+
+    const QString ffmpeg = QStandardPaths::findExecutable(QStringLiteral("ffmpeg"));
+    if (!ffmpeg.isEmpty()) {
+        expected = outDir + QLatin1Char('/') + QString::number(qHash(dedupKey))
+                   + QStringLiteral(".png");
+        program = ffmpeg;
+        args = { QStringLiteral("-v"), QStringLiteral("error"), QStringLiteral("-y"),
+                 QStringLiteral("-ss"), QStringLiteral("1"), QStringLiteral("-i"), path,
+                 QStringLiteral("-frames:v"), QStringLiteral("1"),
+                 QStringLiteral("-vf"), QStringLiteral("scale=512:-1"), expected };
+    }
+#if defined(Q_OS_MACOS)
+    else if (!QStandardPaths::findExecutable(QStringLiteral("qlmanage")).isEmpty()) {
+        // qlmanage 的输出名 = 原文件名 + ".png"
+        expected = outDir + QLatin1Char('/') + QFileInfo(path).fileName()
+                   + QStringLiteral(".png");
+        program = QStringLiteral("qlmanage");
+        args = { QStringLiteral("-t"), QStringLiteral("-s"), QStringLiteral("512"),
+                 QStringLiteral("-o"), outDir, path };
+    }
+#endif
+    else {
+        m_videoThumbFailed.insert(dedupKey);     // 没有可用的抽帧工具
+        return;
+    }
+    QFile::remove(expected);
+
+    m_videoThumbPending.insert(dedupKey);
+    auto *proc = new QProcess(this);
+    connect(proc, &QProcess::finished, this,
+            [this, proc, dedupKey, expected](int code, QProcess::ExitStatus st) {
+                proc->deleteLater();
+                m_videoThumbPending.remove(dedupKey);
+
+                QPixmap thumb;
+                if (code == 0 && st == QProcess::NormalExit && QFileInfo::exists(expected))
+                    thumb = QPixmap(expected);
+                if (thumb.isNull()) {
+                    m_videoThumbFailed.insert(dedupKey);
+                    return;
+                }
+                m_videoThumbs.insert(dedupKey, thumb);
+
+                // 回填条目图标（同一内容只有一条，去重保证）
+                for (int i = 0; i < count(); ++i) {
+                    QListWidgetItem *it = item(i);
+                    if (it != nullptr
+                        && dataOf(it).value(QStringLiteral("dedup")).toString() == dedupKey) {
+                        it->setIcon(videoIcon(thumb));
+                    }
+                }
+                viewport()->update();
+            });
+    // 超时保护：卡住的进程直接杀掉（不成功就永久保持占位图）
+    QTimer::singleShot(8000, proc, [proc] {
+        if (proc->state() != QProcess::NotRunning)
+            proc->kill();
+    });
+    proc->start(program, args);
 }
 
 QPixmap TransferStation::textIcon()
@@ -716,12 +1194,78 @@ void TransferStation::openItem(QListWidgetItem *it)
     const QVariantMap d = dataOf(it);
     const TsType type = TsType(d.value(QStringLiteral("type")).toInt());
     if (type == TsType::Text) {
-        QApplication::clipboard()->setText(d.value(QStringLiteral("text")).toString());
+        // 文本：弹出专门的小编辑器（可看可改），而不是只把内容塞回剪贴板
+        emit editTextRequested(d.value(QStringLiteral("dbId")).toLongLong(),
+                               d.value(QStringLiteral("dedup")).toString(),
+                               d.value(QStringLiteral("name")).toString(),
+                               d.value(QStringLiteral("text")).toString());
         return;
     }
     const QString p = d.value(QStringLiteral("path")).toString();
     if (!p.isEmpty())
         QDesktopServices::openUrl(QUrl::fromLocalFile(p));
+}
+
+QListWidgetItem *TransferStation::findTextItem(qint64 dbId, const QString &originalKey) const
+{
+    // 条目可能在编辑器开着的时候被删掉/被"重新复制"提升替换，所以**不存裸指针**，
+    // 每次按身份（库里行 id，退化时用载入时的 dedup 键）重新找。
+    for (int i = 0; i < count(); ++i) {
+        QListWidgetItem *it = item(i);
+        if (it == nullptr)
+            continue;
+        const QVariantMap d = dataOf(it);
+        if (int(TsType(d.value(QStringLiteral("type")).toInt())) != int(TsType::Text))
+            continue;
+        if (dbId > 0) {
+            if (d.value(QStringLiteral("dbId")).toLongLong() == dbId)
+                return it;
+        } else if (!originalKey.isEmpty()
+                   && d.value(QStringLiteral("dedup")).toString() == originalKey) {
+            return it;
+        }
+    }
+    return nullptr;
+}
+
+bool TransferStation::applyTextEdit(qint64 dbId, const QString &originalKey, const QString &text)
+{
+    QListWidgetItem *it = findTextItem(dbId, originalKey);
+    if (it == nullptr)
+        return false;                 // 条目已被删除：不写库、也不复活它
+
+    const QString label = textLabelFor(text);
+    const QString key   = QStringLiteral("t:") + text;
+
+    // 改成了与另一条重复的内容：按去重语义合并（删掉那条），与"重新复制"的行为一致
+    for (int i = count() - 1; i >= 0; --i) {
+        QListWidgetItem *other = item(i);
+        if (other == nullptr || other == it)
+            continue;
+        if (dataOf(other).value(QStringLiteral("dedup")).toString() == key) {
+            const qint64 otherId = dataOf(other).value(QStringLiteral("dbId")).toLongLong();
+            if (otherId > 0 && m_store != nullptr)
+                m_store->remove(otherId);
+            delete takeItem(i);
+        }
+    }
+
+    QVariantMap d = dataOf(it);
+    d[QStringLiteral("text")]     = text;
+    d[QStringLiteral("name")]     = label;
+    d[QStringLiteral("dedup")]    = key;
+    d[QStringLiteral("subtitle")] = subtitleFor(d);
+    it->setData(Qt::UserRole, d);
+    it->setText(label);
+    it->setToolTip(tooltipFor(d));
+
+    const qint64 rowId = d.value(QStringLiteral("dbId")).toLongLong();
+    if (rowId > 0 && m_store != nullptr)
+        m_store->updateText(rowId, key, label, text);   // 就地改库：id / 顺序都不变
+
+    emit stationChanged();
+    viewport()->update();             // 详细/预览布局要重绘（摘要、缩略图都变了）
+    return true;
 }
 
 void TransferStation::removeItem(QListWidgetItem *it)
@@ -759,9 +1303,11 @@ void TransferStation::dropEvent(QDropEvent *e)
     const QMimeData *m = e->mimeData();
     if (!m) { e->ignore(); return; }
     if (m->hasUrls()) {
+        QStringList files;
         for (const QUrl &u : m->urls())
             if (u.isLocalFile())
-                addFileItem(u.toLocalFile());
+                files << u.toLocalFile();
+        addFileItems(files);                  // 保持拖入时的原始顺序
         e->acceptProposedAction();
     } else if (m->hasImage()) {
         const QImage img = qvariant_cast<QImage>(m->imageData());
@@ -852,6 +1398,22 @@ PreviewPopup::PreviewPopup(QWidget *parent)
 
     lay->addWidget(m_content, 0, Qt::AlignCenter);
     lay->addWidget(m_caption, 0);
+    m_videoSize = QSize(320, 180);
+#ifdef POPBALL2_HAVE_QT_MULTIMEDIA
+    m_player = new QMediaPlayer(this);
+    m_sink   = new QVideoSink(this);
+    m_player->setVideoSink(m_sink);
+    m_player->setAudioOutput(nullptr);          // 悬停预览不发声
+    connect(m_sink, &QVideoSink::videoFrameChanged, this, [this](const QVideoFrame &f) {
+        if (f.isValid())
+            setFrame(f.toImage());
+    });
+    connect(m_player, &QMediaPlayer::errorOccurred, this,
+            [this](QMediaPlayer::Error, const QString &msg) {
+                if (m_caption != nullptr && !msg.isEmpty())
+                    m_caption->setToolTip(msg);
+            });
+#endif
 }
 
 void PreviewPopup::showPixmap(const QPixmap &pixmap, const QString &caption)
@@ -921,6 +1483,76 @@ void PreviewPopup::showText(const QString &text, const QString &caption)
     adjustSize();
 }
 
+// 视频：能播就静音循环播放（画面逐帧画进内容标签），不能播就退化成静态封面。
+void PreviewPopup::showVideo(const QString &path, const QString &caption,
+                             const QPixmap &fallbackStill)
+{
+#ifdef POPBALL2_HAVE_QT_MULTIMEDIA
+    if (m_player == nullptr || m_sink == nullptr) {   // 理论上不会，兜底用静态图
+        if (!fallbackStill.isNull())
+            showPixmap(fallbackStill, caption);
+        else
+            showText(tr("（无法预览此视频）"), caption);
+        return;
+    }
+
+    m_content->setWordWrap(false);
+    m_content->setText(QString());
+    const QPixmap first = fallbackStill.isNull()
+                              ? QPixmap()
+                              : fallbackStill.scaled(m_videoSize, Qt::KeepAspectRatio,
+                                                     Qt::SmoothTransformation);
+    m_content->setPixmap(first);                      // 先显示封面帧，解码出画面就切过去
+    m_content->setFixedSize(m_videoSize);
+
+    QFontMetrics fm(m_caption->font());
+    m_caption->setText(fm.elidedText(caption + QStringLiteral(" · 悬停预览（静音）"),
+                                     Qt::ElideMiddle, m_videoSize.width() + 40));
+    m_caption->setVisible(true);
+
+    m_player->setSource(QUrl::fromLocalFile(path));
+    m_player->setLoops(QMediaPlayer::Infinite);
+    m_player->play();
+
+    ensurePolished();
+    adjustSize();
+#else
+    Q_UNUSED(path);
+    if (!fallbackStill.isNull())
+        showPixmap(fallbackStill, caption + QStringLiteral(" · 双击用系统播放器打开"));
+    else
+        showText(tr("（本机未启用视频预览：双击用系统播放器打开）"), caption);
+#endif
+}
+
+void PreviewPopup::stopVideo()
+{
+#ifdef POPBALL2_HAVE_QT_MULTIMEDIA
+    if (m_player != nullptr) {
+        m_player->stop();
+        m_player->setSource(QUrl());
+    }
+#endif
+}
+
+bool PreviewPopup::isPlayingVideo() const
+{
+#ifdef POPBALL2_HAVE_QT_MULTIMEDIA
+    return m_player != nullptr && m_player->playbackState() == QMediaPlayer::PlayingState;
+#else
+    return false;
+#endif
+}
+
+void PreviewPopup::setFrame(const QImage &frame)
+{
+    if (frame.isNull() || m_content == nullptr)
+        return;
+    const QImage scaled = frame.scaled(m_videoSize, Qt::KeepAspectRatio,
+                                      Qt::SmoothTransformation);
+    m_content->setPixmap(QPixmap::fromImage(scaled));
+}
+
 void PreviewPopup::paintEvent(QPaintEvent *e)
 {
     Q_UNUSED(e);
@@ -930,6 +1562,192 @@ void PreviewPopup::paintEvent(QPaintEvent *e)
     p.setPen(QPen(QColor(86, 92, 104), 1));
     p.setBrush(QColor(24, 26, 31, 246));
     p.drawRoundedRect(r, 10, 10);
+}
+
+// ============================ TextEditorWindow ============================
+// 文本条目的"小编辑器"：双击 / 右键「打开」时弹出，直接看全文，也能改。
+// 几点取舍：
+//   * 独立顶层窗口（有系统标题栏，可拖动/缩放），深色主题与面板保持一致。
+//   * 关闭时若有未保存的改动 → **自动保存**。不弹"要保存吗"的模态框：既免得把用户卡住，
+//     也让无头自检不必去点对话框（模态框会把 harness 挂死）。
+//   * **不缓存 QListWidgetItem 指针**：条目随时可能被删除、或被"重新复制"提升替换掉。
+//     每次保存都按 dbId（优先）或载入时的 dedup 键重新定位；找不到就拒绝写入，不复活已删条目。
+TextEditorWindow::TextEditorWindow(QWidget *parent)
+    : QWidget(parent)
+{
+    setObjectName(QStringLiteral("popDockTextEditor"));
+    setWindowTitle(tr("文本预览"));
+    setWindowFlags(windowFlags() | Qt::Window);        // 顶层窗口
+    // QWidget 的子类不会自动画样式表里的背景，得显式声明"我要样式表背景"
+    setAttribute(Qt::WA_StyledBackground, true);
+    resize(520, 380);
+    setMinimumSize(340, 220);
+    setStyleSheet(QStringLiteral(
+        "#popDockTextEditor{background:#1e2126;}"
+        "QLabel{background:transparent;color:#d7dbe0;}"
+        "QPlainTextEdit{background:#171a1f;color:#e8eaed;border:1px solid #3a4048;"
+        "border-radius:2px;padding:6px;selection-background-color:rgba(58,110,165,0.85);}"
+        "QPlainTextEdit:focus{border:1px solid rgba(96,150,205,0.95);}"
+        "QToolButton{border:1px solid transparent;border-radius:3px;color:#c8cdd4;"
+        "background:rgba(255,255,255,0.07);padding:2px 10px;}"
+        "QToolButton:hover{background:rgba(255,255,255,0.15);color:#ffffff;}"
+        "QToolButton:disabled{color:#6b7178;background:transparent;}"));
+
+    // 不要标题行：条目名就是正文的第一行，再单独显示一遍纯属占地方（窗口标题栏已写着"文本预览"）。
+    // 字数/行数挪到底栏左侧，跟状态挤一行。
+    auto *root = new QVBoxLayout(this);
+    root->setContentsMargins(10, 8, 10, 10);
+    root->setSpacing(8);
+
+    // 正文
+    m_edit = new QPlainTextEdit(this);
+    m_edit->setObjectName(QStringLiteral("textEditorEdit"));
+    m_edit->setPlaceholderText(tr("（空文本）"));
+    m_edit->setTabChangesFocus(false);
+    {
+        QFont f = m_edit->font();
+        f.setPixelSize(13);
+        m_edit->setFont(f);
+    }
+    root->addWidget(m_edit, 1);
+
+    // 底部：左状态，右 复制 / 保存 / 关闭
+    auto *foot = new QHBoxLayout;
+    foot->setSpacing(8);
+    m_status = new QLabel(this);
+    m_status->setObjectName(QStringLiteral("textEditorStatus"));
+    m_status->setStyleSheet(QStringLiteral("background:transparent;color:#8b9199;"));
+    {
+        QFont f = m_status->font();
+        f.setPixelSize(11);
+        m_status->setFont(f);
+    }
+    foot->addWidget(m_status, 1);
+
+    auto makeBtn = [this](const QString &name, const QString &text) {
+        auto *b = new QToolButton(this);
+        b->setObjectName(name);
+        b->setText(text);
+        b->setCursor(Qt::PointingHandCursor);
+        b->setFixedHeight(26);
+        b->setMinimumWidth(56);
+        QFont f = b->font();
+        f.setPixelSize(11);
+        b->setFont(f);
+        return b;
+    };
+    auto *copyBtn  = makeBtn(QStringLiteral("textEditorCopy"),  tr("复制"));
+    m_saveBtn      = makeBtn(QStringLiteral("textEditorSave"),  tr("保存"));
+    auto *closeBtn = makeBtn(QStringLiteral("textEditorClose"), tr("关闭"));
+    foot->addWidget(copyBtn, 0);
+    foot->addWidget(m_saveBtn, 0);
+    foot->addWidget(closeBtn, 0);
+    root->addLayout(foot);
+
+    connect(copyBtn,  &QToolButton::clicked, this, [this] {
+        QApplication::clipboard()->setText(m_edit->toPlainText());
+        m_status->setText(tr("已复制到剪贴板"));
+    });
+    connect(m_saveBtn, &QToolButton::clicked, this, [this] { save(); });
+    connect(closeBtn,  &QToolButton::clicked, this, &TextEditorWindow::close);
+    connect(m_edit, &QPlainTextEdit::textChanged, this, [this] { refreshState(); });
+
+    auto *escSc = new QShortcut(QKeySequence(Qt::Key_Escape), this);
+    connect(escSc, &QShortcut::activated, this, &TextEditorWindow::close);
+    auto *saveSc = new QShortcut(QKeySequence::Save, this);        // ⌘S / Ctrl+S
+    connect(saveSc, &QShortcut::activated, this, [this] { save(); });
+
+    m_idleText = tr("未修改");
+    refreshState();
+}
+
+void TextEditorWindow::showFor(TransferStation *station, qint64 dbId,
+                               const QString &originalKey, const QString &title,
+                               const QString &text)
+{
+    m_station = station;
+    m_dbId    = dbId;
+    m_key     = originalKey;
+    // title 有意不用了：文本条目的名字就是正文第一行，再在窗口里单独显示一行纯属占地方
+    // （窗口标题栏已经写着"文本预览"）。留着这个参数只为不改信号签名。
+    Q_UNUSED(title);
+
+    {
+        const QSignalBlocker block(m_edit);        // 载入内容不算"修改"
+        m_edit->setPlainText(text);
+        m_edit->document()->setModified(false);
+        m_edit->moveCursor(QTextCursor::Start);
+    }
+    m_baseline = text;                             // 改动的判定基线
+    m_idleText = tr("未修改");
+    refreshState();
+    show();
+    raise();
+    activateWindow();
+    m_edit->setFocus();
+}
+
+bool TextEditorWindow::modified() const
+{
+    // 与"已保存的正文"比对，而不是用 QTextDocument::isModified()：
+    // setPlainText()/undo 等操作会把这个标志位重置，语义不稳（实测有"改了却报未修改"）。
+    return m_edit != nullptr && m_edit->toPlainText() != m_baseline;
+}
+
+void TextEditorWindow::refreshState()
+{
+    if (m_edit == nullptr)
+        return;
+    const QString t = m_edit->toPlainText();
+    const bool dirty = modified();
+    if (m_saveBtn != nullptr)
+        m_saveBtn->setEnabled(dirty);
+    if (m_status != nullptr) {
+        // 状态 + 字数/行数挤在底栏一行里（原来单独占一行标题，纯属浪费纵向空间）
+        const QString state = dirty ? tr("已修改（关闭时会自动保存）") : m_idleText;
+        m_status->setText(tr("%1 · %2 字 · %3 行")
+                              .arg(state)
+                              .arg(t.size())
+                              .arg(m_edit->document()->blockCount()));
+    }
+}
+
+void TextEditorWindow::save()
+{
+    if (m_station == nullptr || m_edit == nullptr)
+        return;
+    const QString text = m_edit->toPlainText();
+    if (m_station->applyTextEdit(m_dbId, m_key, text)) {
+        m_key      = QStringLiteral("t:") + text;    // 内容变了，去重键随之变化
+        m_baseline = text;                           // 这版已是"库里的版本"
+        m_idleText = tr("已保存");
+        m_edit->document()->setModified(false);
+    } else {
+        m_idleText = tr("条目已被删除，未保存");
+    }
+    refreshState();
+}
+
+void TextEditorWindow::closeEvent(QCloseEvent *event)
+{
+    if (modified())
+        save();                    // 没点保存就关：自动落盘，别让用户白改
+    QWidget::closeEvent(event);
+}
+
+void TextEditorWindow::keyPressEvent(QKeyEvent *event)
+{
+    // 快捷键兜底（正文控件吃掉按键时会走到这里）
+    if (event->key() == Qt::Key_Escape) {
+        close();
+        return;
+    }
+    if (event->key() == Qt::Key_S
+        && (event->modifiers() & (Qt::ControlModifier | Qt::MetaModifier))) {
+        save();
+        return;
+    }
+    QWidget::keyPressEvent(event);
 }
 
 // ============================ PopDock ============================
@@ -1185,8 +2003,8 @@ PopDock::PopDock(QWidget *parent)
 
     auto *viewGroup = new QButtonGroup(this);
     viewGroup->setExclusive(true);
-    const QString viewNames[3] = { tr("图标"), tr("列表"), tr("详细") };
-    for (int i = 0; i < 3; ++i) {
+    const QString viewNames[4] = { tr("图标"), tr("列表"), tr("详细"), tr("预览") };
+    for (int i = 0; i < 4; ++i) {
         auto *b = new QToolButton(this);
         b->setObjectName(QStringLiteral("popDockView%1").arg(i));
         b->setText(viewNames[i]);
@@ -1195,8 +2013,8 @@ PopDock::PopDock(QWidget *parent)
         b->setFocusPolicy(Qt::NoFocus);
         b->setCursor(Qt::PointingHandCursor);
         b->setFixedHeight(26);
-        b->setMinimumWidth(48);
-        b->setToolTip(tr("切换展示布局"));
+        b->setMinimumWidth(44);
+        b->setToolTip(i == 3 ? tr("预览：只显示缩略图") : tr("切换展示布局"));
         {
             QFont bf = b->font();
             bf.setPixelSize(11);
@@ -1240,6 +2058,8 @@ PopDock::PopDock(QWidget *parent)
     connect(m_station, &TransferStation::previewHideRequested, this,
             &PopDock::onPreviewHideRequested);
     connect(m_station, &TransferStation::stationChanged, this, &PopDock::refreshCount);
+    // 文本条目"打开" → 弹小编辑器
+    connect(m_station, &TransferStation::editTextRequested, this, &PopDock::openTextEditor);
     // 右键菜单 / 拖出条目期间加交互锁：用户在操作，面板不能自动收起
     connect(m_station, &TransferStation::interactionBegin, this, &PopDock::beginInteraction);
     connect(m_station, &TransferStation::interactionEnd,   this, &PopDock::endInteraction);
@@ -1257,7 +2077,28 @@ PopDock::PopDock(QWidget *parent)
     installDockTracking(this);
 }
 
-PopDock::~PopDock() = default;
+PopDock::~PopDock()
+{
+    if (m_textEditor != nullptr) {
+        m_textEditor->close();     // 关闭会触发"未保存改动自动保存"
+        delete m_textEditor;       // 顶层窗口、无 parent：由面板统一持有与释放
+        m_textEditor = nullptr;
+    }
+}
+
+QWidget *PopDock::textEditor() const
+{
+    return m_textEditor;
+}
+
+// 弹出（或复用）文本小编辑器。顶层窗口不设 parent：设了就会被当成面板里的子控件裁掉了。
+void PopDock::openTextEditor(qint64 dbId, const QString &key, const QString &title,
+                             const QString &text)
+{
+    if (m_textEditor == nullptr)
+        m_textEditor = new TextEditorWindow();
+    m_textEditor->showFor(m_station, dbId, key, title, text);
+}
 
 void PopDock::openHistoryStore()
 {
@@ -1295,7 +2136,7 @@ void PopDock::refreshCount()
 
 void PopDock::setViewStyle(int style)
 {
-    const int s = qBound(0, style, 2);
+    const int s = qBound(0, style, 3);          // 0=图标 1=列表 2=详细 3=预览
     if (m_station != nullptr)
         m_station->setViewStyle(TransferStation::ViewStyle(s));
     if (m_viewBtns[s] != nullptr)
@@ -1334,8 +2175,7 @@ void PopDock::captureClipboard()
                 files << u.toLocalFile();
     }
     if (!files.isEmpty()) {
-        for (const QString &p : files)
-            m_station->addFileItem(p);
+        m_station->addFileItems(files);       // 保持剪贴板里的原始顺序
         return;
     }
 
@@ -1413,8 +2253,7 @@ void PopDock::hideEvent(QHideEvent *event)
 
 void PopDock::addFiles(const QStringList &paths)
 {
-    for (const QString &p : paths)
-        m_station->addFileItem(p);
+    m_station->addFileItems(paths);           // 保持调用方给的顺序
     m_station->setFocus();
 }
 
@@ -1454,7 +2293,10 @@ void PopDock::onItemDoubleClicked(QListWidgetItem *item)
 
 void PopDock::hidePreview()
 {
-    if (m_preview != nullptr && m_preview->isVisible())
+    if (m_preview == nullptr)
+        return;
+    m_preview->stopVideo();                 // 视频预览要停掉，别让它在后台继续解码
+    if (m_preview->isVisible())
         m_preview->hide();
 }
 
@@ -1489,16 +2331,40 @@ void PopDock::onPreviewRequested(const QVariantMap &data, const QPoint &globalCe
         m_preview->showPixmap(QPixmap::fromImage(scaled),
                               QStringLiteral("%1 · %2×%3")
                                   .arg(name).arg(img.width()).arg(img.height()));
+    } else if (type == TsType::Video) {
+        // 视频：悬停即静音循环播放（没有 QtMultimedia 时退化成静态封面 + 提示）
+        const QString p = data.value(QStringLiteral("path")).toString();
+        QFileInfo fi(p);
+        m_preview->showVideo(p,
+                             QStringLiteral("%1 · %2")
+                                 .arg(fi.fileName()).arg(humanSize(fi.size())),
+                             m_station->videoThumbFor(
+                                 data.value(QStringLiteral("dedup")).toString()));
     } else {
-        // 文件：放大图标 + 文件名 · 所在目录
-        QFileInfo fi(data.value(QStringLiteral("path")).toString());
-        QFileIconProvider prov;
-        QIcon ic = prov.icon(fi);
-        if (ic.isNull())
-            ic = prov.icon(QFileIconProvider::File);
-        m_preview->showPixmap(ic.pixmap(96, 96),
-                              fi.fileName() + QStringLiteral(" · ")
-                                  + QDir::toNativeSeparators(fi.absolutePath()));
+        // 文件：图片文件直接给大图预览；其它给放大图标 + 文件名 · 所在目录
+        const QString p = data.value(QStringLiteral("path")).toString();
+        QFileInfo fi(p);
+        // 带尺寸读，别整张解码（手机原图动辄几千万像素）；尺寸说明取文件真实宽高
+        const QImage img = TransferStation::isImageFile(p)
+                               ? readImageScaled(p, QSize(320, 240))
+                               : QImage();
+        if (!img.isNull()) {
+            const QSize real = QImageReader(p).size();      // 只读文件头，拿原始宽高
+            m_preview->showPixmap(QPixmap::fromImage(img),
+                                  QStringLiteral("%1 · %2×%3 · %4")
+                                      .arg(fi.fileName())
+                                      .arg(real.isValid() ? real.width() : img.width())
+                                      .arg(real.isValid() ? real.height() : img.height())
+                                      .arg(humanSize(fi.size())));
+        } else {
+            QFileIconProvider prov;
+            QIcon ic = prov.icon(fi);
+            if (ic.isNull())
+                ic = prov.icon(QFileIconProvider::File);
+            m_preview->showPixmap(ic.pixmap(96, 96),
+                                  fi.fileName() + QStringLiteral(" · ")
+                                      + QDir::toNativeSeparators(fi.absolutePath()));
+        }
     }
 
     // 摆在面板"朝屏幕内侧"的一侧，纵向对齐所悬停的条目；越界则翻到另一侧

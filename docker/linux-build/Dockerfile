@@ -46,4 +46,14 @@ RUN unset HTTP_PROXY HTTPS_PROXY http_proxy https_proxy 2>/dev/null; \
 RUN ln -sf /usr/lib/qt6/bin/lrelease /usr/bin/lrelease 2>/dev/null || true \
  && ln -sf /usr/lib/qt6/bin/lupdate  /usr/bin/lupdate  2>/dev/null || true
 
+# 视频悬停预览播放用 QtMultimedia（可选依赖）：装上就有该功能；包不可用时构建照旧继续，
+# configure 里 qtHaveModule(multimedia) 会自动关掉播放，运行时退化成"静态封面 + 双击系统播放器"。
+RUN unset HTTP_PROXY HTTPS_PROXY http_proxy https_proxy 2>/dev/null; \
+    export HTTP_PROXY="$MY_HTTP_PROXY" HTTPS_PROXY="$MY_HTTPS_PROXY" \
+           http_proxy="$MY_HTTP_PROXY" https_proxy="$MY_HTTPS_PROXY"; \
+    apt-get update \
+    && (apt-get install -y --no-install-recommends qt6-multimedia-dev \
+        || echo "WARN: qt6-multimedia-dev 装不上，本次构建不含视频预览播放") \
+    && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /src

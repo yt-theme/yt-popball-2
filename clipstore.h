@@ -31,6 +31,10 @@ struct ClipRecord
 //     读出时再由调用方落回临时文件供图标/拖拽使用。
 //   * 去重靠 hash 的 UNIQUE 索引：重复内容只刷新 used_at（提升到最前），不新增行，
 //     与面板里的去重行为保持一致。
+//   * **used_at 严格单调递增**（不用系统时钟原值，见 put()）：同一毫秒里连写多条时
+//     也不会出现两个相同的时间戳，于是 `ORDER BY used_at DESC` 是一个全序，
+//     重启后回填的顺序、以及跨平台（文件系统时间精度不同、时区不同）的顺序，
+//     都与面板里的顺序完全一致。老库里可能已有并列行，由 `id DESC` 兜底破并列。
 class ClipStore : public QObject
 {
     Q_OBJECT
@@ -52,7 +56,8 @@ public:
                const QString &text, const QString &path,
                const QByteArray &png, qint64 bytes);
 
-    // 最近 limit 条，按最近使用时间倒序（不带 png 大字段，按需再取）
+    // 最近 limit 条，按最近使用时间倒序（并列时按 id 倒序，保证次序确定）。
+    // 不带 png 大字段，按需再取。
     QVector<ClipRecord> recent(int limit) const;
     // 按 id 取单条的图片数据（列表回填时按需拿，避免一次性读一堆大字段）
     QByteArray pngOf(qint64 id) const;
@@ -61,10 +66,16 @@ public:
     // 只保留最近 keep 条
     void prune(int keep = DefaultKeep);
 
+    // 文本条目在小编辑器里被改过后，**就地**更新那一行：id 不变（条目上的 dbId 依然有效）、
+    // used_at 不变（编辑不是"使用"，不该改变顺序 —— 顺序只在"重新复制"时提升）。
+    // 新内容若与另一行重复（hash 上有 UNIQUE），把那一行删掉，与面板的去重语义保持一致。
+    bool updateText(qint64 id, const QString &hash, const QString &title, const QString &text);
+
 private:
     bool  m_ready = false;
     QString m_lastError;
     QString m_connName;     // 独立连接名，避免和别的 QSqlDatabase 抢默认连接
+    qint64  m_lastUsed = 0; // 库里出现过的最大 used_at（用于保证严格递增）
 };
 
 #endif // CLIPSTORE_H
