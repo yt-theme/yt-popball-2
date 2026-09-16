@@ -632,9 +632,12 @@ void TransferStation::appendItem(const QIcon &icon, const QString &text,
     insertItem(row, it);
     noteRank(r);
 
+    // 新条目也要服从当前筛选（否则在「图片」tab 下复制一段文本，它会冒出来打断视线）
+    it->setHidden(!itemMatchesFilter(d, m_filter));
+
     // 只让"最新的那条"滚进可见区：否则列表已滚过时新条目落在视口外，
     // 看起来像"没加进去"。历史回填（插在中间/末尾）不打断你当前的浏览位置。
-    if (row == 0)
+    if (row == 0 && !it->isHidden())
         scrollToItem(it, QAbstractItemView::PositionAtTop);
     emit stationChanged();
 }
@@ -887,6 +890,117 @@ bool TransferStation::isImageFile(const QString &path)
         QStringLiteral("ico"), QStringLiteral("svg")
     };
     return exts.contains(QFileInfo(path).suffix().toLower());
+}
+
+// ---------------- 类型筛选（标题区下面那条 tab：全部 / 文档 / 图片） ----------------
+// 文档类文件：纯文本 / 代码 / Office / PDF 等。**有意不收 "ts"** —— 它在本项目里被
+// isVideoFile() 当成 MPEG-TS 视频，两边都收会让同一文件归进两个互斥的 tab。
+bool TransferStation::isDocFile(const QString &path)
+{
+    static const QSet<QString> exts = {
+        // 纯文本 / 标记
+        QStringLiteral("txt"), QStringLiteral("md"), QStringLiteral("markdown"),
+        QStringLiteral("rst"), QStringLiteral("rtf"), QStringLiteral("log"),
+        QStringLiteral("tex"),
+        // 办公文档
+        QStringLiteral("pdf"), QStringLiteral("doc"), QStringLiteral("docx"),
+        QStringLiteral("xls"), QStringLiteral("xlsx"), QStringLiteral("csv"),
+        QStringLiteral("tsv"), QStringLiteral("ppt"), QStringLiteral("pptx"),
+        QStringLiteral("odt"), QStringLiteral("ods"), QStringLiteral("odp"),
+        QStringLiteral("pages"), QStringLiteral("numbers"), QStringLiteral("key"),
+        QStringLiteral("epub"),
+        // 结构化数据 / 配置
+        QStringLiteral("json"), QStringLiteral("xml"), QStringLiteral("yml"),
+        QStringLiteral("yaml"), QStringLiteral("toml"), QStringLiteral("ini"),
+        QStringLiteral("conf"), QStringLiteral("cfg"), QStringLiteral("properties"),
+        QStringLiteral("plist"), QStringLiteral("sql"),
+        // 网页 / 代码 / 脚本
+        QStringLiteral("html"), QStringLiteral("htm"), QStringLiteral("xhtml"),
+        QStringLiteral("css"), QStringLiteral("scss"), QStringLiteral("less"),
+        QStringLiteral("js"), QStringLiteral("mjs"), QStringLiteral("cjs"),
+        QStringLiteral("jsx"), QStringLiteral("tsx"), QStringLiteral("vue"),
+        QStringLiteral("py"), QStringLiteral("sh"), QStringLiteral("bash"),
+        QStringLiteral("zsh"), QStringLiteral("bat"), QStringLiteral("cmd"),
+        QStringLiteral("ps1"), QStringLiteral("c"), QStringLiteral("h"),
+        QStringLiteral("cc"), QStringLiteral("cpp"), QStringLiteral("cxx"),
+        QStringLiteral("hpp"), QStringLiteral("cs"), QStringLiteral("java"),
+        QStringLiteral("kt"), QStringLiteral("go"), QStringLiteral("rs"),
+        QStringLiteral("rb"), QStringLiteral("php"), QStringLiteral("swift"),
+        QStringLiteral("lua"), QStringLiteral("pl"), QStringLiteral("r"),
+        QStringLiteral("m"), QStringLiteral("mm"), QStringLiteral("gradle"),
+        QStringLiteral("pro"), QStringLiteral("cmake")
+    };
+    return exts.contains(QFileInfo(path).suffix().toLower());
+}
+
+// 条目是否属于某个筛选。判定规则**集中在这一个纯函数里**，所以自检可以直接验证，
+// 不必去拼界面。Doc = 文本条目 + 文档类文件；Image = 剪贴板图片 + 图片文件；
+// 视频 / 压缩包 / 音频既不是文档也不是图片 ⇒ 只在「全部」里出现。
+bool TransferStation::itemMatchesFilter(const QVariantMap &data, TypeFilter f)
+{
+    if (f == AllItems)
+        return true;
+
+    const TsType  type = TsType(data.value(QStringLiteral("type")).toInt());
+    const QString path = data.value(QStringLiteral("path")).toString();
+
+    if (f == ImageItems)
+        return type == TsType::Image                                       // 剪贴板图片
+               || (type == TsType::File && isImageFile(path));             // 图片文件
+
+    return type == TsType::Text
+           || (type == TsType::File && isDocFile(path));
+}
+
+// 按当前筛选显示/隐藏所有条目。用 setHidden 而不是增删条目：
+//   ① 顺序（rank）完全不动，切回「全部」立刻恢复原样；
+//   ② 去重、库里 used_at 也不受影响 —— 筛选只是"看"的方式，不是数据操作。
+void TransferStation::applyFilter()
+{
+    for (int i = 0; i < count(); ++i) {
+        QListWidgetItem *it = item(i);
+        if (it != nullptr)
+            it->setHidden(!itemMatchesFilter(dataOf(it), m_filter));
+    }
+
+    // 正悬停的那条被筛掉了：立刻收起预览气泡（否则气泡会挂在一条已不可见的条目上）
+    if (m_hoverItem != nullptr && m_hoverItem->isHidden())
+        updateHover(nullptr, QPoint());
+
+    viewport()->update();
+}
+
+int TransferStation::visibleCount() const
+{
+    int n = 0;
+    for (int i = 0; i < count(); ++i) {
+        const QListWidgetItem *it = item(i);
+        if (it != nullptr && !it->isHidden())
+            ++n;
+    }
+    return n;
+}
+
+void TransferStation::setTypeFilter(TypeFilter f)
+{
+    if (f != AllItems && f != DocItems && f != ImageItems)
+        f = AllItems;
+    if (f == m_filter)
+        return;
+    m_filter = f;
+    emit previewHideRequested();           // 切筛选先收起悬停预览
+    applyFilter();
+
+    // 滚到第一条可见条目：否则视口可能停在"整屏都是被隐藏条目"的空白处，
+    // 看上去像内容全没了。
+    for (int i = 0; i < count(); ++i) {
+        QListWidgetItem *it = item(i);
+        if (it != nullptr && !it->isHidden()) {
+            scrollToItem(it, QAbstractItemView::PositionAtTop);
+            break;
+        }
+    }
+    emit stationChanged();                  // 标题区计数要刷新成"可见 / 总数"
 }
 
 QPixmap TransferStation::videoThumbFor(const QString &dedupKey) const
@@ -1952,6 +2066,63 @@ PopDock::PopDock(QWidget *parent)
         root->addWidget(header, 0);
     }
 
+    // ---------- 类型 tab：全部 / 文档 / 图片（紧贴列表上方，标题区与列表之间） ----------
+    // 只是"看"的切换：不动条目、不动顺序、不动库，切回「全部」立刻恢复原样。
+    {
+        auto *tabs = new QWidget(this);
+        tabs->setObjectName(QStringLiteral("popDockTabs"));
+        tabs->setStyleSheet(QStringLiteral("background:transparent;"));
+        tabs->setFixedHeight(24);
+
+        auto *tl = new QHBoxLayout(tabs);
+        tl->setContentsMargins(2, 0, 2, 0);
+        tl->setSpacing(4);
+
+        auto *tabGroup = new QButtonGroup(this);
+        tabGroup->setExclusive(true);
+
+        const QString tabNames[3] = { tr("全部"), tr("文档"), tr("图片") };
+        const QString tabTips[3]  = {
+            tr("显示全部条目"),
+            tr("只看文本与文档类文件（txt / md / pdf / Office / 代码…）"),
+            tr("只看剪贴板图片与图片文件（png / jpg / gif…）")
+        };
+        for (int i = 0; i < 3; ++i) {
+            auto *b = new QToolButton(tabs);
+            b->setObjectName(QStringLiteral("popDockTab%1").arg(i));
+            b->setText(tabNames[i]);
+            b->setCheckable(true);
+            b->setChecked(i == 0);
+            b->setFocusPolicy(Qt::NoFocus);
+            b->setCursor(Qt::PointingHandCursor);
+            b->setFixedHeight(22);
+            b->setMinimumWidth(52);
+            b->setToolTip(tabTips[i]);
+            {
+                QFont bf = b->font();
+                bf.setPixelSize(11);
+                b->setFont(bf);
+            }
+            b->setStyleSheet(QStringLiteral(
+                "QToolButton{border:1px solid transparent;border-radius:5px;color:#9aa0a6;"
+                "background:transparent;padding:1px 8px;}"
+                "QToolButton:hover{background:rgba(255,255,255,0.10);color:#e8eaed;}"
+                "QToolButton:checked{background:rgba(58,110,165,0.90);color:#ffffff;}"));
+            tabGroup->addButton(b, i);
+            tl->addWidget(b);
+            m_tabBtns[i] = b;
+        }
+        tl->addStretch(1);
+        root->addWidget(tabs, 0);
+
+        connect(tabGroup, &QButtonGroup::idClicked, this, [this](int id) {
+            if (m_station != nullptr)
+                m_station->setTypeFilter(TransferStation::TypeFilter(id));
+            hidePreview();
+            refreshCount();
+        });
+    }
+
     // ---------- 中转站（文件 / 剪贴板 / 记事）占满中部 ----------
     m_station = new TransferStation(this);
     m_station->setObjectName(QStringLiteral("popDockStation"));
@@ -2131,7 +2302,12 @@ void PopDock::refreshCount()
 {
     if (m_countLabel == nullptr || m_station == nullptr)
         return;
-    m_countLabel->setText(tr("%1 项").arg(m_station->count()));
+    const int total = m_station->count();
+    const int shown = m_station->visibleCount();
+    // 有筛选时给出"可见 / 总数"：只显示一个数会让人以为条目丢了
+    m_countLabel->setText(shown == total
+                              ? tr("%1 项").arg(total)
+                              : tr("%1 / %2 项").arg(shown).arg(total));
 }
 
 void PopDock::setViewStyle(int style)
@@ -2147,6 +2323,24 @@ void PopDock::setViewStyle(int style)
 int PopDock::viewStyle() const
 {
     return m_station != nullptr ? int(m_station->viewStyle()) : 0;
+}
+
+// 类型 tab（全部 / 文档 / 图片）。与布局切换不同的是：它**不**落盘 ——
+// 筛选是临时的"看"的方式，不是用户偏好；下次启动仍然是「全部」。
+void PopDock::setTypeFilter(int filter)
+{
+    const int f = qBound(0, filter, 2);         // 0=全部 1=文档 2=图片
+    if (m_station != nullptr)
+        m_station->setTypeFilter(TransferStation::TypeFilter(f));
+    if (m_tabBtns[f] != nullptr)
+        m_tabBtns[f]->setChecked(true);
+    hidePreview();
+    refreshCount();
+}
+
+int PopDock::typeFilter() const
+{
+    return m_station != nullptr ? int(m_station->typeFilter()) : 0;
 }
 
 // 剪贴板变了：防抖后再抓（一次复制常连发多个 dataChanged）

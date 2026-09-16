@@ -58,6 +58,23 @@ public:
     void setViewStyle(ViewStyle style);
     ViewStyle viewStyle() const { return m_viewStyle; }
 
+    // 类型筛选（标题区下面那条 tab）：
+    //   AllItems   全部
+    //   DocItems   文档 = 文本条目 + 文档类文件（isDocFile 的白名单）
+    //   ImageItems 图片 = 剪贴板图片 + 图片文件
+    // 视频 / 压缩包等既不是"文档"也不是"图片"，只在「全部」里出现。
+    // 用 setHidden 隐藏而不是删除条目：顺序、去重、库里的记录都不受影响。
+    enum TypeFilter { AllItems = 0, DocItems = 1, ImageItems = 2 };
+
+    void setTypeFilter(TypeFilter f);
+    TypeFilter typeFilter() const { return m_filter; }
+    // 当前筛选下可见的条目数
+    int visibleCount() const;
+    // 某条目是否属于该筛选（静态，便于自检直接验证判定规则）
+    static bool itemMatchesFilter(const QVariantMap &data, TypeFilter f);
+    // 文档类文件判定（按扩展名：文本/代码/Office/PDF 等）
+    static bool isDocFile(const QString &path);
+
     // 剪贴板历史（可为空 = 不持久化，功能照旧）
     void setStore(ClipStore *store) { m_store = store; }
     // 用历史记录回填。**顺序由每条记录自带的 usedAt 决定，与传入顺序无关**：
@@ -151,10 +168,13 @@ private:
     bool hasDedup(const QString &dedupKey) const;
     // 同一张图片（无论来源）生成稳定指纹，用于去重
     static QString imageHash(const QImage &img);
+    // 按当前筛选隐藏/显示所有条目（用 setHidden，不动顺序）
+    void applyFilter();
     // 悬停条目变化 → 重启/停止预览计时
     void updateHover(QListWidgetItem *item, const QPoint &globalCenter);
 
     ViewStyle       m_viewStyle  = IconView;
+    TypeFilter      m_filter     = AllItems;  // 当前类型筛选
     TsItemDelegate *m_delegate   = nullptr;   // 图标/列表/详细/预览 四种绘制模式
     QTimer         *m_hoverTimer = nullptr;
     QListWidgetItem *m_hoverItem = nullptr;
@@ -232,7 +252,8 @@ private:
 };
 
 // 悬浮球 hover / 拖拽 300ms 后弹出的"数据中转站"面板。
-// - 顶部一条小标题区（左：数据中转站，右：条目数）
+// - 顶部一条小标题区（左：数据中转站，右：条目数 —— 有筛选时是"可见 / 总数 项"）
+// - 标题区下面一条类型 tab（全部 / 文档 / 图片），只筛"看什么"，不动数据与顺序
 // - 打开即自动记录当前剪贴板内容，并把剪贴板变化持续收进中转站（含历史持久化）
 // - 底部一条紧凑工具栏：左侧切换展示布局（图标 / 列表 / 详细 / 预览），右侧"铅笔+加号"新增记事
 // - 条目悬停可预览图片 / 文本 / 文件 / 视频；右键可复制 / 打开 / 删除
@@ -242,8 +263,9 @@ class PopDock : public QWidget
 public:
     // 面板首选尺寸。屏幕装不下时（小屏/投影）Widget 会调 setFixedSize 收缩，
     // 所以这里用常量暴露出来，避免在别处硬编码。
+    // 高度里含 24px 的类型 tab 行（标题 22 + tab 24 + 底栏 26 + 两条 8px 间距）。
     static constexpr int kPreferredWidth  = 330;
-    static constexpr int kPreferredHeight = 420;
+    static constexpr int kPreferredHeight = 452;
 
     explicit PopDock(QWidget *parent = nullptr);
     ~PopDock() override;
@@ -256,6 +278,11 @@ public:
     // 展示布局（供 Widget 按配置回填；用户点按钮切换时发 viewStyleChanged）
     void setViewStyle(int style);
     int  viewStyle() const;
+
+    // 类型 tab（全部 / 文档 / 图片）。与布局不同：筛选**不落盘** ——
+    // 它只是"看"的方式，不是用户偏好，重启后回到「全部」。
+    void setTypeFilter(int filter);
+    int  typeFilter() const;
 
     // 剪贴板历史库（默认 ~/.popball2_clipboard.db，可用 POPBALL2_DB 覆盖 —— 自检隔离用）
     ClipStore *store() const { return m_store; }
@@ -319,6 +346,7 @@ private:
     PreviewPopup    *m_preview    = nullptr;  // 悬停预览气泡（懒创建）
     TextEditorWindow *m_textEditor = nullptr; // 文本小编辑器（懒创建，顶层窗口）
     QToolButton     *m_viewBtns[4] = { nullptr, nullptr, nullptr, nullptr };   // 底栏左：图标/列表/详细/预览
+    QToolButton     *m_tabBtns[3]  = { nullptr, nullptr, nullptr };            // 列表上方：全部/文档/图片
 
     ClipStore       *m_store      = nullptr;  // 剪贴板历史（可为未就绪）
     bool             m_historyLoaded = false; // 历史是否已回填
