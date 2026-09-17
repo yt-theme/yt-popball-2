@@ -177,6 +177,9 @@ static QImage readImageScaled(const QString &path, const QSize &box)
 // 常量放在这里，保证"算单元格高度的 updateIconGrid"与"画标签的委托"用同一组数字。
 static constexpr int kIconLabelFontPx = 11;
 static constexpr int kIconLabelLines  = 2;
+// 图标格卡片的圆角：格子只有 ~70px 宽，8px 看着偏圆，收到 5px 更"方正利落"。
+// 自检里"选中卡片圆角半径"那条量的是卡片左上角的内缩轮廓（r=5 → 2/1/0），改大改小都会红。
+static constexpr int kIconCardRadius  = 1;
 
 // ============================ TsItemDelegate ============================
 // 一个委托同时承担四种布局：
@@ -389,7 +392,7 @@ private:
         const QRect card = opt.rect.adjusted(2, 2, -2, -2);
         p->setPen(Qt::NoPen);
         p->setBrush(cardBg(opt.state));
-        p->drawRoundedRect(card, 8, 8);
+        p->drawRoundedRect(card, kIconCardRadius, kIconCardRadius);
 
         // 标签区贴底（高度固定 = 两行，单行条目也占满 ⇒ 各格重心一致）
         QFont lf = opt.font;
@@ -2326,6 +2329,21 @@ PopDock::PopDock(QWidget *parent)
         m_countLabel->setStyleSheet(QStringLiteral("background:transparent;color:#8b9199;"));
 
         hl->addWidget(m_titleLabel);
+
+        // 标题后跟一个小 tip：hover 说明面板内容的来源（剪贴板 + 拖到悬浮球的中转文件）
+        auto *infoTip = new QLabel(header);
+        infoTip->setObjectName(QStringLiteral("popDockInfoTip"));
+        infoTip->setText(QStringLiteral("?"));
+        {
+            QFont f = infoTip->font();
+            f.setPixelSize(11);
+            infoTip->setFont(f);
+        }
+        infoTip->setStyleSheet(QStringLiteral("background:transparent;color:#8b9199;padding:0 1px;"));
+        infoTip->setCursor(Qt::WhatsThisCursor);
+        infoTip->setToolTip(tr("剪贴板里复制的内容、拖到悬浮球的中转文件，都会显示在这里。"));
+
+        hl->addWidget(infoTip);
         hl->addStretch(1);
         hl->addWidget(m_countLabel);
         root->addWidget(header, 0);
