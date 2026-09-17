@@ -1478,7 +1478,12 @@ void TransferStation::contextMenuEvent(QContextMenuEvent *event)
     }
     setCurrentItem(it);
 
-    QMenu menu(this);
+    // 关键：菜单必须是**独立顶层窗口**，不能以面板(TransferStation/PopDock)为父。
+    // 否则面板收起时 QWidget::hide() 会递归隐藏所有子控件，正在显示的右键菜单
+    // 会被"连坐"一起关掉（现象：弹窗消失，右键菜单也跟着没了）。无父后即使面板
+    // 因任何原因隐藏，菜单也安稳留在屏幕上，等用户操作完再随交互锁正常收起面板。
+    QMenu menu;
+    menu.setWindowFlag(Qt::Popup, true);   // 显式置为弹出窗口，避免某些平台被任务栏吸附
     fillItemMenu(menu);
     QAction *actCopy = menu.actions().value(0);
     QAction *actOpen = menu.actions().value(1);
