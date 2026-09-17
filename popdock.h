@@ -189,8 +189,8 @@ private:
     QListWidgetItem *m_hoverItem = nullptr;
     QPoint           m_hoverCenter;           // 当前悬停条目图标的全局中心
     ClipStore       *m_store     = nullptr;   // 不持有所有权（由 PopDock 持有）
-    QSize            m_iconCell  = QSize(74, 88);   // 网格单元格（随布局/宽度重算）
-    int              m_iconPx    = 48;              // 图标边长
+    QSize            m_iconCell  = QSize(76, 110);  // 网格单元格（随布局/宽度重算）
+    int              m_iconPx    = 66;              // 缩略图方块边长（图标格）/ 单元格边长（预览）
     QHash<QString, QPixmap> m_videoThumbs;          // dedup 键 → 视频封面帧
     QHash<QString, QPixmap> m_imageFileThumbs;      // 文件路径 → 图片文件缩略图
     QSet<QString>           m_videoThumbPending;    // 正在提取中的（避免重复起进程）

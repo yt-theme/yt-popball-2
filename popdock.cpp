@@ -49,6 +49,8 @@
 #include <QKeySequence>
 #include <QTextDocument>
 #include <QTextCursor>
+#include <QTextLayout>
+#include <QTextOption>
 #include <QSignalBlocker>
 
 #ifdef POPBALL2_HAVE_QT_MULTIMEDIA
@@ -171,9 +173,15 @@ static QImage readImageScaled(const QString &path, const QSize &box)
     return reader.read();
 }
 
+// 图标网格的标签区：11px、最多两行（格子只有 ~75px 宽，再多也没意义）。
+// 常量放在这里，保证"算单元格高度的 updateIconGrid"与"画标签的委托"用同一组数字。
+static constexpr int kIconLabelFontPx = 11;
+static constexpr int kIconLabelLines  = 2;
+
 // ============================ TsItemDelegate ============================
-// 一个委托同时承担三种布局：
-//   图标网格 —— 单元格尺寸由 setIconCell() 给（**必须与 gridSize 完全一致**：
+// 一个委托同时承担四种布局：
+//   图标网格 —— 自定义绘制：圆角卡片 + 居中大缩略图 + 底部两行标签（见 paintIcon）。
+//               单元格尺寸由 setIconCell() 给（**必须与 gridSize 完全一致**：
 //               uniformItemSizes=true 时 Qt 的条目尺寸取自委托 sizeHint，
 //               gridSize 只负责"摆放间距"；两者不一致就会出现尺寸/间距互相错位）
 //   列表     —— 交给 QStyledItemDelegate 默认绘制（与系统观感一致）
@@ -208,7 +216,7 @@ public:
     {
         switch (m_mode) {
         case IconCells:
-            return m_iconCellSet ? m_iconCell : QSize(74, 88);
+            return m_iconCellSet ? m_iconCell : QSize(76, 110);
         case PreviewCells:
             return m_iconCellSet ? m_iconCell : QSize(148, 148);
         case DetailRows:
@@ -223,6 +231,8 @@ public:
     {
         switch (m_mode) {
         case IconCells:
+            paintIcon(p, opt, idx);
+            return;
         case ListRows:
             QStyledItemDelegate::paint(p, opt, idx);
             return;
@@ -236,6 +246,181 @@ public:
     }
 
 private:
+    // 卡片底色：选中 = 强调色（与预览网格同一套观感）/ 悬停 = 轻微提亮 / 常态 = 极淡。
+    // 自绘之后 QSS 里的 ::item 底色不再参与，选中/悬停全在这里说了算。
+    QColor cardBg(QStyle::State state) const
+    {
+        if (state & QStyle::State_Selected) {
+            QColor c(m_accentColor);
+            c.setAlpha(190);
+            return c;
+        }
+        if (state & QStyle::State_MouseOver)
+            return QColor(255, 255, 255, 26);
+        return QColor(255, 255, 255, 12);
+    }
+
+    // 等比缩放后图实际落在哪（drawContain 只画不返回，但描边需要落点）
+    static QRect fittedRect(const QPixmap &pm, const QRect &rect)
+    {
+        if (pm.isNull() || rect.isEmpty())
+            return QRect();
+        qreal dpr = pm.devicePixelRatio();
+        if (dpr <= 0)
+            dpr = 1.0;
+        QSize s(qRound(pm.width() / dpr), qRound(pm.height() / dpr));
+        if (s.isEmpty())
+            return QRect();
+        s.scale(rect.size(), Qt::KeepAspectRatio);
+        return QRect(rect.center().x() - s.width() / 2, rect.center().y() - s.height() / 2,
+                     s.width(), s.height());
+    }
+
+    // 需要描一圈细边的"白底内容"：图片（含图片文件）与文本"一页纸"。
+    // 视频/系统文件图标自带底色和圆角，再描边就重影了。
+    static bool wantsBorder(const QVariantMap &d)
+    {
+        const TsType t = TsType(d.value(QStringLiteral("type")).toInt());
+        if (t == TsType::Image || t == TsType::Text)
+            return true;
+        return t == TsType::File
+               && TransferStation::isImageFile(d.value(QStringLiteral("path")).toString());
+    }
+
+    // 一个条目要画的"内容图"（图标网格与预览网格共用，避免两条路径各画各的）：
+    //   图片      → 真实缩略图（按目标尺寸 + dpr 现取，比条目自带的小图标清晰）
+    //   文本      → 一页纸（docThumb）
+    //   图片文件  → 同样给真实缩略图；视频/其它文件 → 条目自带图标（视频图标里已烘了播放按钮）
+    QPixmap thumbFor(const QModelIndex &idx, const QVariantMap &d,
+                     const QSize &box, qreal dpr) const
+    {
+        const TsType  type = TsType(d.value(QStringLiteral("type")).toInt());
+        const QString key  = d.value(QStringLiteral("dedup")).toString();
+        const QString path = d.value(QStringLiteral("path")).toString();
+
+        QPixmap pm;
+        switch (type) {
+        case TsType::Image:
+            pm = imageThumb(key, path, box, dpr);
+            break;
+        case TsType::Text:
+            pm = docThumb(key, d.value(QStringLiteral("text")).toString(), box, dpr);
+            break;
+        case TsType::Video:
+        case TsType::File:
+            if (TransferStation::isImageFile(path))
+                pm = imageThumb(key, path, box, dpr);
+            break;
+        }
+        if (pm.isNull()) {
+            // 退回条目自带图标（系统文件图标 / 视频图标 / 剪贴板图片）——
+            // 取大号再等比缩小保证清晰（pixmap 请求太小的尺寸会糊）。
+            const QIcon ic = qvariant_cast<QIcon>(idx.data(Qt::DecorationRole));
+            const int want = qMax(64, qMin(box.width(), box.height()));
+            pm = ic.pixmap(QSize(int(want * dpr), int(want * dpr)));
+            if (pm.isNull())
+                pm = ic.pixmap(want, want);
+            if (!pm.isNull())
+                pm.setDevicePixelRatio(dpr);
+        }
+        return pm;
+    }
+
+    // 标签：居中等宽折行，最多两行；两行还放不下就在第二行出省略号。
+    // 用 QTextLayout 折行而不是"整篇压成一行再截"，中文/中英混排都自然。
+    void drawLabel(QPainter *p, const QRect &rect, const QString &text,
+                   const QFont &f, const QColor &color) const
+    {
+        const QString body = text.simplified();
+        if (body.isEmpty() || rect.width() <= 6 || rect.height() <= 6)
+            return;
+
+        const QFontMetrics fm(f);
+        const int w = rect.width();
+
+        // 先按行宽折行，只取前 kIconLabelLines 行的范围
+        QVector<QPair<int, int>> segs;      // (起始下标, 长度)
+        QTextLayout lay(body, f);
+        QTextOption opt;
+        opt.setWrapMode(QTextOption::WrapAtWordBoundaryOrAnywhere);
+        lay.setTextOption(opt);
+        lay.beginLayout();
+        for (int i = 0; i < kIconLabelLines; ++i) {
+            QTextLine ln = lay.createLine();
+            if (!ln.isValid())
+                break;
+            ln.setLineWidth(w);
+            segs.append(qMakePair(ln.textStart(), ln.textLength()));
+        }
+        lay.endLayout();
+        if (segs.isEmpty())
+            return;
+
+        const int consumed = segs.last().first + segs.last().second;
+        QStringList lines;
+        for (int i = 0; i < segs.size(); ++i) {
+            if (i == segs.size() - 1 && consumed < body.size())
+                lines << fm.elidedText(body.mid(segs[i].first), Qt::ElideRight, w);   // 还剩内容 → 省略
+            else
+                lines << body.mid(segs[i].first, segs[i].second);
+        }
+
+        const int lh = fm.lineSpacing();
+        int y = rect.top() + (rect.height() - lh * lines.size()) / 2;
+        p->setFont(f);
+        p->setPen(color);
+        for (const QString &ln : lines) {
+            p->drawText(QRect(rect.left(), y, w, lh),
+                        Qt::AlignHCenter | Qt::AlignVCenter, ln);
+            y += lh;
+        }
+    }
+
+    // 图标网格：一格 = 圆角卡片 + 居中大缩略图 + 底部标签。
+    // 为什么不沿用 QStyledItemDelegate 默认绘制：默认把图标（受 iconSize 上限卡住）顶在
+    // 格子最上方、文字紧跟其下 —— 格子下半截全空、重心很飘；缩略图按比例缩完又常是
+    // "一条细白条"，白底在深色面板上发飘。这里改为：缩略图居中尽量铺满、标签贴底固定两行。
+    void paintIcon(QPainter *p, const QStyleOptionViewItem &opt, const QModelIndex &idx) const
+    {
+        p->save();
+        p->setRenderHint(QPainter::Antialiasing, true);
+        p->setRenderHint(QPainter::SmoothPixmapTransform, true);
+
+        const QRect card = opt.rect.adjusted(2, 2, -2, -2);
+        p->setPen(Qt::NoPen);
+        p->setBrush(cardBg(opt.state));
+        p->drawRoundedRect(card, 8, 8);
+
+        // 标签区贴底（高度固定 = 两行，单行条目也占满 ⇒ 各格重心一致）
+        QFont lf = opt.font;
+        lf.setPixelSize(kIconLabelFontPx);
+        const QFontMetrics lfm(lf);
+        const int  labelH = lfm.lineSpacing() * kIconLabelLines;
+        const QRect labelRect(card.left() + 2, card.bottom() - labelH - 1,
+                              card.width() - 4, labelH);
+
+        // 缩略图：正方形，横向尽量铺满卡片，纵向占"卡片高 - 标签区"
+        const int side = qBound(20, qMin(card.width() - 4, labelRect.top() - 5 - card.top()), 240);
+        const QRect thumbRect(card.center().x() - side / 2, card.top() + 3, side, side);
+
+        const QVariantMap d = idx.data(Qt::UserRole).toMap();
+        const qreal dpr = opt.widget ? opt.widget->devicePixelRatioF() : 1.0;
+        const QPixmap pm = thumbFor(idx, d, thumbRect.size(), dpr);
+        if (!pm.isNull()) {
+            const QRect dst = fittedRect(pm, thumbRect);
+            p->drawPixmap(dst, pm);
+            if (wantsBorder(d)) {        // 白底内容：描一圈细边，免得在深色卡片上"飘"
+                p->setBrush(Qt::NoBrush);
+                p->setPen(QPen(QColor(255, 255, 255, 70), 1));
+                p->drawRoundedRect(QRectF(dst).adjusted(-0.5, -0.5, 0.5, 0.5), 3, 3);
+            }
+        }
+
+        const bool sel = (opt.state & QStyle::State_Selected);
+        drawLabel(p, labelRect, idx.data(Qt::DisplayRole).toString(), lf,
+                  sel ? QColor(255, 255, 255) : QColor(0xcf, 0xd4, 0xda));
+        p->restore();
+    }
     // 详细：两行（加粗名称 + 灰色副标题）
     void paintDetail(QPainter *p, const QStyleOptionViewItem &opt, const QModelIndex &idx) const
     {
@@ -307,50 +492,14 @@ private:
         p->drawRoundedRect(card, 9, 9);
 
         const QVariantMap d = idx.data(Qt::UserRole).toMap();
-        const TsType type = TsType(d.value(QStringLiteral("type")).toInt());
-        const QString key  = d.value(QStringLiteral("dedup")).toString();
         const qreal dpr    = opt.widget ? opt.widget->devicePixelRatioF() : 1.0;
         const QRect inner  = card.adjusted(5, 5, -5, -5);
 
-        switch (type) {
-        case TsType::Image: {
-            const QPixmap pm = imageThumb(key, d.value(QStringLiteral("path")).toString(),
-                                          inner.size(), dpr);
-            if (!pm.isNull())
-                drawContain(p, pm, inner);
-            break;
-        }
-        case TsType::Text: {
-            const QPixmap pm = docThumb(key, d.value(QStringLiteral("text")).toString(),
-                                        inner.size(), dpr);
-            if (!pm.isNull())
-                drawContain(p, pm, inner);
-            break;
-        }
-        case TsType::Video:
-        case TsType::File: {
-            // 图片文件（.jpg/.png…）直接给**真实缩略图** —— 否则只剩一枚"JPEG 文档"
-            // 图标，完全看不出内容（用户反馈的正是这个）。
-            const QString path = d.value(QStringLiteral("path")).toString();
-            QPixmap pm;
-            if (TransferStation::isImageFile(path))
-                pm = imageThumb(key, path, inner.size(), dpr);
-            if (pm.isNull()) {
-                // 视频条目的图标里已经带了播放按钮（见 TransferStation::videoIcon）；
-                // 其它文件放大系统图标 —— 都用"取大号图标再等比缩放"保证清晰。
-                const QIcon ic = qvariant_cast<QIcon>(idx.data(Qt::DecorationRole));
-                const int want = qMax(64, qMin(inner.width(), inner.height()));
-                pm = ic.pixmap(QSize(want * dpr, want * dpr));
-                if (pm.isNull())
-                    pm = ic.pixmap(want, want);
-            }
-            if (!pm.isNull()) {
-                pm.setDevicePixelRatio(dpr);
-                drawContain(p, pm, inner);
-            }
-            break;
-        }
-        }
+        // 内容图与图标网格同一套逻辑（见 thumbFor）：图片/文本/图片文件给真实缩略图，
+        // 其余退回条目自带图标（视频图标里已烘了播放按钮）。
+        const QPixmap pm = thumbFor(idx, d, inner.size(), dpr);
+        if (!pm.isNull())
+            drawContain(p, pm, inner);
         p->restore();
     }
 
@@ -543,8 +692,14 @@ void TransferStation::updateIconGrid()
     const int kScrollBarAllow = 10;              // 给垂直滚动条留位置，避免"有滚动条就少一列"
     const int avail = qMax(cols * 52, w - kScrollBarAllow);
     const int cellW = qMax(preview ? 96 : 52, avail / cols);
-    const int iconPx = qBound(30, cellW - 26, 54);
-    const int cellH = preview ? cellW : iconPx + 40;   // 预览模式用方格（缩略图铺满）
+
+    // 图标格：缩略图横向尽量铺满卡片（旧版把图标卡在 54px 上限，格子四周全是空白），
+    // 下面固定留两行标签的位置 —— 标签高度与委托里画标签用的是同一组常量。
+    QFont labelFont = font();
+    labelFont.setPixelSize(kIconLabelFontPx);
+    const int labelH = QFontMetrics(labelFont).lineSpacing() * kIconLabelLines;
+    const int iconPx = preview ? cellW : qBound(40, cellW - 10, 96);
+    const int cellH  = preview ? cellW : iconPx + labelH + 14;
 
     if (cellW == m_iconCell.width() && cellH == m_iconCell.height() && iconPx == m_iconPx)
         return;
