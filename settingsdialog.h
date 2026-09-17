@@ -24,8 +24,9 @@ class SysInfo;
  *
  *   预制配色   [经典蓝][活力蓝][霓虹夜]
  *              [薄荷][落日橙][极光紫]
- *   颜色       主球背景/球体边框/内存图/交换分区/CPU占用/
- *              阴影/温度文字/频率文字/网速文字  （点色块取色）
+ *   颜色       主球背景/球体边框/内存图/交换分区/CPU占用/阴影/
+ *              悬浮球文字/温度文字/频率文字/网速文字/磁盘IO文字（点色块取色）
+ *              「悬浮球文字」= 一键同步全部文字颜色
  *   显示       [x]温度 [ ]频率 [x]网速 [x]磁盘读写
  *              磁盘 (•)IO最高的盘 ( )指定磁盘 [下拉]
  *   窗口       不透明度 / 大小(宽x高) / 边框宽度
@@ -96,6 +97,9 @@ private:
     Config  *cfg     = nullptr;
     SysInfo *sysInfo = nullptr;   // 用于取磁盘名列表（可能为空）
     QList<ColorRow> rows;
+    // 「悬浮球文字」总项是否被用户本次改动过：仅在改动时才四色同设，
+    // 避免 applyChanges 循环里被四个分项（预设白等）覆盖。
+    bool textColorTouched = false;
 
     QCheckBox *chkTemp = nullptr;
     QCheckBox *chkFreq = nullptr;

@@ -142,8 +142,11 @@ linuxdeploy / appimagetool / runtime，缺失时才联网下载。注意 AppImag
    - **拖出**：把条目拖到桌面/文件夹即复制出文件或图片。
    - **持久化**：所有内容存进本地剪贴板历史库（默认 `~/.popball2_clipboard.db`），
      重启后按"最近使用"顺序回填，内容相同只提升排序、不重复。
+   - **主题联动**：面板的选中高亮、右键菜单底色、自绘图标（文本条目 T 图标、底栏
+     「新增记事」/「保存记事」按钮）均跟随主题强调色（`main_border_color`），
+     切换主题即时刷新。
 4. **右键菜单**：右键点小球（或竖条）弹出菜单：
-   - 「设置」打开扁平化设置窗口（预制配色 6 套、9 种颜色、大小/边框/阴影长度(0=无阴影)/
+   - 「设置」打开扁平化设置窗口（预制配色 6 套、11 种颜色项、大小/边框/阴影长度(0=无阴影)/
      透明度/刷新率、显示项开关、磁盘选择、贴边竖条档位、形状蒙版等，支持应用/恢复默认
      (二次确认)，保存即生效）；
    - 「系统监视器」打开系统监视器（macOS 打开活动监视器、Linux 按桌面环境检测，
@@ -170,6 +173,7 @@ linuxdeploy / appimagetool / runtime，缺失时才联网下载。注意 AppImag
 | | `mem_color` `swap_color` | 内存 / 交换面积图颜色 |
 | | `cpu_usage_color` `cpu_usage_width` | CPU 曲线颜色 / 线宽 |
 | | `cpu_freq_color` `cpu_temp_color` `net_speed_color` `disk_io_color` | 频率 / 温度 / 网速 / 磁盘文字颜色 |
+| | `text_color` | 「悬浮球文字」总项（设置窗口里改它 = 一次同步上面四种文字颜色；单独改分项则分项优先） |
 | | `charts_rows` | 图表历史点数（默认 32） |
 | `[components_show]` | `cpu_temp_show` `cpu_freq_show` `net_speed_show` `disk_io_show` | 各指标显示开关（1 显示 / 0 隐藏） |
 | `[disk]` | `disk_io_mode` / `disk_io_name` | 磁盘读写统计哪块盘：0=IO 最高的盘（默认），1=指定盘 |

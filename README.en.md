@@ -148,8 +148,11 @@ see **[DEPENDENCIES.md](DEPENDENCIES.md)**.
    - **Persistence**: everything is stored in the local clipboard-history DB (default
      `~/.popball2_clipboard.db`); after restart it is restored in most-recently-used order;
      identical content only bumps its rank, never duplicates.
+   - **Theme sync**: the panel's selected highlight, context-menu tint, and self-drawn icons
+     (text-item "T" icon, the "New note" / "Save note" buttons) follow the accent color
+     (`main_border_color`) and refresh instantly on theme change.
 4. **Context menu** (right-click the ball or sidebar):
-   - "Settings" opens the flat settings window (6 preset palettes, 9 colors, size/border/
+   - "Settings" opens the flat settings window (6 preset palettes, 11 color entries, size/border/
      shadow length (0 = none)/opacity/refresh rates, per-metric toggles, disk picker, sidebar
      presets, shape mask…; Apply / Restore-defaults (with confirmation); changes take effect on save);
    - "System Monitor" opens the system monitor (Activity Monitor on macOS, desktop-detected on
@@ -179,6 +182,7 @@ see **[DEPENDENCIES.md](DEPENDENCIES.md)**.
 | | `mem_color` `swap_color` | memory / swap area-chart colors |
 | | `cpu_usage_color` `cpu_usage_width` | CPU curve color / line width |
 | | `cpu_freq_color` `cpu_temp_color` `net_speed_color` `disk_io_color` | LCD text colors |
+| | `text_color` | "Ball text" master entry (in Settings: changing it syncs all four LCD text colors above; editing an individual entry takes precedence) |
 | | `charts_rows` | chart history points (default 32) |
 | `[components_show]` | `cpu_temp_show` `cpu_freq_show` `net_speed_show` `disk_io_show` | per-metric visibility (1=on / 0=off) |
 | `[disk]` | `disk_io_mode` / `disk_io_name` | which disk for I/O stats: 0=highest-IO disk (default), 1=fixed disk |

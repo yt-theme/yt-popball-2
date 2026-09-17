@@ -25,7 +25,8 @@
 namespace {
 
 struct ColorDef { const char *key; const char *label; };
-// 顺序即界面显示顺序（左右两列排布）；applyPreset 的取值顺序必须与此一致
+// 顺序即界面显示顺序（左右两列排布）；applyPreset / loadDefaults 的取值顺序必须与此一致
+// 「悬浮球文字」是总项：一键同步温度/频率/网速/磁盘IO四个文字颜色
 const ColorDef kColors[] = {
     { "main_color",        "主球背景" },
     { "main_border_color", "球体边框" },
@@ -33,6 +34,7 @@ const ColorDef kColors[] = {
     { "swap_color",        "交换分区" },
     { "cpu_usage_color",   "CPU 占用" },
     { "shadow_color",      "阴影" },
+    { "text_color",        "悬浮球文字" },
     { "cpu_temp_color",    "温度文字" },
     { "cpu_freq_color",    "频率文字" },
     { "net_speed_color",   "网速文字" },
@@ -313,7 +315,8 @@ QWidget *SettingsDialog::buildColorSection()
     v->addLayout(grid);
 
     auto *hint = new QLabel(
-        tr("* 交换分区 / CPU 占用 / 阴影 这三项带透明度，取色器只改颜色、保留原透明度"), box);
+        tr("* 交换分区 / CPU 占用 / 阴影 这三项带透明度，取色器只改颜色、保留原透明度。"
+           "「悬浮球文字」= 一次设置温度 / 频率 / 网速 / 磁盘IO 全部文字颜色"), box);
     hint->setProperty("role", "hint");
     v->addWidget(hint);
 
@@ -690,12 +693,14 @@ void SettingsDialog::applyPreset(int index)
     if (index < 0 || index >= kPresetCount)
         return;
     const PresetDef &p = kPresets[index];
-    // 顺序与 kColors 一致（含阴影），文字四色统一白色
+    // 顺序与 kColors 一致（含阴影）；「悬浮球文字」与文字四色统一取 p.text
     const char *values[kColorCount] = {
-        p.main, p.border, p.mem, p.swap, p.cpu, p.shadow, p.text, p.text, p.text, p.text
+        p.main, p.border, p.mem, p.swap, p.cpu, p.shadow,
+        p.text, p.text, p.text, p.text, p.text
     };
     if (rows.size() != kColorCount)
         return;
+    textColorTouched = false;   // 预设：总项与四个分项同色，无需总项联动
     for (int i = 0; i < kColorCount; ++i) {
         rows[i].color = QColor(values[i]);
         refreshRowStyle(rows[i]);
@@ -712,6 +717,7 @@ QString SettingsDialog::configColor(const QString &key) const
     if (key == QLatin1String("swap_color"))        return cfg->getSwapColor();
     if (key == QLatin1String("cpu_usage_color"))   return cfg->getCpuUsageColor();
     if (key == QLatin1String("shadow_color"))      return cfg->getShadowColor();
+    if (key == QLatin1String("text_color"))        return cfg->getCpuTempColor();  // 总项：以温度文字为代表
     if (key == QLatin1String("cpu_temp_color"))    return cfg->getCpuTempColor();
     if (key == QLatin1String("cpu_freq_color"))    return cfg->getCpuFreqColor();
     if (key == QLatin1String("net_speed_color"))   return cfg->getNetSpeedColor();
@@ -727,6 +733,13 @@ void SettingsDialog::setConfigColor(const QString &key, const QString &value)
     else if (key == QLatin1String("swap_color"))        cfg->setSwapColor(value);
     else if (key == QLatin1String("cpu_usage_color"))   cfg->setCpuUsageColor(value);
     else if (key == QLatin1String("shadow_color"))      cfg->setShadowColor(value);
+    // 「悬浮球文字」总项：一次同步四个文字色（温度/频率/网速/磁盘IO）
+    else if (key == QLatin1String("text_color")) {
+        cfg->setCpuTempColor(value);
+        cfg->setCpuFreqColor(value);
+        cfg->setNetSpeedColor(value);
+        cfg->setDiskIoColor(value);
+    }
     else if (key == QLatin1String("cpu_temp_color"))    cfg->setCpuTempColor(value);
     else if (key == QLatin1String("cpu_freq_color"))    cfg->setCpuFreqColor(value);
     else if (key == QLatin1String("net_speed_color"))   cfg->setNetSpeedColor(value);
@@ -736,6 +749,7 @@ void SettingsDialog::setConfigColor(const QString &key, const QString &value)
 // ---------------------------------------------------------------- 载入
 void SettingsDialog::loadFromConfig()
 {
+    textColorTouched = false;   // 重新载入后总项不自动联动，等用户改动
     for (int i = 0; i < rows.size(); ++i) {
         rows[i].color = QColor(configColor(rows[i].key));
         if (!rows[i].color.isValid())
@@ -796,6 +810,7 @@ void SettingsDialog::loadFromConfig()
 void SettingsDialog::loadDefaults()
 {
     Q_ASSERT(rows.size() == kColorCount);
+    textColorTouched = false;   // 恢复默认：总项与分项一致，无需联动
     // 颜色（顺序必须与 kColors 一致）
     static const struct { const char *key; const char *val; } kColorDefs[kColorCount] = {
         { "main_color",        "#13191C" },
@@ -804,6 +819,7 @@ void SettingsDialog::loadDefaults()
         { "swap_color",        "#8C2A5E93" },
         { "cpu_usage_color",   "#4FB7DDFF" },
         { "shadow_color",      "#000000" },
+        { "text_color",        "#fff" },
         { "cpu_temp_color",    "#fff" },
         { "cpu_freq_color",    "#fff" },
         { "net_speed_color",   "#fff" },
@@ -890,6 +906,15 @@ void SettingsDialog::pickColor()
         c.setAlpha(rows[i].color.alpha());
         rows[i].color = c;
         refreshRowStyle(rows[i]);
+        // 总项联动标记：改「悬浮球文字」→ 四色同设；改任一分项 → 放弃总项同步
+        if (rows[i].key == QLatin1String("text_color")) {
+            textColorTouched = true;
+        } else if (rows[i].key == QLatin1String("cpu_temp_color")
+                   || rows[i].key == QLatin1String("cpu_freq_color")
+                   || rows[i].key == QLatin1String("net_speed_color")
+                   || rows[i].key == QLatin1String("disk_io_color")) {
+            textColorTouched = false;
+        }
         return;
     }
 }
@@ -897,8 +922,18 @@ void SettingsDialog::pickColor()
 // ---------------------------------------------------------------- 应用/确定/取消
 void SettingsDialog::applyChanges()
 {
-    for (int i = 0; i < rows.size(); ++i)
+    // 「悬浮球文字」总项在循环中跳过：它在四个分项之前，
+    // 直接按顺序写会被分项（预设白等）覆盖；是否联动由 textColorTouched 决定
+    QString textColorValue;
+    for (int i = 0; i < rows.size(); ++i) {
+        if (rows[i].key == QLatin1String("text_color")) {
+            textColorValue = rows[i].color.name(QColor::HexArgb);
+            continue;
+        }
         setConfigColor(rows[i].key, rows[i].color.name(QColor::HexArgb));
+    }
+    if (textColorTouched && !textColorValue.isEmpty())
+        setConfigColor(QLatin1String("text_color"), textColorValue);
 
     cfg->setCpuTempShow(chkTemp->isChecked() ? 1 : 0);
     cfg->setCpuFreqShow(chkFreq->isChecked() ? 1 : 0);

@@ -15,6 +15,7 @@
 #include <QEnterEvent>
 #include <QShowEvent>
 #include <QVariantMap>
+#include <QColor>
 
 #include "clipstore.h"
 
@@ -113,6 +114,11 @@ public:
     // 不必走模态的 menu.exec()）
     void fillItemMenu(QMenu &menu);
 
+    // 强调色（主题色）：列表选中条目 / 右键菜单高亮底色跟随主题，
+    // 由 PopDock 在主题（main_border_color）变化时调用刷新
+    void setAccentColor(const QColor &color);
+    QColor accentColor() const { return m_accentColor; }
+
 signals:
     void stationChanged();
     // 文本条目要"打开"：请求弹出小编辑器（PopDock 拥有窗口；dbId/key 用于回写时定位条目）
@@ -153,7 +159,7 @@ private:
     void addImageItemEx(const QImage &image, const QString &name, qint64 dbId, qint64 rank = -1);
     void addFileItemEx(const QString &path, qint64 dbId, qint64 rank = -1);
     QString saveImageTemp(const QImage &img);
-    static QPixmap textIcon();
+    static QPixmap textIcon(const QColor &accent);
     // 视频条目图标：封面帧（或胶片占位图）+ 居中播放按钮
     static QIcon videoIcon(const QPixmap &frame);
     // 图片文件（.jpg/.png…）当条目时的**真实缩略图**（带尺寸读 + 按路径缓存）。
@@ -170,9 +176,14 @@ private:
     void applyFilter();
     // 悬停条目变化 → 重启/停止预览计时
     void updateHover(QListWidgetItem *item, const QPoint &globalCenter);
+    // 依当前强调色重建列表样式（选中条目底色跟随主题）
+    void rebuildStyleSheet();
+    // 主题色变化后，把已有文本条目的图标重新着色（文本图标是自绘的，需跟随主题）
+    void recolorTextIcons();
 
     ViewStyle       m_viewStyle  = IconView;
     TypeFilter      m_filter     = AllItems;  // 当前类型筛选
+    QColor          m_accentColor = QColor::fromRgb(0x41, 0xB0, 0xDD); // 主题强调色（默认=主题蓝）
     TsItemDelegate *m_delegate   = nullptr;   // 图标/列表/详细/预览 四种绘制模式
     QTimer         *m_hoverTimer = nullptr;
     QListWidgetItem *m_hoverItem = nullptr;
@@ -230,6 +241,10 @@ class TextEditorWindow : public QWidget
 public:
     explicit TextEditorWindow(QWidget *parent = nullptr);
 
+    // 主题强调色：文本选区底色 / 聚焦边框跟随主题（由 PopDock 同步）
+    void setAccentColor(const QColor &color);
+    QColor accentColor() const { return m_accentColor; }
+
     // 载入一条文本条目（dbId / originalKey 用于回写时定位）
     void showFor(TransferStation *station, qint64 dbId, const QString &originalKey,
                  const QString &title, const QString &text);
@@ -248,6 +263,7 @@ private:
     QString          m_key;            // 载入时的 dedup 键（无 dbId 时用它定位条目）
     QString          m_baseline;       // "已保存"的正文：与它比对来判断有没有改动
     QString          m_idleText;       // 未修改时状态栏显示的字样（未修改/已保存/条目已删除…）
+    QColor           m_accentColor = QColor::fromRgb(0x41, 0xB0, 0xDD); // 主题强调色（默认=主题蓝）
     QLabel          *m_status  = nullptr;      // 底栏左：状态 · 字数 · 行数
     QPlainTextEdit  *m_edit    = nullptr;      // 正文
     QToolButton     *m_saveBtn = nullptr;      // 保存（未改动时禁用）
@@ -288,6 +304,11 @@ public:
 
     // 剪贴板历史库（默认 ~/.popball2_clipboard.db，可用 POPBALL2_DB 覆盖 —— 自检隔离用）
     ClipStore *store() const { return m_store; }
+
+    // 强调色（主题色）：面板内所有"激活/选中"样式（选中条目、类型 tab、视图按钮、
+    // 条目右键菜单）跟随主题（main_border_color），由 Widget 在构造与设置保存后调用
+    void setAccentColor(const QColor &color);
+    QColor accentColor() const { return m_accentColor; }
 
     // 文本小编辑器窗口（懒创建；空闲时为 nullptr）。返回 QWidget* 便于无头自检定位子控件。
     QWidget *textEditor() const;
@@ -335,8 +356,8 @@ private:
     void ensureAnimations();                  // 懒创建划出/划入动画
     void beginInteraction();                  // 交互锁 +1（右键菜单 / 拖拽开始时）
     void endInteraction();                    // 交互锁 -1
-    static QIcon noteAddIcon();               // 右下角"铅笔+加号"图标
-    static QIcon noteOkIcon();                // 记事输入框右侧的"确认"图标
+    static QIcon noteAddIcon(const QColor &accent);   // 右下角"铅笔+加号"图标
+    static QIcon noteOkIcon(const QColor &accent);    // 记事输入框右侧的"确认"图标
 
     TransferStation *m_station    = nullptr;
     QLabel          *m_titleLabel = nullptr;  // 标题区：数据中转站
@@ -349,6 +370,7 @@ private:
     TextEditorWindow *m_textEditor = nullptr; // 文本小编辑器（懒创建，顶层窗口）
     QToolButton     *m_viewBtns[4] = { nullptr, nullptr, nullptr, nullptr };   // 底栏左：图标/列表/详细/预览
     QToolButton     *m_tabBtns[3]  = { nullptr, nullptr, nullptr };            // 列表上方：全部/文档/图片
+    QColor           m_accentColor = QColor::fromRgb(0x41, 0xB0, 0xDD);         // 主题强调色（默认=主题蓝）
 
     ClipStore       *m_store      = nullptr;  // 剪贴板历史（可为未就绪）
     bool             m_historyLoaded = false; // 历史是否已回填

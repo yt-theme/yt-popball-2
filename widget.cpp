@@ -197,6 +197,8 @@ Widget::Widget(QWidget *parent)
         this->config->setDockViewStyle(style);
     });
     this->popDock->setViewStyle(this->config->getDockViewStyle());
+    // 面板内"激活/选中"样式跟随主题强调色（main_border_color）
+    this->popDock->setAccentColor(QColor(this->config->getMainBorderColor()));
     this->setAcceptDrops(true);   // 允许把文件拖到球上
 
     // 右键菜单（设置 / 退出）——只构建一次，右键时直接弹出
@@ -1622,6 +1624,8 @@ void Widget::onSettingsApplied()
     this->applyLcdLayout();   // 尺寸可能变了
     this->applyLcdStyle();
     this->setUiFrame();       // 不透明度/阴影/定时器/形状蒙版在这里重套
+    // 主题色可能改了 → 数据中转站里的激活/选中样式跟随刷新
+    this->popDock->setAccentColor(QColor(this->config->getMainBorderColor()));
     this->update();
 }
 

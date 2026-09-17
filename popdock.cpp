@@ -70,6 +70,55 @@ static QString textLabelFor(const QString &text)
     return QObject::tr("(空文本)");
 }
 
+// ---------------- 小工具：主题强调色 → QSS 里的"激活/选中"样式 ----------------
+// 弹窗里所有"当前选中"的样式（列表选中条目、类型 tab、视图按钮、条目右键菜单高亮）
+// 都统一取自主题强调色（main_border_color），跟随主题变化，不再写死一种蓝灰色。
+namespace {
+
+// QColor → QSS rgba() 字符串（alpha 0~255）
+QString rgbaOf(const QColor &c, int alpha)
+{
+    return QStringLiteral("rgba(%1,%2,%3,%4)")
+        .arg(c.red()).arg(c.green()).arg(c.blue()).arg(alpha);
+}
+
+// 列表里"选中条目"的 QSS（原底色 0.85 不透明度 → alpha 217）
+QString listSelectedQss(const QColor &accent)
+{
+    return QStringLiteral("QListWidget::item:selected{background:%1;color:#ffffff;}")
+        .arg(rgbaOf(accent, 217));
+}
+
+// 类型 tab / 视图按钮的 QSS（:checked 用主题色，原 0.90 不透明度 → alpha 230）
+QString toolButtonQss(const QColor &accent, int radius, const QString &padding)
+{
+    return QStringLiteral(
+        "QToolButton{border:1px solid transparent;border-radius:%1px;color:#9aa0a6;"
+        "background:transparent;padding:%2;}"
+        "QToolButton:hover{background:rgba(255,255,255,0.10);color:#e8eaed;}"
+        "QToolButton:checked{background:%3;color:#ffffff;}")
+        .arg(radius).arg(padding).arg(rgbaOf(accent, 230));
+}
+
+// 文本小编辑器的 QSS：文本选区底色 / 聚焦边框跟随主题色
+QString textEditorQss(const QColor &accent)
+{
+    return QStringLiteral(
+        "#popDockTextEditor{background:#1e2126;}"
+        "QLabel{background:transparent;color:#d7dbe0;}"
+        "QPlainTextEdit{background:#171a1f;color:#e8eaed;border:1px solid #3a4048;"
+        "border-radius:2px;padding:6px;selection-background-color:%1;}"
+        "QPlainTextEdit:focus{border:1px solid %2;}"
+        "QToolButton{border:1px solid transparent;border-radius:3px;color:#c8cdd4;"
+        "background:rgba(255,255,255,0.07);padding:2px 10px;}"
+        "QToolButton:hover{background:rgba(255,255,255,0.15);color:#ffffff;}"
+        "QToolButton:disabled{color:#6b7178;background:transparent;}")
+        .arg(rgbaOf(accent, 217))    // 文本选区底色（原 0.85 → alpha 217）
+        .arg(rgbaOf(accent, 242));   // 聚焦边框（原 rgba(96,150,205,0.95) → alpha 242）
+}
+
+} // namespace
+
 // ---------------- 小工具：人类可读的文件大小 ----------------
 static QString humanSize(qint64 bytes)
 {
@@ -144,6 +193,9 @@ public:
     void setMode(Mode m) { m_mode = m; }
     Mode mode() const { return m_mode; }
 
+    // 主题强调色：详细/预览模式自绘的"选中卡片"底色跟随主题
+    void setAccentColor(const QColor &c) { m_accentColor = c; }
+
     void setIconCell(const QSize &cell)
     {
         if (cell.isValid() && cell != m_iconCell) {
@@ -194,7 +246,8 @@ private:
         // 选中 / 悬停底色
         if (opt.state & QStyle::State_Selected) {
             p->setPen(Qt::NoPen);
-            p->setBrush(QColor(58, 110, 165, 200));
+            p->setBrush(QColor(m_accentColor.red(), m_accentColor.green(),
+                               m_accentColor.blue(), 200));
             p->drawRoundedRect(r, 7, 7);
         } else if (opt.state & QStyle::State_MouseOver) {
             p->setPen(Qt::NoPen);
@@ -243,10 +296,12 @@ private:
 
         const QRect card = opt.rect.adjusted(3, 3, -3, -3);
         QColor bg(255, 255, 255, 12);
-        if (opt.state & QStyle::State_Selected)
-            bg = QColor(58, 110, 165, 190);
-        else if (opt.state & QStyle::State_MouseOver)
+        if (opt.state & QStyle::State_Selected) {
+            bg = QColor(m_accentColor);
+            bg.setAlpha(190);
+        } else if (opt.state & QStyle::State_MouseOver) {
             bg = QColor(255, 255, 255, 28);
+        }
         p->setPen(Qt::NoPen);
         p->setBrush(bg);
         p->drawRoundedRect(card, 9, 9);
@@ -379,6 +434,8 @@ private:
     Mode   m_mode       = IconCells;
     QSize  m_iconCell;
     bool   m_iconCellSet = false;
+    // 主题强调色：详细/预览模式自绘"选中卡片"底色用（默认=主题蓝，随主题变化）
+    QColor m_accentColor = QColor::fromRgb(0x41, 0xB0, 0xDD);
     // 缩略图缓存：paint 是 const 的，所以这里用 mutable（内容与绘制结果无关的纯缓存）
     mutable QHash<QString, QPixmap> m_cache;
 };
@@ -419,19 +476,52 @@ TransferStation::TransferStation(QWidget *parent)
             emit previewRequested(dataOf(m_hoverItem), m_hoverCenter);
     });
 
+    rebuildStyleSheet();   // 选中底色跟随主题强调色（见 setAccentColor）
+
+    setViewStyle(IconView);
+}
+
+// 依当前强调色重建列表样式：选中条目底色 = 主题色半透明。
+// 除选中色外其它行与主题无关，保持不变。
+void TransferStation::rebuildStyleSheet()
+{
     setStyleSheet(QStringLiteral(
         "QListWidget{background:transparent;color:#e8eaed;border:none;outline:none;}"
         "QListWidget::item{color:#e8eaed;border-radius:6px;}"
-        "QListWidget::item:hover{background:rgba(255,255,255,0.08);}"
-        "QListWidget::item:selected{background:rgba(58,110,165,0.85);color:#ffffff;}"
+        "QListWidget::item:hover{background:rgba(255,255,255,0.08);}")
+        + listSelectedQss(m_accentColor)
+        + QStringLiteral(
         "QScrollBar:vertical{background:transparent;width:8px;margin:0;}"
         "QScrollBar::handle:vertical{background:rgba(255,255,255,0.22);"
         "border-radius:4px;min-height:24px;}"
         "QScrollBar::handle:vertical:hover{background:rgba(255,255,255,0.34);}"
         "QScrollBar::add-line:vertical,QScrollBar::sub-line:vertical{height:0;}"
         "QScrollBar::add-page:vertical,QScrollBar::sub-page:vertical{background:transparent;}"));
+}
 
-    setViewStyle(IconView);
+void TransferStation::setAccentColor(const QColor &color)
+{
+    if (!color.isValid() || color == m_accentColor)
+        return;
+    m_accentColor = color;
+    if (m_delegate != nullptr)
+        m_delegate->setAccentColor(color);
+    rebuildStyleSheet();
+    recolorTextIcons();   // 文本条目图标是自绘的，主题色变了要跟着重着色
+}
+
+// 主题色变化后重着色所有文本条目的图标（历史回填在构造期先于 setAccentColor，
+// 以及运行中新增的文本条目，都要以最新主题色重画一遍）
+void TransferStation::recolorTextIcons()
+{
+    for (int i = 0; i < count(); ++i) {
+        QListWidgetItem *it = item(i);
+        if (it == nullptr)
+            continue;
+        const QVariantMap d = it->data(Qt::UserRole).toMap();
+        if (TsType(d.value(QStringLiteral("type")).toInt()) == TsType::Text)
+            it->setIcon(QIcon(textIcon(m_accentColor)));
+    }
 }
 
 // 网格单元格：按当前布局决定列数（图标 4 列 / 预览 2 列）与尺寸。
@@ -791,7 +881,7 @@ void TransferStation::addTextItemEx(const QString &text, const QString &label, q
     d[QStringLiteral("dedup")] = key;
     if (rowId > 0)
         d[QStringLiteral("dbId")] = rowId;
-    appendItem(QIcon(textIcon()), l, TsType::Text, d, rank);
+    appendItem(QIcon(textIcon(m_accentColor)), l, TsType::Text, d, rank);
 }
 
 // 历史回填：每条按自己的 usedAt 插到正确位置（不是无脑追加到末尾）。
@@ -1141,13 +1231,14 @@ void TransferStation::requestVideoThumb(const QString &dedupKey, const QString &
     proc->start(program, args);
 }
 
-QPixmap TransferStation::textIcon()
+QPixmap TransferStation::textIcon(const QColor &accent)
 {
+    const QColor base = accent.isValid() ? accent : QColor(58, 110, 165);
     QPixmap pm(88, 88);
     pm.fill(Qt::transparent);
     QPainter p(&pm);
     p.setRenderHint(QPainter::Antialiasing);
-    p.setBrush(QColor(58, 110, 165));
+    p.setBrush(base);
     p.setPen(Qt::NoPen);
     p.drawRoundedRect(8, 8, 72, 72, 10, 10);
     p.setPen(Qt::white);
@@ -1214,8 +1305,9 @@ void TransferStation::fillItemMenu(QMenu &menu)
         "QMenu{background:#262a31;color:#e8eaed;border:1px solid #4a505c;"
         "border-radius:8px;padding:4px;}"
         "QMenu::item{padding:5px 18px;border-radius:5px;}"
-        "QMenu::item:selected{background:rgba(58,110,165,0.9);color:#ffffff;}"
-        "QMenu::separator{height:1px;background:rgba(255,255,255,0.12);margin:4px 6px;}"));
+        "QMenu::item:selected{background:%1;color:#ffffff;}"
+        "QMenu::separator{height:1px;background:rgba(255,255,255,0.12);margin:4px 6px;}")
+        .arg(rgbaOf(m_accentColor, 230)));
     menu.addAction(tr("复制"));
     menu.addAction(tr("打开"));
     menu.addSeparator();
@@ -1708,16 +1800,7 @@ TextEditorWindow::TextEditorWindow(QWidget *parent)
     setAttribute(Qt::WA_StyledBackground, true);
     resize(520, 380);
     setMinimumSize(340, 220);
-    setStyleSheet(QStringLiteral(
-        "#popDockTextEditor{background:#1e2126;}"
-        "QLabel{background:transparent;color:#d7dbe0;}"
-        "QPlainTextEdit{background:#171a1f;color:#e8eaed;border:1px solid #3a4048;"
-        "border-radius:2px;padding:6px;selection-background-color:rgba(58,110,165,0.85);}"
-        "QPlainTextEdit:focus{border:1px solid rgba(96,150,205,0.95);}"
-        "QToolButton{border:1px solid transparent;border-radius:3px;color:#c8cdd4;"
-        "background:rgba(255,255,255,0.07);padding:2px 10px;}"
-        "QToolButton:hover{background:rgba(255,255,255,0.15);color:#ffffff;}"
-        "QToolButton:disabled{color:#6b7178;background:transparent;}"));
+    setStyleSheet(textEditorQss(m_accentColor));   // 选区/聚焦边框跟随主题色
 
     // 不要标题行：条目名就是正文的第一行，再单独显示一遍纯属占地方（窗口标题栏已写着"文本预览"）。
     // 字数/行数挪到底栏左侧，跟状态挤一行。
@@ -1787,8 +1870,16 @@ TextEditorWindow::TextEditorWindow(QWidget *parent)
     refreshState();
 }
 
-void TextEditorWindow::showFor(TransferStation *station, qint64 dbId,
-                               const QString &originalKey, const QString &title,
+// 主题强调色变化 → 重建编辑器样式（文本选区底色 / 聚焦边框跟随主题）
+void TextEditorWindow::setAccentColor(const QColor &color)
+{
+    if (!color.isValid() || color == m_accentColor)
+        return;
+    m_accentColor = color;
+    setStyleSheet(textEditorQss(color));
+}
+
+void TextEditorWindow::showFor(TransferStation *station, qint64 dbId,                               const QString &originalKey, const QString &title,
                                const QString &text)
 {
     m_station = station;
@@ -1878,9 +1969,10 @@ void TextEditorWindow::keyPressEvent(QKeyEvent *event)
 
 // ============================ PopDock ============================
 
-// 右下角"新增记事"按钮图标：铅笔 + 右上角"+"角标（表示"新增/书写"）
-QIcon PopDock::noteAddIcon()
+// 右下角"新增记事"按钮图标：铅笔 + 右上角"+"角标（表示"新增/书写"），底色跟随主题
+QIcon PopDock::noteAddIcon(const QColor &accent)
 {
+    const QColor base = accent.isValid() ? accent : QColor(58, 110, 165);
     const int S = 64;
     QPixmap pm(S, S);
     pm.fill(Qt::transparent);
@@ -1888,7 +1980,7 @@ QIcon PopDock::noteAddIcon()
     p.setRenderHint(QPainter::Antialiasing);
 
     // 圆形按钮底色
-    p.setBrush(QColor(58, 110, 165));
+    p.setBrush(base);
     p.setPen(Qt::NoPen);
     p.drawEllipse(4, 4, S - 8, S - 8);
 
@@ -1906,12 +1998,12 @@ QIcon PopDock::noteAddIcon()
     p.drawRoundedRect(-3.5, -20, 7, 6, 2, 2);
     p.restore();
 
-    // 右上角白色小圆 + 蓝色"+"角标，表示"新增"
+    // 右上角白色小圆 + 主题色"+"角标，表示"新增"
     const QPoint c(47, 47);
     p.setBrush(QColor(245, 245, 245));
     p.setPen(Qt::NoPen);
     p.drawEllipse(c.x() - 9, c.y() - 9, 18, 18);
-    p.setPen(QPen(QColor(58, 110, 165), 2.5, Qt::SolidLine, Qt::RoundCap));
+    p.setPen(QPen(base, 2.5, Qt::SolidLine, Qt::RoundCap));
     p.drawLine(c.x(), c.y() - 6, c.x(), c.y() + 6);
     p.drawLine(c.x() - 6, c.y(), c.x() + 6, c.y());
 
@@ -1920,14 +2012,15 @@ QIcon PopDock::noteAddIcon()
 
 // 记事输入框右侧的"确认"按钮：回车在中文输入法下常被用于确认候选词，
 // 不一定触发 returnPressed，所以必须给一个不依赖回车的保存入口。
-QIcon PopDock::noteOkIcon()
+QIcon PopDock::noteOkIcon(const QColor &accent)
 {
+    const QColor base = accent.isValid() ? accent : QColor(58, 110, 165);
     const int S = 48;
     QPixmap pm(S, S);
     pm.fill(Qt::transparent);
     QPainter p(&pm);
     p.setRenderHint(QPainter::Antialiasing);
-    p.setBrush(QColor(58, 110, 165));
+    p.setBrush(base);
     p.setPen(Qt::NoPen);
     p.drawRoundedRect(4, 4, S - 8, S - 8, 10, 10);
     p.setPen(QPen(Qt::white, 3.2, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
@@ -2115,11 +2208,7 @@ PopDock::PopDock(QWidget *parent)
                 bf.setPixelSize(11);
                 b->setFont(bf);
             }
-            b->setStyleSheet(QStringLiteral(
-                "QToolButton{border:1px solid transparent;border-radius:5px;color:#9aa0a6;"
-                "background:transparent;padding:1px 8px;}"
-                "QToolButton:hover{background:rgba(255,255,255,0.10);color:#e8eaed;}"
-                "QToolButton:checked{background:rgba(58,110,165,0.90);color:#ffffff;}"));
+            b->setStyleSheet(toolButtonQss(m_accentColor, 5, QStringLiteral("1px 8px")));
             tabGroup->addButton(b, i);
             tl->addWidget(b);
             m_tabBtns[i] = b;
@@ -2165,7 +2254,7 @@ PopDock::PopDock(QWidget *parent)
 
         m_noteOkBtn = new QToolButton(m_noteRow);
         m_noteOkBtn->setObjectName(QStringLiteral("popDockNoteOk"));
-        m_noteOkBtn->setIcon(noteOkIcon());
+        m_noteOkBtn->setIcon(noteOkIcon(m_accentColor));
         m_noteOkBtn->setIconSize(QSize(22, 22));
         m_noteOkBtn->setFixedSize(26, 26);
         m_noteOkBtn->setCursor(Qt::PointingHandCursor);
@@ -2203,11 +2292,7 @@ PopDock::PopDock(QWidget *parent)
             bf.setPixelSize(11);
             b->setFont(bf);
         }
-        b->setStyleSheet(QStringLiteral(
-            "QToolButton{border:1px solid transparent;border-radius:6px;color:#9aa0a6;"
-            "background:transparent;padding:1px 6px;}"
-            "QToolButton:hover{background:rgba(255,255,255,0.10);color:#e8eaed;}"
-            "QToolButton:checked{background:rgba(58,110,165,0.90);color:#ffffff;}"));
+        b->setStyleSheet(toolButtonQss(m_accentColor, 6, QStringLiteral("1px 6px")));
         viewGroup->addButton(b, i);
         footer->addWidget(b);
         m_viewBtns[i] = b;
@@ -2216,7 +2301,7 @@ PopDock::PopDock(QWidget *parent)
 
     m_addNoteBtn = new QToolButton(this);
     m_addNoteBtn->setObjectName(QStringLiteral("popDockAddNote"));
-    m_addNoteBtn->setIcon(noteAddIcon());
+    m_addNoteBtn->setIcon(noteAddIcon(m_accentColor));
     m_addNoteBtn->setIconSize(QSize(26, 26));
     m_addNoteBtn->setFixedSize(28, 28);
     m_addNoteBtn->setCursor(Qt::PointingHandCursor);
@@ -2278,8 +2363,11 @@ QWidget *PopDock::textEditor() const
 void PopDock::openTextEditor(qint64 dbId, const QString &key, const QString &title,
                              const QString &text)
 {
-    if (m_textEditor == nullptr)
+    if (m_textEditor == nullptr) {
         m_textEditor = new TextEditorWindow();
+        // 编辑器是懒创建的：创建时把当前主题色同步过去（选区/聚焦边框跟随主题）
+        m_textEditor->setAccentColor(m_accentColor);
+    }
     m_textEditor->showFor(m_station, dbId, key, title, text);
 }
 
@@ -2335,6 +2423,33 @@ void PopDock::setViewStyle(int style)
 int PopDock::viewStyle() const
 {
     return m_station != nullptr ? int(m_station->viewStyle()) : 0;
+}
+
+// 主题强调色变化 → 刷新面板内所有"激活/选中"样式：
+// 选中条目底色、类型 tab、视图按钮、条目右键菜单高亮，全部跟随主题色。
+void PopDock::setAccentColor(const QColor &color)
+{
+    if (!color.isValid() || color == m_accentColor)
+        return;
+    m_accentColor = color;
+
+    if (m_station != nullptr)
+        m_station->setAccentColor(color);
+    if (m_textEditor != nullptr)
+        m_textEditor->setAccentColor(color);
+    for (int i = 0; i < 3; ++i) {
+        if (m_tabBtns[i] != nullptr)
+            m_tabBtns[i]->setStyleSheet(toolButtonQss(color, 5, QStringLiteral("1px 8px")));
+    }
+    for (int i = 0; i < 4; ++i) {
+        if (m_viewBtns[i] != nullptr)
+            m_viewBtns[i]->setStyleSheet(toolButtonQss(color, 6, QStringLiteral("1px 6px")));
+    }
+    // 自绘图标（新增记事 / 保存记事）跟随主题重着色
+    if (m_addNoteBtn != nullptr)
+        m_addNoteBtn->setIcon(noteAddIcon(color));
+    if (m_noteOkBtn != nullptr)
+        m_noteOkBtn->setIcon(noteOkIcon(color));
 }
 
 // 类型 tab（全部 / 文档 / 图片）。与布局切换不同的是：它**不**落盘 ——
