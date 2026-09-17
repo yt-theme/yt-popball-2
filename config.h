@@ -10,7 +10,7 @@
 
 class Config {
 private:
-    QSettings *settingsObj;
+    QSettings *settingsObj = nullptr;   // 构造函数保证非空；显式初始化防止 checkOrCreateConfig 失败时 readConfig 解引用野指针
     QString configFilePath = QDir( QDir::homePath()).absoluteFilePath(".popball2_config.ini");
     QString defaultConfigRes = ":/config/default_config.ini";
 

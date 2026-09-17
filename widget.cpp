@@ -865,6 +865,10 @@ void Widget::mousePressEvent(QMouseEvent *event)
     } else if (event->button() == Qt::RightButton) {
         // 右键弹出菜单（设置 / 退出）
         if (this->contextMenu != nullptr) {
+            // 取消已排队的收起：菜单弹出后鼠标会移到菜单上（球外），
+            // 若不取消，悬停轮询会把"鼠标不在球/面板上"误判成离开，300ms 后弹窗收起
+            // （旧 bug：弹窗收起时右键菜单也跟着消失，两个窗口互相干扰）。
+            this->cancelHidePopDock();
             this->contextMenu->popup(event->globalPosition().toPoint());
         }
     }
@@ -973,6 +977,14 @@ void Widget::onHoverPoll()
 {
     if (this->popDock == nullptr)
         return;
+
+    // 悬浮球的右键菜单打开期间，悬停轮询不动作：
+    // 鼠标移到菜单上（球外）既不算"离开"（否则弹窗被收起、菜单跟着消失），
+    // 也不该触发弹窗弹出 —— 菜单与弹窗的显示/隐藏互不影响。
+    // 菜单关闭后，下一次 tick（≤100ms）自动恢复正常评估。
+    if (this->contextMenu != nullptr && this->contextMenu->isVisible())
+        return;
+
     const QPoint gp = QCursor::pos();
     const bool overBall = this->geometry().contains(gp);
     // 收起动画进行中窗口正在移动，命中判定要按"落点矩形"算，
@@ -1633,13 +1645,13 @@ void Widget::updateDataAndHistory()
 {
     this->sysInfo->updateSysinfo();
     // cpu usage history
-    if ((cpuUsage_data_history.size() + 1) >= config->getChartsRows()) cpuUsage_data_history.pop_front();
+    if (cpuUsage_data_history.size() >= config->getChartsRows()) cpuUsage_data_history.pop_front();
     this->cpuUsage_data_history.push_back(this->sysInfo->getCpuUsage());
     // mem history
-    if ((mem_data_history.size() + 1) >= config->getChartsRows()) mem_data_history.pop_front();
+    if (mem_data_history.size() >= config->getChartsRows()) mem_data_history.pop_front();
     this->mem_data_history.push_back(this->sysInfo->getMemUsed());
     // swap history
-    if ((swap_data_history.size() + 1) >= config->getChartsRows()) swap_data_history.pop_front();
+    if (swap_data_history.size() >= config->getChartsRows()) swap_data_history.pop_front();
     this->swap_data_history.push_back(this->sysInfo->getSwapUsed());
 
     // 竖条形态下柱子本身没有文字，鼠标悬停时用气泡给出各指标的具体百分比
@@ -1815,7 +1827,7 @@ void Widget::paintEvent(QPaintEvent *)
                                main_height - ratio * main_height - edging_width);
             }
             swapPath.lineTo(main_width, main_height - edging_width);
-            swapPath.lineTo(0, main_height);
+            swapPath.lineTo(0, main_height - edging_width);
             painter.fillPath(swapPath, QColor(this->config->getSwapColor()));
         }
 
@@ -1844,7 +1856,7 @@ void Widget::paintEvent(QPaintEvent *)
 
         }
         cpuUsagePath.lineTo(main_width, main_height - edging_width);
-        cpuUsagePath.lineTo(0, main_height);
+        cpuUsagePath.lineTo(0, main_height - edging_width);
         painter.fillPath(cpuUsagePath, QColor(this->config->getCpuUsageColor()));
 
         // 磁盘总速度：读+写之和，用 LCD 数码字体显示 MB/s 数值（两位小数）。

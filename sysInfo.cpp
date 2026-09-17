@@ -590,7 +590,6 @@ SysInfo::SysInfo()
 
 SysInfo::~SysInfo()
 {
-    delete this->_file_obj;
 #if defined(Q_OS_MACOS)
     if (this->_smcOpen && this->_smcConn) {
         IOServiceClose(static_cast<io_connect_t>(this->_smcConn));

@@ -1,5 +1,5 @@
 <RCC>
-    <qresource lang="ini" prefix="/config">
+    <qresource prefix="/config">
         <file>default_config.ini</file>
     </qresource>
 </RCC>

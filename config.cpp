@@ -9,12 +9,13 @@ Config::Config()
         this->configFilePath = envPath;
 
     // check
-    bool checkOrCreateRet = this->checkOrCreateConfig();
-    // create setting obj
-    if (checkOrCreateRet == true)
-    {
-        this->settingsObj = new QSettings(this->configFilePath, QSettings::IniFormat);
-    }
+    const bool checkOrCreateRet = this->checkOrCreateConfig();
+    // 无论配置文件是否创建成功，都创建 QSettings 对象（QSettings 打开不存在的
+    // 文件也安全）：checkOrCreateConfig 失败时 settingsObj 仍有效，readConfig()
+    // 不会解引用野指针；读不到的值落到默认参数。
+    this->settingsObj = new QSettings(this->configFilePath, QSettings::IniFormat);
+    if (!checkOrCreateRet)
+        qWarning() << "Config: 配置文件创建/写入失败，将使用默认值:" << this->configFilePath;
 
     // read config
     this->readConfig();
@@ -33,17 +34,22 @@ bool Config::checkOrCreateConfig()
     QFile cfgFile(this->configFilePath);
     if (cfgFile.exists() == false)
     {
-
-        cfgFile.open(QIODevice::WriteOnly);
+        // 只打开一次（WriteOnly 本身就负责创建文件），并检查打开结果：
+        // 目录不存在 / 只读 / 磁盘满时 open 会失败，返回 false 由上层兜底。
+        if (!cfgFile.open(QIODevice::WriteOnly))
+        {
+            qWarning() << "CheckOrCreateConfig: cannot create" << this->configFilePath;
+            return false;
+        }
+        QFile defaultConfFile(this->defaultConfigRes);
+        bool copied = false;
+        if (defaultConfFile.open(QIODevice::ReadOnly))
+        {
+            const qint64 ret = cfgFile.write(defaultConfFile.readAll());
+            copied = (ret > 0);
+        }
         cfgFile.close();
-
-        cfgFile.open(QIODevice::WriteOnly);
-        QFile defaultConfFile = QFile(this->defaultConfigRes);
-        defaultConfFile.open(QIODevice::ReadOnly);
-
-        qint64 cfgFileWriteRet = cfgFile.write(defaultConfFile.readAll());
-        cfgFile.close();
-        if (cfgFileWriteRet <= 0)
+        if (!copied)
         {
             qDebug() << "CheckOrCreateConfig: copy default configure file err" << "\n";
             return false;
@@ -55,31 +61,35 @@ bool Config::checkOrCreateConfig()
 // read configure file content
 void Config::readConfig()
 {
-    this->x                     = this->settingsObj->value("/position/x").toInt();
-    this->y                     = this->settingsObj->value("/position/y").toInt();
-    this->width                 = this->settingsObj->value("/appearance/width").toInt();
-    this->height                = this->settingsObj->value("/appearance/height").toInt();
+    // 防御：构造函数已保证 settingsObj 非空；此分支仅防未来改动破坏该保证
+    if (this->settingsObj == nullptr)
+        return;
+
+    this->x                     = this->settingsObj->value("/position/x", 300).toInt();
+    this->y                     = this->settingsObj->value("/position/y", 300).toInt();
+    this->width                 = this->settingsObj->value("/appearance/width", 100).toInt();
+    this->height                = this->settingsObj->value("/appearance/height", 100).toInt();
     this->aside_width           = this->settingsObj->value("/appearance/aside_width", 30).toInt();
     this->aside_height          = this->settingsObj->value("/appearance/aside_height", 100).toInt();
-    this->opacity               = this->settingsObj->value("/appearance/opacity").toDouble();
+    this->opacity               = this->settingsObj->value("/appearance/opacity", 0.91).toDouble();
     this->shadow_radius         = this->settingsObj->value("/appearance/shadow_radius", 0).toInt();
     // 新增键：老配置文件里可能没有，必须给默认值，否则读出来是空/0
     this->shadow_color          = this->settingsObj->value("/appearance/shadow_color", "#000000").toString();
-    this->shape                 = this->settingsObj->value("/appearance/shape").toInt();
-    this->main_color            = this->settingsObj->value("/appearance/main_color").toString();
-    this->main_border_color     = this->settingsObj->value("/appearance/main_border_color").toString();
-    this->main_border_width     = this->settingsObj->value("/appearance/main_border_width").toInt();
-    this->mem_color             = this->settingsObj->value("/appearance/mem_color").toString();
-    this->swap_color            = this->settingsObj->value("/appearance/swap_color").toString();
-    this->cpu_usage_color       = this->settingsObj->value("/appearance/cpu_usage_color").toString();
-    this->cpu_usage_width       = this->settingsObj->value("/appearance/cpu_usage_width").toDouble();
-    this->cpu_freq_color        = this->settingsObj->value("/appearance/cpu_freq_color").toString();
-    this->cpu_temp_color        = this->settingsObj->value("/appearance/cpu_temp_color").toString();
-    this->net_speed_color       = this->settingsObj->value("/appearance/net_speed_color").toString();
+    this->shape                 = this->settingsObj->value("/appearance/shape", 0).toInt();
+    this->main_color            = this->settingsObj->value("/appearance/main_color", "#13191C").toString();
+    this->main_border_color     = this->settingsObj->value("/appearance/main_border_color", "#41B0DD").toString();
+    this->main_border_width     = this->settingsObj->value("/appearance/main_border_width", 2).toInt();
+    this->mem_color             = this->settingsObj->value("/appearance/mem_color", "#2E6FC4").toString();
+    this->swap_color            = this->settingsObj->value("/appearance/swap_color", "#8C2A5E93").toString();
+    this->cpu_usage_color       = this->settingsObj->value("/appearance/cpu_usage_color", "#4FB7DDFF").toString();
+    this->cpu_usage_width       = this->settingsObj->value("/appearance/cpu_usage_width", 1.1).toDouble();
+    this->cpu_freq_color        = this->settingsObj->value("/appearance/cpu_freq_color", "#fff").toString();
+    this->cpu_temp_color        = this->settingsObj->value("/appearance/cpu_temp_color", "#fff").toString();
+    this->net_speed_color       = this->settingsObj->value("/appearance/net_speed_color", "#fff").toString();
     this->disk_io_color         = this->settingsObj->value("/appearance/disk_io_color", "#fff").toString();
-    this->charts_rows           = this->settingsObj->value("/appearance/charts_rows").toInt();
-    this->update_data_interval  = this->settingsObj->value("/timer/update_data_interval").toInt();
-    this->update_ui_interval    = this->settingsObj->value("/timer/update_ui_interval").toInt();
+    this->charts_rows           = this->settingsObj->value("/appearance/charts_rows", 32).toInt();
+    this->update_data_interval  = this->settingsObj->value("/timer/update_data_interval", 450).toInt();
+    this->update_ui_interval    = this->settingsObj->value("/timer/update_ui_interval", 450).toInt();
 
     // [aside] 贴边竖条
     // 这几个键是后加的，老配置文件里没有，必须给默认值（0 = 关闭会把功能关掉）
@@ -88,9 +98,9 @@ void Config::readConfig()
     this->aside_corner_radius   = this->settingsObj->value("/aside/corner_radius", 8).toInt();
 
     // [components_show]
-    this->cpu_temp_show         = this->settingsObj->value("/components_show/cpu_temp_show").toInt();
-    this->cpu_freq_show         = this->settingsObj->value("/components_show/cpu_freq_show").toInt();
-    this->net_speed_show        = this->settingsObj->value("/components_show/net_speed_show").toInt();
+    this->cpu_temp_show         = this->settingsObj->value("/components_show/cpu_temp_show", 1).toInt();
+    this->cpu_freq_show         = this->settingsObj->value("/components_show/cpu_freq_show", 0).toInt();
+    this->net_speed_show        = this->settingsObj->value("/components_show/net_speed_show", 1).toInt();
     // 磁盘读写默认不展示（用户可在设置里勾选「磁盘读写」打开）
     this->disk_io_show          = this->settingsObj->value("/components_show/disk_io_show", 0).toInt();
 
@@ -102,10 +112,10 @@ void Config::readConfig()
     this->dock_view_style       = this->settingsObj->value("/ui/dock_view_style", 0).toInt();
 
     // [window]
-    this->shape_mask            = this->settingsObj->value("/window/shape_mask").toInt();
+    this->shape_mask            = this->settingsObj->value("/window/shape_mask", 0).toInt();
 
     // [system_monitor]
-    this->system_monitor_cmd    = this->settingsObj->value("/system_monitor/cmd").toString().trimmed();
+    this->system_monitor_cmd    = this->settingsObj->value("/system_monitor/cmd", "").toString().trimmed();
 
     // ---------------- 老配置的一次性迁移 ----------------
     // 磁盘读写速度在早期版本里默认是"显示"的，现在改成默认不显示（要的人自己去设置里勾）。

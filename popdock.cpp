@@ -552,22 +552,6 @@ QString TransferStation::subtitleFor(const QVariantMap &data)
            + (flat.isEmpty() ? QString() : QStringLiteral(" · ") + flat);
 }
 
-// tooltip：类型 · 大小 · 摘要（文本再附内容预览），让"图文混合"时也能看清是什么
-QString TransferStation::tooltipFor(const QVariantMap &data)
-{
-    const TsType type = TsType(data.value(QStringLiteral("type")).toInt());
-    const QString name = data.value(QStringLiteral("name")).toString();
-    QString tip = name.isEmpty() ? subtitleFor(data) : (name + QStringLiteral("\n") + subtitleFor(data));
-    if (type == TsType::Text) {
-        QString t = data.value(QStringLiteral("text")).toString().trimmed();
-        if (t.size() > 300)
-            t = t.left(300) + QStringLiteral("…");
-        if (!t.isEmpty())
-            tip += QStringLiteral("\n\n") + t;
-    }
-    return tip;
-}
-
 // ---------------- 排序：一条规则贯穿所有布局 ----------------
 // 每个条目挂一个 rank（最近使用时刻，ms）。列表自上而下 **非递增**，即"最新的在最前"。
 // 为什么不写成"新的一定 insertItem(0)"：
@@ -625,7 +609,6 @@ void TransferStation::appendItem(const QIcon &icon, const QString &text,
     d[QStringLiteral("rank")]     = r;
     d[QStringLiteral("subtitle")] = subtitleFor(d);
     it->setData(Qt::UserRole, d);
-    it->setToolTip(tooltipFor(d));
     it->setFlags(it->flags() | Qt::ItemIsDragEnabled);
 
     const int row = orderedRow(r);
@@ -1371,7 +1354,6 @@ bool TransferStation::applyTextEdit(qint64 dbId, const QString &originalKey, con
     d[QStringLiteral("subtitle")] = subtitleFor(d);
     it->setData(Qt::UserRole, d);
     it->setText(label);
-    it->setToolTip(tooltipFor(d));
 
     const qint64 rowId = d.value(QStringLiteral("dbId")).toLongLong();
     if (rowId > 0 && m_store != nullptr)
@@ -1510,8 +1492,20 @@ PreviewPopup::PreviewPopup(QWidget *parent)
     cf.setPixelSize(11);
     m_caption->setFont(cf);
 
+    // 下沿详情栏：类型 / 尺寸 / 大小 / 完整路径（换行显示，替代旧版 item 悬停 tooltip）
+    m_info = new QLabel(this);
+    m_info->setAlignment(Qt::AlignLeft | Qt::AlignTop);
+    m_info->setWordWrap(true);
+    m_info->setMaximumWidth(340);
+    m_info->setStyleSheet(QStringLiteral("background:transparent;color:#8b9199;"));
+    QFont inf = m_info->font();
+    inf.setPixelSize(10);
+    m_info->setFont(inf);
+    m_info->hide();
+
     lay->addWidget(m_content, 0, Qt::AlignCenter);
     lay->addWidget(m_caption, 0);
+    lay->addWidget(m_info, 0);
     m_videoSize = QSize(320, 180);
 #ifdef POPBALL2_HAVE_QT_MULTIMEDIA
     m_player = new QMediaPlayer(this);
@@ -1593,6 +1587,24 @@ void PreviewPopup::showText(const QString &text, const QString &caption)
     m_caption->setText(fm.elidedText(cap, Qt::ElideMiddle, qMax(w, maxW)));
     m_caption->setVisible(!cap.isEmpty());
 
+    ensurePolished();
+    adjustSize();
+}
+
+// 下沿详情栏：显示类型 / 尺寸 / 大小 / 完整路径。
+// 独立于 show* 系列调用，PopDock 会在 show* 之后、定位之前传入；
+// 这里再 adjustSize() 一次，把详情行的高度计入气泡尺寸。
+void PreviewPopup::setInfo(const QString &text)
+{
+    if (m_info == nullptr)
+        return;
+    if (text.trimmed().isEmpty()) {
+        m_info->clear();
+        m_info->hide();
+        return;
+    }
+    m_info->setText(text);
+    m_info->setVisible(true);
     ensurePolished();
     adjustSize();
 }
@@ -2559,6 +2571,19 @@ void PopDock::onPreviewRequested(const QVariantMap &data, const QPoint &globalCe
                                   fi.fileName() + QStringLiteral(" · ")
                                       + QDir::toNativeSeparators(fi.absolutePath()));
         }
+    }
+
+    // 下沿详情栏：类型 / 尺寸 / 大小 / 完整路径（替代旧版"悬停 item 弹出 tooltip"）
+    {
+        QString detail = data.value(QStringLiteral("subtitle")).toString();
+        const QString p = data.value(QStringLiteral("path")).toString();
+        if (!p.isEmpty()) {
+            const QString dir = QDir::toNativeSeparators(QFileInfo(p).absolutePath());
+            // subtitleFor 对视频/文件已带目录；图片分支没带，这里补上（避免重复）
+            if (!dir.isEmpty() && !detail.contains(dir))
+                detail += (detail.isEmpty() ? QString() : QStringLiteral("\n")) + dir;
+        }
+        m_preview->setInfo(detail);
     }
 
     // 摆在面板"朝屏幕内侧"的一侧，纵向对齐所悬停的条目；越界则翻到另一侧

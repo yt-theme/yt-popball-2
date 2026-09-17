@@ -99,8 +99,6 @@ public:
     static qint64 rankOf(const QListWidgetItem *it);
     // 详细模式第二行的说明文字（类型 / 大小 / 路径 / 文本摘要）
     static QString subtitleFor(const QVariantMap &data);
-    // 单行 tooltip（类型 · 大小 · 摘要 / 内容预览）
-    static QString tooltipFor(const QVariantMap &data);
 
     // 条目操作（右键菜单与快捷键共用；也便于自检直接调用）
     void copyItemToClipboard(QListWidgetItem *it);
@@ -201,6 +199,9 @@ public:
     // 视频：能播就静音循环播放（画面逐帧画进内容标签），不能播就退化成静态封面
     void showVideo(const QString &path, const QString &caption,
                    const QPixmap &fallbackStill);
+    // 下沿信息栏：显示条目详情（类型 / 尺寸 / 大小 / 完整路径），
+    // 替代旧版"悬停 item 时弹出的 tooltip 气泡"
+    void setInfo(const QString &text);
     // 停止播放（气泡收起 / 换条目时都要调）
     void stopVideo();
     bool isPlayingVideo() const;
@@ -213,6 +214,7 @@ private:
 
     QLabel *m_content = nullptr;
     QLabel *m_caption = nullptr;
+    QLabel *m_info    = nullptr;   // 下沿详情栏（类型/尺寸/大小/路径）
 #ifdef POPBALL2_HAVE_QT_MULTIMEDIA
     QMediaPlayer *m_player = nullptr;
     QVideoSink   *m_sink   = nullptr;

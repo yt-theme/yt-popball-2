@@ -58,9 +58,6 @@
 
 class SysInfo {
 private:
-    // file obj
-    QFile *_file_obj            = new QFile();
-
 #if defined(Q_OS_LINUX)
     // CPU 温度候选文件（启动时探测一次，之后只读这些文件）
     QStringList         _temp_paths = {};
