@@ -106,13 +106,7 @@ private:
     // 依据 lcdRowMask 重新排布各行几何（宽高变化、显隐变化后调用）
     void relayoutVisibleLcds();
 
-    // 右键菜单（设置 / 系统监视器 / 退出）
-    QMenu   *contextMenu        = nullptr;
-    QAction *actSettings        = nullptr;
-    QAction *actSystemMonitor   = nullptr;
-    QAction *actQuit            = nullptr;
-
-    // 设置窗口（右键菜单 -> 设置）
+    // 设置窗口（由中转站面板右上角"操作"菜单打开）
     SettingsDialog *settingsDialog = nullptr;
 
     // hover 300ms 弹出的工具/中转站面板（PopDock）
@@ -157,8 +151,6 @@ public:
     // X11：重新评估"是否需要圆形蒙版"，结果变化时才应用（桌面混成开/关时自动调用）
     void reevaluateShapeMask();
 
-    // 构建右键菜单（在构造函数里调用一次）
-    void buildContextMenu();
     // 退出：先隐藏窗口、停掉定时器，再安全地结束事件循环
     void quitApplication();
     // 把配置里的颜色套到各 LCD 上（设置保存后也要调用）
@@ -178,7 +170,7 @@ private slots:
     void onTimerIntervalForUpdateData();
     void onTimerIntervalForUpdateUI();
 
-    // 右键菜单动作
+    // 中转站面板右上角"操作"菜单（设置 / 系统监视器 / 退出）的动作
     void onMenuSettings();
     void onMenuSystemMonitor();
     void onMenuQuit();

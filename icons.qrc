@@ -1,0 +1,7 @@
+<RCC>
+    <qresource prefix="/icons">
+        <file alias="settings.svg">icons/settings.svg</file>
+        <file alias="monitor.svg">icons/monitor.svg</file>
+        <file alias="power.svg">icons/power.svg</file>
+    </qresource>
+</RCC>

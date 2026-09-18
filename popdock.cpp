@@ -8,6 +8,10 @@
 #include <QCursor>
 #include <QContextMenuEvent>
 #include <QDir>
+#include <QFile>
+#ifdef POPBALL2_HAVE_QT_SVG
+#include <QSvgRenderer>
+#endif
 #include <QMimeData>
 #include <QMenu>
 #include <QDrag>
@@ -1123,6 +1127,121 @@ bool TransferStation::isImageFile(const QString &path)
     return exts.contains(QFileInfo(path).suffix().toLower());
 }
 
+// 安装包 / 可执行安装载体（安卓 apk、iOS ipa、macOS dmg/pkg/app、Windows exe/msi、
+// Linux deb/rpm/appimage、浏览器扩展 xpi/crx…）
+bool TransferStation::isAppFile(const QString &path)
+{
+    static const QSet<QString> exts = {
+        // 安卓 / iOS
+        QStringLiteral("apk"), QStringLiteral("xapk"), QStringLiteral("apks"),
+        QStringLiteral("apkm"), QStringLiteral("aab"), QStringLiteral("obb"),
+        QStringLiteral("ipa"),
+        // macOS
+        QStringLiteral("dmg"), QStringLiteral("pkg"), QStringLiteral("mpkg"),
+        QStringLiteral("app"),
+        // Windows
+        QStringLiteral("exe"), QStringLiteral("msi"), QStringLiteral("msix"),
+        QStringLiteral("msixbundle"), QStringLiteral("appx"),
+        QStringLiteral("appxbundle"), QStringLiteral("appxupload"),
+        // Linux / 跨平台
+        QStringLiteral("deb"), QStringLiteral("rpm"), QStringLiteral("appimage"),
+        QStringLiteral("snap"), QStringLiteral("flatpak"), QStringLiteral("run"),
+        QStringLiteral("jar"),                       // Java 应用包
+        // 浏览器 / 其它安装载体
+        QStringLiteral("xpi"), QStringLiteral("crx"), QStringLiteral("wgt"),
+        QStringLiteral("air"), QStringLiteral("sis"), QStringLiteral("sisx")
+    };
+    return exts.contains(QFileInfo(path).suffix().toLower());
+}
+
+// 压缩包 / 归档（zip / rar / 7z / tar 家族…）
+bool TransferStation::isArchiveFile(const QString &path)
+{
+    static const QSet<QString> exts = {
+        QStringLiteral("zip"), QStringLiteral("rar"), QStringLiteral("7z"),
+        QStringLiteral("tar"), QStringLiteral("gz"), QStringLiteral("tgz"),
+        QStringLiteral("bz2"), QStringLiteral("tbz2"), QStringLiteral("xz"),
+        QStringLiteral("txz"), QStringLiteral("zst"), QStringLiteral("lz4"),
+        QStringLiteral("lzh"), QStringLiteral("lha"), QStringLiteral("cab"),
+        QStringLiteral("iso"), QStringLiteral("img")
+    };
+    return exts.contains(QFileInfo(path).suffix().toLower());
+}
+
+// 音频文件
+bool TransferStation::isAudioFile(const QString &path)
+{
+    static const QSet<QString> exts = {
+        QStringLiteral("mp3"), QStringLiteral("wav"), QStringLiteral("flac"),
+        QStringLiteral("aac"), QStringLiteral("m4a"), QStringLiteral("ogg"),
+        QStringLiteral("opus"), QStringLiteral("wma"), QStringLiteral("ape"),
+        QStringLiteral("aiff"), QStringLiteral("au"), QStringLiteral("mid"),
+        QStringLiteral("midi")
+    };
+    return exts.contains(QFileInfo(path).suffix().toLower());
+}
+
+// 可执行 / 二进制程序（无后缀可执行、macOS .app、shell 命令、动态库、ELF/Mach-O）
+bool TransferStation::isExecFile(const QString &path)
+{
+    // 无后缀的普通文件：按"存在且可执行"判定（Mac/Unix），放"可执行"类
+    QFileInfo fi(path);
+    const QString suf = fi.suffix().toLower();
+    if (suf.isEmpty())
+        return fi.isFile() && fi.isExecutable();
+
+    static const QSet<QString> exts = {
+        QStringLiteral("command"), QStringLiteral("elf"), QStringLiteral("out"),
+        QStringLiteral("so"), QStringLiteral("dylib"), QStringLiteral("bundle"),
+        QStringLiteral("bin"), QStringLiteral("exe")   // exe 归安装包，这里兜底不冲突
+    };
+    return exts.contains(suf);
+}
+
+// 字体文件
+bool TransferStation::isFontFile(const QString &path)
+{
+    static const QSet<QString> exts = {
+        QStringLiteral("ttf"), QStringLiteral("otf"), QStringLiteral("woff"),
+        QStringLiteral("woff2"), QStringLiteral("eot"), QStringLiteral("ttc"),
+        QStringLiteral("dfont")
+    };
+    return exts.contains(QFileInfo(path).suffix().toLower());
+}
+
+// 数据库 / 结构化数据文件
+bool TransferStation::isDataFile(const QString &path)
+{
+    static const QSet<QString> exts = {
+        QStringLiteral("db"), QStringLiteral("sqlite"), QStringLiteral("sqlite3"),
+        QStringLiteral("sqlitedb"), QStringLiteral("mdb"), QStringLiteral("accdb"),
+        QStringLiteral("dbf"), QStringLiteral("dat"), QStringLiteral("mdf"),
+        QStringLiteral("ldf"), QStringLiteral("ndf"), QStringLiteral("bak"),
+        QStringLiteral("parquet"), QStringLiteral("feather"), QStringLiteral("orc")
+    };
+    return exts.contains(QFileInfo(path).suffix().toLower());
+}
+
+// 设计 / CAD / 3D 源文件
+bool TransferStation::isDesignFile(const QString &path)
+{
+    static const QSet<QString> exts = {
+        // 平面设计
+        QStringLiteral("psd"), QStringLiteral("psb"), QStringLiteral("ai"),
+        QStringLiteral("sketch"), QStringLiteral("xd"), QStringLiteral("fig"),
+        QStringLiteral("afdesign"), QStringLiteral("afphoto"), QStringLiteral("cdr"),
+        // CAD / 工程
+        QStringLiteral("dwg"), QStringLiteral("dxf"), QStringLiteral("dwt"),
+        QStringLiteral("3dm"), QStringLiteral("skp"),
+        // 3D 模型
+        QStringLiteral("stl"), QStringLiteral("obj"), QStringLiteral("fbx"),
+        QStringLiteral("blend"), QStringLiteral("3ds"), QStringLiteral("max"),
+        QStringLiteral("ma"), QStringLiteral("mb"), QStringLiteral("c4d"),
+        QStringLiteral("gltf"), QStringLiteral("glb"), QStringLiteral("usdz")
+    };
+    return exts.contains(QFileInfo(path).suffix().toLower());
+}
+
 // ---------------- 类型筛选（标题区下面那条 tab：全部 / 文档 / 图片） ----------------
 // 文档类文件：纯文本 / 代码 / Office / PDF 等。**有意不收 "ts"** —— 它在本项目里被
 // isVideoFile() 当成 MPEG-TS 视频，两边都收会让同一文件归进两个互斥的 tab。
@@ -1164,23 +1283,40 @@ bool TransferStation::isDocFile(const QString &path)
     return exts.contains(QFileInfo(path).suffix().toLower());
 }
 
+// 条目归属的大分类（互斥：一条只属一类，见 header 注释）。-1 = 无专属分类，
+// 只在「全部」里出现。判定集中在这一处，自检直接验证它即可。
+int TransferStation::categoryOf(const QVariantMap &data)
+{
+    const TsType  type = TsType(data.value(QStringLiteral("type")).toInt());
+    const QString path = data.value(QStringLiteral("path")).toString();
+
+    switch (type) {
+    case TsType::Text:  return DocItems;      // 文本条目 → 文档
+    case TsType::Image: return ImageItems;    // 剪贴板图片 → 图片
+    case TsType::Video: return VideoItems;    // 视频条目 → 视频
+    case TsType::File:  break;                // 普通文件按扩展名继续分
+    }
+
+    if (isImageFile(path))   return ImageItems;
+    if (isVideoFile(path))   return VideoItems;
+    if (isAppFile(path))     return AppItems;       // 安装包（apk / ipa / exe / dmg…）
+    if (isArchiveFile(path)) return ArchiveItems;   // 压缩包（zip / rar / 7z…）
+    if (isAudioFile(path))   return AudioItems;     // 音频（mp3 / wav / flac…）
+    if (isExecFile(path))    return ExecItems;      // 可执行 / 无后缀可执行
+    if (isFontFile(path))    return FontItems;      // 字体
+    if (isDataFile(path))    return DataItems;      // 数据库 / 数据
+    if (isDesignFile(path))  return DesignItems;    // 设计 / CAD / 3D
+    if (isDocFile(path))     return DocItems;
+    return -1;                                     // 其它（种子、证书、混合数据…）
+}
+
 // 条目是否属于某个筛选。判定规则**集中在这一个纯函数里**，所以自检可以直接验证，
-// 不必去拼界面。Doc = 文本条目 + 文档类文件；Image = 剪贴板图片 + 图片文件；
-// 视频 / 压缩包 / 音频既不是文档也不是图片 ⇒ 只在「全部」里出现。
+// 不必去拼界面。
 bool TransferStation::itemMatchesFilter(const QVariantMap &data, TypeFilter f)
 {
     if (f == AllItems)
         return true;
-
-    const TsType  type = TsType(data.value(QStringLiteral("type")).toInt());
-    const QString path = data.value(QStringLiteral("path")).toString();
-
-    if (f == ImageItems)
-        return type == TsType::Image                                       // 剪贴板图片
-               || (type == TsType::File && isImageFile(path));             // 图片文件
-
-    return type == TsType::Text
-           || (type == TsType::File && isDocFile(path));
+    return categoryOf(data) == int(f);
 }
 
 // 按当前筛选显示/隐藏所有条目。用 setHidden 而不是增删条目：
@@ -1214,7 +1350,7 @@ int TransferStation::visibleCount() const
 
 void TransferStation::setTypeFilter(TypeFilter f)
 {
-    if (f != AllItems && f != DocItems && f != ImageItems)
+    if (f < AllItems || f > DesignItems)
         f = AllItems;
     if (f == m_filter)
         return;
@@ -1746,6 +1882,10 @@ PreviewPopup::PreviewPopup(QWidget *parent)
     QFont cf = m_caption->font();
     cf.setPixelSize(11);
     m_caption->setFont(cf);
+    // 标题行只放"文件名（完整）"，不做省略：超长时换行显示，
+    // 路径 / 类型 / 大小等细节交给下沿详情栏（m_info）承担。
+    m_caption->setWordWrap(true);
+    m_caption->setMaximumWidth(340);
 
     // 下沿详情栏：类型 / 尺寸 / 大小 / 完整路径（换行显示，替代旧版 item 悬停 tooltip）
     m_info = new QLabel(this);
@@ -1790,9 +1930,7 @@ void PreviewPopup::showPixmap(const QPixmap &pixmap, const QString &caption)
     m_content->setPixmap(pixmap);
     m_content->setFixedSize(pixmap.size());
 
-    const int maxW = 340;
-    QFontMetrics fm(m_caption->font());
-    m_caption->setText(fm.elidedText(caption, Qt::ElideMiddle, qMax(maxW, pixmap.width())));
+    m_caption->setText(caption);   // 文件名完整展示（超长由 wordWrap 换行）
     m_caption->setVisible(!caption.isEmpty());
 
     ensurePolished();
@@ -1835,11 +1973,10 @@ void PreviewPopup::showText(const QString &text, const QString &caption)
     }
     m_content->setFixedSize(w, h);
 
-    QFontMetrics fm(m_caption->font());
     QString cap = caption;
     if (truncated)
         cap += QStringLiteral(" · 内容过长，已省略");
-    m_caption->setText(fm.elidedText(cap, Qt::ElideMiddle, qMax(w, maxW)));
+    m_caption->setText(cap);       // 标题行完整展示（超长由 wordWrap 换行）
     m_caption->setVisible(!cap.isEmpty());
 
     ensurePolished();
@@ -1886,9 +2023,7 @@ void PreviewPopup::showVideo(const QString &path, const QString &caption,
     m_content->setPixmap(first);                      // 先显示封面帧，解码出画面就切过去
     m_content->setFixedSize(m_videoSize);
 
-    QFontMetrics fm(m_caption->font());
-    m_caption->setText(fm.elidedText(caption + QStringLiteral(" · 悬停预览（静音）"),
-                                     Qt::ElideMiddle, m_videoSize.width() + 40));
+    m_caption->setText(caption + QStringLiteral(" · 悬停预览（静音）"));   // 完整展示（超长换行）
     m_caption->setVisible(true);
 
     m_player->setSource(QUrl::fromLocalFile(path));
@@ -2194,6 +2329,52 @@ QIcon PopDock::noteOkIcon(const QColor &accent)
     return QIcon(pm);
 }
 
+// 用用户提供的 SVG 渲染右上角按钮图标：读取资源 SVG 文本，
+// 把原图固定的 #515151 灰 fill 替换成当前主题强调色（形状用用户的，颜色跟随主题），
+// 再经 QSvgRenderer 渲染成 40×40 图标。缺 QtSvg 模块时返回空 QIcon。
+QIcon PopDock::svgThemeIcon(const QString &resPath, const QColor &accent)
+{
+#ifdef POPBALL2_HAVE_QT_SVG
+    QFile f(resPath);
+    if (f.open(QIODevice::ReadOnly)) {
+        QByteArray svg = f.readAll();
+        if (accent.isValid())
+            svg.replace("#515151", accent.name().toUpper().toUtf8());   // 原图统一灰 → 主题色
+        QSvgRenderer r(svg);
+        QPixmap pm(40, 40);
+        pm.fill(Qt::transparent);
+        QPainter p(&pm);
+        r.render(&p);
+        return QIcon(pm);
+    }
+#else
+    Q_UNUSED(resPath);
+    Q_UNUSED(accent);
+#endif
+    return QIcon();
+}
+
+// 右上角"系统监视器"按钮图标：用户提供的 SVG（性能统计折线图）形状 + 主题色。
+QIcon PopDock::monitorIcon(const QColor &accent)
+{
+    QIcon ic = svgThemeIcon(QStringLiteral(":/icons/monitor.svg"), accent);
+    return ic.isNull() ? QIcon(QStringLiteral(":/icons/monitor.svg")) : ic;
+}
+
+// 右上角"退出"按钮图标：用户提供的 SVG（电源开关）形状 + 主题色。
+QIcon PopDock::powerIcon(const QColor &accent)
+{
+    QIcon ic = svgThemeIcon(QStringLiteral(":/icons/power.svg"), accent);
+    return ic.isNull() ? QIcon(QStringLiteral(":/icons/power.svg")) : ic;
+}
+
+// 右上角"设置"按钮图标：用户提供的 SVG（齿轮）形状 + 主题色。
+QIcon PopDock::settingsIcon(const QColor &accent)
+{
+    QIcon ic = svgThemeIcon(QStringLiteral(":/icons/settings.svg"), accent);
+    return ic.isNull() ? QIcon(QStringLiteral(":/icons/settings.svg")) : ic;
+}
+
 // ---------------- 划出 / 划入动画 ----------------
 
 // 时长与位移幅度：170ms 够看出"划出来"，又不会拖沓；
@@ -2304,7 +2485,7 @@ PopDock::PopDock(QWidget *parent)
         auto *header = new QWidget(this);
         header->setObjectName(QStringLiteral("popDockHeader"));
         header->setStyleSheet(QStringLiteral("background:transparent;"));
-        header->setFixedHeight(22);
+        header->setFixedHeight(32);
         auto *hl = new QHBoxLayout(header);
         hl->setContentsMargins(2, 0, 2, 0);
         hl->setSpacing(6);
@@ -2313,7 +2494,7 @@ PopDock::PopDock(QWidget *parent)
         m_titleLabel->setObjectName(QStringLiteral("popDockTitle"));
         {
             QFont f = m_titleLabel->font();
-            f.setPixelSize(13);
+            f.setPixelSize(14);      // 标题字号：用户指定 14px
             f.setBold(true);
             m_titleLabel->setFont(f);
         }
@@ -2323,7 +2504,7 @@ PopDock::PopDock(QWidget *parent)
         m_countLabel->setObjectName(QStringLiteral("popDockCount"));
         {
             QFont f = m_countLabel->font();
-            f.setPixelSize(11);
+            f.setPixelSize(14);      // 条目数跟随放大：11px → 14px
             m_countLabel->setFont(f);
         }
         m_countLabel->setStyleSheet(QStringLiteral("background:transparent;color:#8b9199;"));
@@ -2336,7 +2517,7 @@ PopDock::PopDock(QWidget *parent)
         infoTip->setText(QStringLiteral("?"));
         {
             QFont f = infoTip->font();
-            f.setPixelSize(11);
+            f.setPixelSize(14);      // tip 跟随放大：11px → 14px
             infoTip->setFont(f);
         }
         infoTip->setStyleSheet(QStringLiteral("background:transparent;color:#8b9199;padding:0 1px;"));
@@ -2346,55 +2527,112 @@ PopDock::PopDock(QWidget *parent)
         hl->addWidget(infoTip);
         hl->addStretch(1);
         hl->addWidget(m_countLabel);
+
+        // 右上角一排操作按钮：设置 / 系统监视器 / 退出（电源图标）——
+        // 原悬浮球右键菜单收进面板，避免右键与弹窗显隐互相干扰。
+        const auto addHeaderBtn = [header, this](QToolButton *&btn, const QString &objName,
+                                                 const QIcon &icon, const QString &tip,
+                                                 void (PopDock::*sig)()) {
+            btn = new QToolButton(header);
+            btn->setObjectName(objName);
+            btn->setIcon(icon);
+            btn->setIconSize(QSize(21, 21));   // 图标放大 1.5 倍：14px → 21px
+            btn->setFixedSize(30, 30);         // 按钮放大 1.5 倍：20px → 30px
+            btn->setCursor(Qt::PointingHandCursor);
+            btn->setToolTip(tip);
+            btn->setStyleSheet(QStringLiteral(
+                "QToolButton{background:transparent;border:none;border-radius:6px;}"
+                "QToolButton:hover{background:rgba(255,255,255,0.12);}"
+                "QToolButton:pressed{background:rgba(255,255,255,0.20);}"));
+            connect(btn, &QToolButton::clicked, this, sig);
+        };
+        addHeaderBtn(m_settingsBtn, QStringLiteral("popDockSettingsBtn"),
+                     settingsIcon(m_accentColor), tr("设置"),
+                     &PopDock::settingsRequested);
+        addHeaderBtn(m_monitorBtn, QStringLiteral("popDockMonitorBtn"),
+                     monitorIcon(m_accentColor), tr("系统监视器"),
+                     &PopDock::systemMonitorRequested);
+        addHeaderBtn(m_powerBtn, QStringLiteral("popDockPowerBtn"),
+                     powerIcon(m_accentColor), tr("退出"),
+                     &PopDock::quitRequested);
+        hl->addWidget(m_settingsBtn);
+        hl->addWidget(m_monitorBtn);
+        hl->addWidget(m_powerBtn);
         root->addWidget(header, 0);
     }
 
-    // ---------- 类型 tab：全部 / 文档 / 图片（紧贴列表上方，标题区与列表之间） ----------
+    // ---------- 类型 tab：全部 / 文档 / 图片 / 视频 / 安装包 / 压缩包 / 音频 / 可执行 / 字体 / 数据库 / 设计 ----------
     // 只是"看"的切换：不动条目、不动顺序、不动库，切回「全部」立刻恢复原样。
+    // 分类 tab 按站内实际内容动态显示（某分类没有条目就不显示），「全部」恒在；
+    // 一行放不下时自动换第二行（见 refreshTypeTabs 的按行重排）。
     {
-        auto *tabs = new QWidget(this);
-        tabs->setObjectName(QStringLiteral("popDockTabs"));
-        tabs->setStyleSheet(QStringLiteral("background:transparent;"));
-        tabs->setFixedHeight(24);
+        m_tabsWidget = new QWidget(this);
+        m_tabsWidget->setObjectName(QStringLiteral("popDockTabs"));
+        m_tabsWidget->setStyleSheet(QStringLiteral("background:transparent;"));
+        m_tabsWidget->setFixedHeight(24);
 
-        auto *tl = new QHBoxLayout(tabs);
-        tl->setContentsMargins(2, 0, 2, 0);
-        tl->setSpacing(4);
+        auto *tv = new QVBoxLayout(m_tabsWidget);
+        tv->setContentsMargins(2, 0, 2, 0);
+        tv->setSpacing(2);
+        m_tabRow1 = new QHBoxLayout;
+        m_tabRow1->setContentsMargins(0, 0, 0, 0);
+        m_tabRow1->setSpacing(4);
+        m_tabRow2 = new QHBoxLayout;
+        m_tabRow2->setContentsMargins(0, 0, 0, 0);
+        m_tabRow2->setSpacing(4);
+        tv->addLayout(m_tabRow1);
+        tv->addLayout(m_tabRow2);
 
-        auto *tabGroup = new QButtonGroup(this);
-        tabGroup->setExclusive(true);
+        m_tabGroup = new QButtonGroup(this);
+        m_tabGroup->setExclusive(true);
 
-        const QString tabNames[3] = { tr("全部"), tr("文档"), tr("图片") };
-        const QString tabTips[3]  = {
+        const QString tabNames[11] = {
+            tr("全部"), tr("文档"), tr("图片"), tr("视频"), tr("安装包"),
+            tr("压缩包"), tr("音频"), tr("可执行"), tr("字体"), tr("数据库"), tr("设计")
+        };
+        const QString tabTips[11] = {
             tr("显示全部条目"),
             tr("只看文本与文档类文件（txt / md / pdf / Office / 代码…）"),
-            tr("只看剪贴板图片与图片文件（png / jpg / gif…）")
+            tr("只看剪贴板图片与图片文件（png / jpg / gif…）"),
+            tr("只看视频文件（mp4 / mov / mkv…）"),
+            tr("只看安装包（apk / ipa / exe / dmg / deb…）"),
+            tr("只看压缩包（zip / rar / 7z / tar…）"),
+            tr("只看音频文件（mp3 / wav / flac…）"),
+            tr("只看可执行文件（无后缀可执行 / .command / .so / .dylib…）"),
+            tr("只看字体文件（ttf / otf / woff / woff2…）"),
+            tr("只看数据库与数据文件（db / sqlite / mdb / dat…）"),
+            tr("只看设计 / CAD / 3D 源文件（psd / ai / dwg / stl…）")
         };
-        for (int i = 0; i < 3; ++i) {
-            auto *b = new QToolButton(tabs);
+        for (int i = 0; i < 11; ++i) {
+            auto *b = new QToolButton(m_tabsWidget);
             b->setObjectName(QStringLiteral("popDockTab%1").arg(i));
             b->setText(tabNames[i]);
             b->setCheckable(true);
             b->setChecked(i == 0);
             b->setFocusPolicy(Qt::NoFocus);
             b->setCursor(Qt::PointingHandCursor);
-            b->setFixedHeight(22);
-            b->setMinimumWidth(52);
+            b->setFixedHeight(20);
+            b->setMinimumWidth(46);
             b->setToolTip(tabTips[i]);
             {
                 QFont bf = b->font();
                 bf.setPixelSize(11);
                 b->setFont(bf);
             }
-            b->setStyleSheet(toolButtonQss(m_accentColor, 5, QStringLiteral("1px 8px")));
-            tabGroup->addButton(b, i);
-            tl->addWidget(b);
+            b->setStyleSheet(toolButtonQss(m_accentColor, 5, QStringLiteral("1px 6px")));
+            m_tabGroup->addButton(b, i);
             m_tabBtns[i] = b;
         }
-        tl->addStretch(1);
-        root->addWidget(tabs, 0);
+        // 初始全部在第二行（隐藏）；refreshTypeTabs 会按内容重排到第一行
+        for (int i = 0; i < 11; ++i)
+            m_tabRow2->addWidget(m_tabBtns[i]);
+        root->addWidget(m_tabsWidget, 0);
 
-        connect(tabGroup, &QButtonGroup::idClicked, this, [this](int id) {
+        // 用 idToggled 而非 idClicked：两种点击路径都覆盖 —— 真实鼠标按下+释放
+        // （clicked）与无障碍 AXPress 直切状态（只发 toggled）都会进这里。
+        connect(m_tabGroup, &QButtonGroup::idToggled, this, [this](int id, bool checked) {
+            if (!checked)
+                return;                             // 只处理"切到"的 tab，切走的忽略
             if (m_station != nullptr)
                 m_station->setTypeFilter(TransferStation::TypeFilter(id));
             hidePreview();
@@ -2504,6 +2742,7 @@ PopDock::PopDock(QWidget *parent)
     connect(m_station, &TransferStation::previewHideRequested, this,
             &PopDock::onPreviewHideRequested);
     connect(m_station, &TransferStation::stationChanged, this, &PopDock::refreshCount);
+    connect(m_station, &TransferStation::stationChanged, this, &PopDock::refreshTypeTabs);
     // 文本条目"打开" → 弹小编辑器
     connect(m_station, &TransferStation::editTextRequested, this, &PopDock::openTextEditor);
     // 右键菜单 / 拖出条目期间加交互锁：用户在操作，面板不能自动收起
@@ -2574,6 +2813,7 @@ void PopDock::ensureHistoryLoaded()
         return;
     m_station->loadRecords(m_store->recent(60));   // 追加到末尾，新的仍在最前
     refreshCount();
+    refreshTypeTabs();   // 历史回填完，按实际内容显示分类 tab
 }
 
 void PopDock::refreshCount()
@@ -2628,19 +2868,71 @@ void PopDock::setAccentColor(const QColor &color)
         m_addNoteBtn->setIcon(noteAddIcon(color));
     if (m_noteOkBtn != nullptr)
         m_noteOkBtn->setIcon(noteOkIcon(color));
+    // 右上角操作按钮图标跟随主题（设置齿轮 / 监视器柱状 / 电源）
+    if (m_settingsBtn != nullptr)
+        m_settingsBtn->setIcon(settingsIcon(color));
+    if (m_monitorBtn != nullptr)
+        m_monitorBtn->setIcon(monitorIcon(color));
+    if (m_powerBtn != nullptr)
+        m_powerBtn->setIcon(powerIcon(color));
 }
 
-// 类型 tab（全部 / 文档 / 图片）。与布局切换不同的是：它**不**落盘 ——
-// 筛选是临时的"看"的方式，不是用户偏好；下次启动仍然是「全部」。
+// 类型 tab（全部 / 文档 / 图片 / 视频 / 安装包 / 压缩包 / 音频 / 可执行 / 字体 / 数据库 / 设计）。
+// 与布局切换不同：它**不**落盘 —— 筛选是临时的"看"的方式，不是用户偏好；下次启动仍然是「全部」。
 void PopDock::setTypeFilter(int filter)
 {
-    const int f = qBound(0, filter, 2);         // 0=全部 1=文档 2=图片
+    const int f = qBound(0, filter, int(TransferStation::DesignItems));   // 0=全部 … 10=设计
     if (m_station != nullptr)
         m_station->setTypeFilter(TransferStation::TypeFilter(f));
     if (m_tabBtns[f] != nullptr)
         m_tabBtns[f]->setChecked(true);
     hidePreview();
     refreshCount();
+}
+
+// 分类 tab 按站内实际内容动态显示：某分类有条目才显示其 tab（「全部」恒在）。
+// 一行放不下时换第二行，容器高度按行数自适应。条目增删 / 回填完成都会经
+// stationChanged 触达这里。
+void PopDock::refreshTypeTabs()
+{
+    if (m_station == nullptr || m_tabsWidget == nullptr)
+        return;
+
+    // 统计每个大分类当前有多少条目（未分类内容只在「全部」里，不建 tab）
+    int counts[11] = { 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 };
+    for (int i = 0; i < m_station->count(); ++i) {
+        const QListWidgetItem *it = m_station->item(i);
+        if (it == nullptr)
+            continue;
+        const int c = TransferStation::categoryOf(it->data(Qt::UserRole).toMap());
+        if (c > 0 && c < 11)
+            ++counts[c];
+    }
+
+    // 全部收进隐藏态，再按顺序把可见 tab 摆进行（addWidget 会自动从旧布局摘除）
+    const int kTabW = 50;                       // minWidth 46 + 间距 4
+    const int availW = qMax(120, m_tabsWidget->width() - 6);
+    int row = 0, used = 0;
+    for (int i = 0; i < 11; ++i) {
+        const bool show = (i == 0) || counts[i] > 0;
+        m_tabBtns[i]->setVisible(show);
+        if (!show)
+            continue;
+        if (row == 0 && used + kTabW > availW) { row = 1; used = 0; }
+        (row == 0 ? m_tabRow1 : m_tabRow2)->addWidget(m_tabBtns[i]);
+        used += kTabW;
+    }
+    m_tabsWidget->setFixedHeight(row == 1 ? 42 : 22);
+
+    // 当前选中的分类被"清零隐藏"了 → 切回「全部」，避免停在看不见的空白 tab 上
+    if (m_station->typeFilter() != TransferStation::AllItems
+        && counts[int(m_station->typeFilter())] == 0) {
+        m_station->setTypeFilter(TransferStation::AllItems);
+        if (m_tabBtns[0] != nullptr)
+            m_tabBtns[0]->setChecked(true);
+        hidePreview();
+        refreshCount();
+    }
 }
 
 int PopDock::typeFilter() const
@@ -2860,9 +3152,8 @@ void PopDock::onPreviewRequested(const QVariantMap &data, const QPoint &globalCe
             QIcon ic = prov.icon(fi);
             if (ic.isNull())
                 ic = prov.icon(QFileIconProvider::File);
-            m_preview->showPixmap(ic.pixmap(96, 96),
-                                  fi.fileName() + QStringLiteral(" · ")
-                                      + QDir::toNativeSeparators(fi.absolutePath()));
+            // 标题行只显示完整文件名（路径在下方详情栏里，避免重复）
+            m_preview->showPixmap(ic.pixmap(96, 96), fi.fileName());
         }
     }
 

@@ -4,6 +4,8 @@
 #include <QWidget>
 #include <QListWidget>
 #include <QToolButton>
+#include <QButtonGroup>
+#include <QHBoxLayout>
 #include <QLabel>
 #include <QTimer>
 #include <QLineEdit>
@@ -61,11 +63,21 @@ public:
 
     // 类型筛选（标题区下面那条 tab）：
     //   AllItems   全部
-    //   DocItems   文档 = 文本条目 + 文档类文件（isDocFile 的白名单）
-    //   ImageItems 图片 = 剪贴板图片 + 图片文件
-    // 视频 / 压缩包等既不是"文档"也不是"图片"，只在「全部」里出现。
+    //   DocItems    文档 = 文本条目 + 文档类文件（isDocFile 的白名单）
+    //   ImageItems  图片 = 剪贴板图片 + 图片文件
+    //   VideoItems  视频 = 视频文件（type==Video / isVideoFile）
+    //   AppItems    安装包 = apk / ipa / exe / dmg / deb 等
+    //   ArchiveItems 压缩包 = zip / rar / 7z / tar 等
+    //   AudioItems  音频 = mp3 / wav / flac 等
+    //   ExecItems   可执行 = 无后缀可执行 / .app / .command / .elf / .so / .dylib 等
+    //   FontItems   字体 = ttf / otf / woff / woff2 等
+    //   DataItems   数据库/数据 = db / sqlite / mdb / dat 等
+    //   DesignItems 设计/CAD = psd / ai / sketch / dwg / stl / blend 等
+    // 以上分类互斥（每条目只属一类，见 categoryOf）；无专属分类的内容只在「全部」里出现。
     // 用 setHidden 隐藏而不是删除条目：顺序、去重、库里的记录都不受影响。
-    enum TypeFilter { AllItems = 0, DocItems = 1, ImageItems = 2 };
+    enum TypeFilter { AllItems = 0, DocItems = 1, ImageItems = 2,
+                      VideoItems = 3, AppItems = 4, ArchiveItems = 5, AudioItems = 6,
+                      ExecItems = 7, FontItems = 8, DataItems = 9, DesignItems = 10 };
 
     void setTypeFilter(TypeFilter f);
     TypeFilter typeFilter() const { return m_filter; }
@@ -73,8 +85,22 @@ public:
     int visibleCount() const;
     // 某条目是否属于该筛选（静态，便于自检直接验证判定规则）
     static bool itemMatchesFilter(const QVariantMap &data, TypeFilter f);
+    // 条目归属的大分类（互斥，返回 TypeFilter 或 -1 = 无专属分类、只在「全部」里）。
+    // 判定规则集中在这里，自检可以直接验证，不必去拼界面。
+    static int categoryOf(const QVariantMap &data);
     // 文档类文件判定（按扩展名：文本/代码/Office/PDF 等）
     static bool isDocFile(const QString &path);
+    // 视频 / 图片 / 安装包 / 压缩包 / 音频 文件判定（按扩展名）
+    static bool isVideoFile(const QString &path);
+    static bool isImageFile(const QString &path);
+    static bool isAppFile(const QString &path);
+    static bool isArchiveFile(const QString &path);
+    static bool isAudioFile(const QString &path);
+    // 可执行 / 字体 / 数据库 / 设计-CAD 文件判定（按扩展名）
+    static bool isExecFile(const QString &path);
+    static bool isFontFile(const QString &path);
+    static bool isDataFile(const QString &path);
+    static bool isDesignFile(const QString &path);
 
     // 剪贴板历史（可为空 = 不持久化，功能照旧）
     void setStore(ClipStore *store) { m_store = store; }
@@ -85,10 +111,6 @@ public:
 
     // 按当前布局/面板宽度重算网格单元格
     void updateIconGrid();
-
-    // 扩展名分类（视频条目要单独显示播放标识）
-    static bool isVideoFile(const QString &path);
-    static bool isImageFile(const QString &path);
 
     // 视频封面帧（异步生成后缓存；没有就返回空）
     QPixmap videoThumbFor(const QString &dedupKey) const;
@@ -329,6 +351,11 @@ signals:
     void mouseLeft();               // 光标真正离开面板
     void viewStyleChanged(int style);   // 用户切换了展示布局（Widget 负责落盘）
     void interactionStarted();      // 进入交互锁（Widget 据此取消已排队的收起）
+    // 右上角"操作"菜单（设置 / 系统监视器 / 退出）——原悬浮球右键菜单的动作，
+    // 由 Widget 连接执行
+    void settingsRequested();
+    void systemMonitorRequested();
+    void quitRequested();
 
 protected:
     void showEvent(QShowEvent *event) override;
@@ -350,6 +377,7 @@ private:
     void ensureHistoryLoaded();               // 首次用面板时回填历史
     void openHistoryStore();                  // 打开剪贴板历史库
     void refreshCount();                      // 刷新标题区右侧的条目数
+    void refreshTypeTabs();                   // 按站内实际内容增删/显示隐藏类型 tab
     void hidePreview();                       // 收起悬停预览
     void openTextEditor(qint64 dbId, const QString &key,
                         const QString &title, const QString &text);   // 弹文本小编辑器
@@ -358,10 +386,18 @@ private:
     void endInteraction();                    // 交互锁 -1
     static QIcon noteAddIcon(const QColor &accent);   // 右下角"铅笔+加号"图标
     static QIcon noteOkIcon(const QColor &accent);    // 记事输入框右侧的"确认"图标
+    static QIcon settingsIcon(const QColor &accent);  // 右上角"设置"：用户 SVG（齿轮）形状 + 主题色
+    static QIcon monitorIcon(const QColor &accent);   // 右上角"系统监视器"：用户 SVG（性能统计）+ 主题色
+    static QIcon powerIcon(const QColor &accent);     // 右上角"退出"：用户 SVG（电源开关）+ 主题色
+    // 读内嵌 SVG 资源并把原图 #515151 灰替换为主题强调色后渲染；缺 QtSvg 返回空 QIcon。
+    static QIcon svgThemeIcon(const QString &resPath, const QColor &accent);
 
     TransferStation *m_station    = nullptr;
     QLabel          *m_titleLabel = nullptr;  // 标题区：数据中转站
     QLabel          *m_countLabel = nullptr;  // 标题区右侧：条目数
+    QToolButton     *m_settingsBtn = nullptr; // 标题区右："设置"（齿轮）按钮
+    QToolButton     *m_monitorBtn  = nullptr; // 标题区右："系统监视器"（柱状图）按钮
+    QToolButton     *m_powerBtn    = nullptr; // 标题区最右："退出"（电源）按钮
     QToolButton     *m_addNoteBtn = nullptr;  // 底栏右：新建记事
     QWidget         *m_noteRow    = nullptr;  // 记事编辑行（输入框 + 确认按钮）
     QLineEdit       *m_noteEdit   = nullptr;  // 新建记事时的输入框
@@ -369,7 +405,13 @@ private:
     PreviewPopup    *m_preview    = nullptr;  // 悬停预览气泡（懒创建）
     TextEditorWindow *m_textEditor = nullptr; // 文本小编辑器（懒创建，顶层窗口）
     QToolButton     *m_viewBtns[4] = { nullptr, nullptr, nullptr, nullptr };   // 底栏左：图标/列表/详细/预览
-    QToolButton     *m_tabBtns[3]  = { nullptr, nullptr, nullptr };            // 列表上方：全部/文档/图片
+    QToolButton     *m_tabBtns[11] = { nullptr, nullptr, nullptr, nullptr,
+                                       nullptr, nullptr, nullptr, nullptr,
+                                       nullptr, nullptr, nullptr };       // 类型 tab：全部/文档/图片/视频/安装包/压缩包/音频/可执行/字体/数据库/设计
+    QButtonGroup    *m_tabGroup    = nullptr;                            // 类型 tab 互斥组
+    QWidget         *m_tabsWidget  = nullptr;                            // 类型 tab 容器（按行数自适应高度）
+    QHBoxLayout     *m_tabRow1     = nullptr;                            // tab 第一行
+    QHBoxLayout     *m_tabRow2     = nullptr;                            // tab 第二行（放不下时换行）
     QColor           m_accentColor = QColor::fromRgb(0x41, 0xB0, 0xDD);         // 主题强调色（默认=主题蓝）
 
     ClipStore       *m_store      = nullptr;  // 剪贴板历史（可为未就绪）

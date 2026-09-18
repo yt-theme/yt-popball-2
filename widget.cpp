@@ -199,10 +199,11 @@ Widget::Widget(QWidget *parent)
     this->popDock->setViewStyle(this->config->getDockViewStyle());
     // 面板内"激活/选中"样式跟随主题强调色（main_border_color）
     this->popDock->setAccentColor(QColor(this->config->getMainBorderColor()));
+    // 面板右上角"操作"菜单（设置 / 系统监视器 / 退出）→ 原悬浮球右键菜单的动作
+    connect(this->popDock, &PopDock::settingsRequested, this, &Widget::onMenuSettings);
+    connect(this->popDock, &PopDock::systemMonitorRequested, this, &Widget::onMenuSystemMonitor);
+    connect(this->popDock, &PopDock::quitRequested, this, &Widget::onMenuQuit);
     this->setAcceptDrops(true);   // 允许把文件拖到球上
-
-    // 右键菜单（设置 / 退出）——只构建一次，右键时直接弹出
-    this->buildContextMenu();
 }
 
 // 按配置尺寸重新摆放各 LCD
@@ -304,7 +305,6 @@ void Widget::applyLcdStyle()
 
 Widget::~Widget()
 {
-    delete this->contextMenu;   // 菜单里的 action 由菜单自己管理
     delete this->config;
     delete this->sysInfo;
     delete this->updateDataTimer;
@@ -865,14 +865,9 @@ void Widget::mousePressEvent(QMouseEvent *event)
         this->curWindowPos = event->pos();
         this->pressGlobalPos = event->globalPosition().toPoint();
     } else if (event->button() == Qt::RightButton) {
-        // 右键弹出菜单（设置 / 退出）
-        if (this->contextMenu != nullptr) {
-            // 取消已排队的收起：菜单弹出后鼠标会移到菜单上（球外），
-            // 若不取消，悬停轮询会把"鼠标不在球/面板上"误判成离开，300ms 后弹窗收起
-            // （旧 bug：弹窗收起时右键菜单也跟着消失，两个窗口互相干扰）。
-            this->cancelHidePopDock();
-            this->contextMenu->popup(event->globalPosition().toPoint());
-        }
+        // 悬浮球右键菜单已移除：操作项（设置 / 系统监视器 / 退出）
+        // 全部收进中转站面板右上角的"操作"按钮菜单（见 PopDock）。
+        // 右键现在不在这里做任何事，避免误触弹菜单。
     }
 }
 
@@ -980,13 +975,8 @@ void Widget::onHoverPoll()
     if (this->popDock == nullptr)
         return;
 
-    // 悬浮球的右键菜单打开期间，悬停轮询不动作：
-    // 鼠标移到菜单上（球外）既不算"离开"（否则弹窗被收起、菜单跟着消失），
-    // 也不该触发弹窗弹出 —— 菜单与弹窗的显示/隐藏互不影响。
-    // 菜单关闭后，下一次 tick（≤100ms）自动恢复正常评估。
-    if (this->contextMenu != nullptr && this->contextMenu->isVisible())
-        return;
-
+    // 悬浮球右键菜单已移除；这里的悬停轮询不再需要为菜单让路，
+    // 直接按光标与球/面板的位置关系评估即可。
     const QPoint gp = QCursor::pos();
     const bool overBall = this->geometry().contains(gp);
     // 收起动画进行中窗口正在移动，命中判定要按"落点矩形"算，
@@ -1155,23 +1145,6 @@ void Widget::dropEvent(QDropEvent *event)
     } else {
         event->ignore();
     }
-}
-
-// ---------------------------------------------------------------- 右键菜单
-void Widget::buildContextMenu()
-{
-    if (this->contextMenu != nullptr)
-        return;
-
-    this->contextMenu = new QMenu(this);
-    this->actSettings = this->contextMenu->addAction(tr("设置"));
-    this->actSystemMonitor = this->contextMenu->addAction(tr("系统监视器"));
-    this->contextMenu->addSeparator();
-    this->actQuit     = this->contextMenu->addAction(tr("退出"));
-
-    connect(this->actSettings,      &QAction::triggered, this, &Widget::onMenuSettings);
-    connect(this->actSystemMonitor, &QAction::triggered, this, &Widget::onMenuSystemMonitor);
-    connect(this->actQuit,          &QAction::triggered, this, &Widget::onMenuQuit);
 }
 
 void Widget::onMenuSettings()
@@ -1635,7 +1608,6 @@ void Widget::quitApplication()
     // 先隐藏是为了避免退出瞬间在桌面上残留半透明窗口或黑框。
     if (this->updateDataTimer != nullptr) this->updateDataTimer->stop();
     if (this->updateUITimer   != nullptr) this->updateUITimer->stop();
-    if (this->contextMenu     != nullptr) this->contextMenu->hide();
     this->hide();
     QCoreApplication::quit();
 }

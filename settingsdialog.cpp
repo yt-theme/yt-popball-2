@@ -163,11 +163,12 @@ SettingsDialog::SettingsDialog(Config *cfg, SysInfo *sysInfo, QWidget *parent)
 {
     setWindowTitle(tr("设置"));
     setModal(false);
-    setMinimumWidth(520);
+    setMinimumWidth(440);
     setStyleSheet(QString::fromLatin1(kDialogStyle));
 
     buildUi();
     loadFromConfig();
+    resize(460, 720);   // 默认尺寸：窄窗布局，避免内容被长提示撑宽
 }
 
 // 防止窗口跑出屏幕：父窗口是屏幕边缘上的悬浮球，
@@ -219,6 +220,7 @@ void SettingsDialog::buildUi()
     auto *scroll = new QScrollArea(this);
     scroll->setWidgetResizable(true);
     scroll->setFrameShape(QFrame::NoFrame);
+    scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);   // 内容自适应换行，不需要横向滚动
     auto *content = new QWidget(scroll);
     content->setObjectName(QStringLiteral("content"));
 
@@ -307,7 +309,7 @@ QWidget *SettingsDialog::buildColorSection()
         auto *lab = new QLabel(row.label, cell);
         lab->setMinimumWidth(58);
         h->addWidget(lab);
-        h->addWidget(row.btn, 1);
+        h->addWidget(row.btn);   // 不拉伸：色块按钮保持紧凑宽度，颜色区不撑满整窗
         grid->addWidget(cell, i / 2, i % 2);
 
         rows.append(row);
@@ -318,6 +320,7 @@ QWidget *SettingsDialog::buildColorSection()
         tr("* 交换分区 / CPU 占用 / 阴影 这三项带透明度，取色器只改颜色、保留原透明度。"
            "「悬浮球文字」= 一次设置温度 / 频率 / 网速 / 磁盘IO 全部文字颜色"), box);
     hint->setProperty("role", "hint");
+    hint->setWordWrap(true);
     v->addWidget(hint);
 
     return box;
@@ -447,6 +450,7 @@ QWidget *SettingsDialog::buildWindowSection()
 
     auto *slHint = new QLabel(tr("* 阴影长度设为 0 表示不显示阴影"), box);
     slHint->setProperty("role", "hint");
+    slHint->setWordWrap(true);
     v->addWidget(slHint);
 
     return box;
@@ -525,10 +529,12 @@ QWidget *SettingsDialog::buildAsideSection()
 
     auto *hint = new QLabel(tr("* 改完立即生效；圆角超过竖条宽度的一半时按一半显示"), box);
     hint->setProperty("role", "hint");
+    hint->setWordWrap(true);
     v->addWidget(hint);
 
     auto *hint2 = new QLabel(tr("* 拖动竖条离开边缘（或单击竖条）即可变回小球"), box);
     hint2->setProperty("role", "hint");
+    hint2->setWordWrap(true);
     v->addWidget(hint2);
 
     return box;
@@ -565,6 +571,7 @@ QWidget *SettingsDialog::buildChartSection()
 
     auto *hint = new QLabel(tr("* 图表行数 = 曲线的采样点数，越大曲线越长越平滑"), box);
     hint->setProperty("role", "hint");
+    hint->setWordWrap(true);
     v->addWidget(hint);
 
     return box;

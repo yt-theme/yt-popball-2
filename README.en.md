@@ -25,7 +25,7 @@ Snapdragon / MediaTek Dimensity.
 
 - Framework: Qt 6 (C++17); Qt Creator shipped with Qt6 works as the IDE
 - Layers:
-  - `widget` — the ball itself: drawing, dragging, edge sidebar, context menu, hover polling
+  - `widget` — the ball itself: drawing, dragging, edge sidebar, hover polling
   - `popdock` — the transfer-station panel: four view modes, type filter, hover preview
     (image / text / video), small text editor, clipboard watcher, slide in/out animations
   - `clipstore` — clipboard history (SQLite via QtSql/QSQLITE; gracefully degrades to
@@ -127,7 +127,7 @@ see **[DEPENDENCIES.md](DEPENDENCIES.md)**.
    pale track = full scale). The bar only moves vertically along the edge; hovering shows each
    metric's percentage. Drag the bar inward, or click it, to return to the ball.
    **Width / height / corner radius are all adjustable** (default 30×100, radius 8):
-   right-click → "Settings → Sidebar", with one-click presets "Narrow 20 / Standard 30 /
+   panel top-right "⚙ Settings → Sidebar", with one-click presets "Narrow 20 / Standard 30 /
    Wide 36" or manual width/height/radius (applied immediately).
 3. **Transfer station**: hover over the ball for ~300ms (or drop files onto it) and the panel
    slides out:
@@ -136,10 +136,20 @@ see **[DEPENDENCIES.md](DEPENDENCIES.md)**.
      current clipboard.
    - **Four views**: switch between Icon grid / List / Detail / Preview on the bottom-left;
      "Detail" shows type, size, path and a text snippet per item.
-   - **Type filter**: the "All / Docs / Images" tabs below the title only change what you see;
-     data and order are untouched.
+   - **Type filter**: tabs below the title appear dynamically based on the station's
+     actual content — "All" is always there, plus Docs / Images / Videos / Installers /
+     Archives / Audio / Executables / Fonts / Databases / Design (no tab for an empty
+     category; it appears as soon as the first such file is dropped in, and wraps to a
+     second row when the first is full). Installers cover common formats across
+     Android / iOS / Windows / macOS / Linux (apk / ipa / exe / dmg / deb…);
+     Executables include extension-less executable files; Fonts, Databases and
+     Design / CAD / 3D each have their own extension whitelists. Categories are
+     mutually exclusive;
+     filtering only changes what you see, data and order are untouched, and the counter
+     shows "visible / total".
    - **Preview**: hovering an item pops a preview (image at full size / text content / file icon /
-     muted video playback) with a detail bar at the bottom showing
+     muted video playback); the caption line shows the full file name (wraps when long), with a
+     detail bar at the bottom showing
      "type · dimensions · size · full path"; moving away closes it.
    - **Open & edit**: double-click an item — text opens in the small editor (auto-saves on
      close), everything else opens with the system default app; right-click an item for
@@ -151,13 +161,21 @@ see **[DEPENDENCIES.md](DEPENDENCIES.md)**.
    - **Theme sync**: the panel's selected highlight, context-menu tint, and self-drawn icons
      (text-item "T" icon, the "New note" / "Save note" buttons) follow the accent color
      (`main_border_color`) and refresh instantly on theme change.
-4. **Context menu** (right-click the ball or sidebar):
-   - "Settings" opens the flat settings window (6 preset palettes, 11 color entries, size/border/
+4. **Dock operation buttons** (the row of buttons at the panel's top-right; the ball's
+   old right-click menu was folded into the panel, so right-clicking the ball no longer
+   opens a menu):
+   - The "⚙ Settings" button directly opens the flat settings window (6 preset palettes,
+     11 color entries, size/border/
      shadow length (0 = none)/opacity/refresh rates, per-metric toggles, disk picker, sidebar
      presets, shape mask…; Apply / Restore-defaults (with confirmation); changes take effect on save);
-   - "System Monitor" opens the system monitor (Activity Monitor on macOS, desktop-detected on
+   - The "📈 System Monitor" button directly opens the system monitor (Activity Monitor on macOS,
+     desktop-detected on
      Linux; a custom command can be configured under Settings → System Monitor; single instance);
-   - "Quit" hides the window and exits safely.
+   The three button icons use the user-provided SVG shapes (settings gear / performance-stat
+   polyline / power switch); at render time the original gray `#515151` is replaced with the
+   theme accent color (`main_border_color`), refreshing immediately on theme switch
+   (requires the Qt SVG module, auto-enabled via `qtHaveModule(svg)`).
+   - The "⏻ power" button hides the window and exits safely.
 5. **Config**: `~/.popball2_config.ini` (override the path with the `POPBALL2_CONFIG`
    environment variable). Colors, size, refresh intervals, shown components, sidebar settings
    and the transfer-station default view all live here — see the table below.
