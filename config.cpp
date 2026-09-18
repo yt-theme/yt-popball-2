@@ -110,6 +110,11 @@ void Config::readConfig()
 
     // [ui] 数据中转站面板的展示布局（0=图标 1=列表 2=详细）
     this->dock_view_style       = this->settingsObj->value("/ui/dock_view_style", 0).toInt();
+    // 弹窗：尺寸 / 位置 / 密度（后加的键，老配置没有必须给默认值）
+    this->dock_width            = this->settingsObj->value("/ui/dock_width", 330).toInt();
+    this->dock_height           = this->settingsObj->value("/ui/dock_height", 452).toInt();
+    this->dock_position         = this->settingsObj->value("/ui/dock_position", 0).toInt();
+    this->dock_density          = this->settingsObj->value("/ui/dock_density", 1).toInt();
 
     // [window]
     this->shape_mask            = this->settingsObj->value("/window/shape_mask", 0).toInt();
@@ -334,6 +339,30 @@ void Config::setDockViewStyle(qint32 val)
     this->dock_view_style = val;
 }
 
+void Config::setDockWidth(qint32 val)
+{
+    this->settingsObj->setValue("/ui/dock_width", val);
+    this->dock_width = val;
+}
+
+void Config::setDockHeight(qint32 val)
+{
+    this->settingsObj->setValue("/ui/dock_height", val);
+    this->dock_height = val;
+}
+
+void Config::setDockPosition(qint32 val)
+{
+    this->settingsObj->setValue("/ui/dock_position", val);
+    this->dock_position = val;
+}
+
+void Config::setDockDensity(qint32 val)
+{
+    this->settingsObj->setValue("/ui/dock_density", val);
+    this->dock_density = val;
+}
+
 // [window]
 void Config::setShapeMask(qint32 val)
 {
@@ -510,6 +539,26 @@ QString Config::getDiskIoName()
 qint32 Config::getDockViewStyle()
 {
     return this->dock_view_style;
+}
+
+qint32 Config::getDockWidth()
+{
+    return this->dock_width;
+}
+
+qint32 Config::getDockHeight()
+{
+    return this->dock_height;
+}
+
+qint32 Config::getDockPosition()
+{
+    return this->dock_position;
+}
+
+qint32 Config::getDockDensity()
+{
+    return this->dock_density;
 }
 
 // [window]

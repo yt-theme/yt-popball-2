@@ -61,6 +61,13 @@ public:
     void setViewStyle(ViewStyle style);
     ViewStyle viewStyle() const { return m_viewStyle; }
 
+    // 内容密度：0=紧凑 1=标准（默认） 2=宽松。
+    // 影响图标/预览网格的列数与缩略图尺寸、列表/详细的行高与图标大小。
+    void setDensity(int density);
+    int  density() const { return m_density; }
+    // 图标网格按密度取的列数（紧凑 5 / 标准 4 / 宽松 3）
+    int  densityIconColumns() const;
+
     // 类型筛选（标题区下面那条 tab）：
     //   AllItems   全部
     //   DocItems    文档 = 文本条目 + 文档类文件（isDocFile 的白名单）
@@ -205,6 +212,7 @@ private:
 
     ViewStyle       m_viewStyle  = IconView;
     TypeFilter      m_filter     = AllItems;  // 当前类型筛选
+    int             m_density    = 1;        // 0=紧凑 1=标准 2=宽松
     QColor          m_accentColor = QColor::fromRgb(0x41, 0xB0, 0xDD); // 主题强调色（默认=主题蓝）
     TsItemDelegate *m_delegate   = nullptr;   // 图标/列表/详细/预览 四种绘制模式
     QTimer         *m_hoverTimer = nullptr;
@@ -332,6 +340,13 @@ public:
     void setAccentColor(const QColor &color);
     QColor accentColor() const { return m_accentColor; }
 
+    // 应用中转站弹窗设置：尺寸（宽/高，屏幕放不下时仍会由 Widget 收缩）与内容密度。
+    // 由 Widget 在构造与设置保存后调用；位置由 Widget 计算，不在这里。
+    void applyDockSettings(int width, int height, int density);
+    // 当前首选尺寸（默认 = 静态常量；applyDockSettings 后跟随配置）
+    int preferredWidth()  const { return m_prefWidth; }
+    int preferredHeight() const { return m_prefHeight; }
+
     // 文本小编辑器窗口（懒创建；空闲时为 nullptr）。返回 QWidget* 便于无头自检定位子控件。
     QWidget *textEditor() const;
 
@@ -413,6 +428,8 @@ private:
     QHBoxLayout     *m_tabRow1     = nullptr;                            // tab 第一行
     QHBoxLayout     *m_tabRow2     = nullptr;                            // tab 第二行（放不下时换行）
     QColor           m_accentColor = QColor::fromRgb(0x41, 0xB0, 0xDD);         // 主题强调色（默认=主题蓝）
+    int              m_prefWidth  = kPreferredWidth;    // 弹窗首选尺寸（跟随配置）
+    int              m_prefHeight = kPreferredHeight;
 
     ClipStore       *m_store      = nullptr;  // 剪贴板历史（可为未就绪）
     bool             m_historyLoaded = false; // 历史是否已回填

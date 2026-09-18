@@ -191,6 +191,9 @@ linuxdeploy / appimagetool / runtime，缺失时才联网下载。注意 AppImag
 | | `corner_radius` | 竖条圆角半径（默认 8） |
 | `[position]` | `x` `y` | 小球位置 |
 | `[ui]` | `dock_view_style` | 数据中转站默认布局：0=图标网格（默认）1=列表 2=详细 |
+| | `dock_width` / `dock_height` | 数据中转站弹窗尺寸（px，默认 330×452；屏幕放不下自动收缩） |
+| | `dock_position` | 弹窗优先展示位置：0=自动（空间大的一侧，默认）1=悬浮球右侧 2=悬浮球左侧 3=屏幕居中 |
+| | `dock_density` | 弹窗内容密度：0=紧凑 1=标准（默认）2=宽松 |
 | `[timer]` | `update_data_interval` / `update_ui_interval` | 数据采集 / 界面刷新间隔（ms，默认 450） |
 | `[window]` | `shape_mask` | 形状蒙版：0=自动（X11 下检测混成）1=强制开启 2=关闭 |
 | `[system_monitor]` | `cmd` | 面板「⚙ → 系统监视器」自定义命令，留空自动检测 |

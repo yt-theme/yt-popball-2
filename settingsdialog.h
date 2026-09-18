@@ -84,6 +84,7 @@ private:
     QWidget *buildChartSection();
     QWidget *buildAdvancedSection();
     QWidget *buildMonitorSection();
+    QWidget *buildDockSection();
 
     void loadDefaults();
     void applyPreset(int index);
@@ -131,6 +132,12 @@ private:
     QSpinBox  *spinAsideRadius  = nullptr;
 
     QLineEdit *editMonitorCmd  = nullptr;   // 右键菜单「系统监视器」自定义命令
+
+    // 数据中转站弹窗
+    QSpinBox  *spinDockWidth    = nullptr;  // 弹窗宽度
+    QSpinBox  *spinDockHeight   = nullptr;  // 弹窗高度
+    QComboBox *comboDockPosition = nullptr; // 优先展示位置：0自动 1右侧 2左侧 3屏幕居中
+    QComboBox *comboDockDensity  = nullptr; // 内容密度：0紧凑 1标准 2宽松
 
     QPushButton *btnRestore = nullptr;
     QPushButton *btnCancel  = nullptr;

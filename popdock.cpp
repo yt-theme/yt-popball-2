@@ -208,6 +208,9 @@ public:
     void setMode(Mode m) { m_mode = m; }
     Mode mode() const { return m_mode; }
 
+    // 详细模式行高（内容密度）：紧凑 40 / 标准 48 / 宽松 56
+    void setDetailRowHeight(int h) { m_detailRowH = h; }
+
     // 主题强调色：详细/预览模式自绘的"选中卡片"底色跟随主题
     void setAccentColor(const QColor &c) { m_accentColor = c; }
 
@@ -227,12 +230,15 @@ public:
         case PreviewCells:
             return m_iconCellSet ? m_iconCell : QSize(148, 148);
         case DetailRows:
-            return QSize(180, 48);
+            return QSize(180, m_detailRowH);
         case ListRows:
             break;
         }
         return QStyledItemDelegate::sizeHint(opt, idx);
     }
+
+private:
+    int m_detailRowH = 48;   // 详细模式行高（标准）
 
     void paint(QPainter *p, const QStyleOptionViewItem &opt, const QModelIndex &idx) const override
     {
@@ -688,7 +694,7 @@ void TransferStation::updateIconGrid()
         return;
 
     const bool preview = (m_viewStyle == PreviewView);
-    const int  cols    = preview ? int(kPreviewColumns) : int(kIconColumns);
+    const int  cols    = preview ? int(kPreviewColumns) : densityIconColumns();
 
     int w = this->width();
     if (w <= 0 && parentWidget() != nullptr)
@@ -725,6 +731,31 @@ void TransferStation::resizeEvent(QResizeEvent *e)
     updateIconGrid();                            // 面板变宽/变窄（小屏收缩）时重算列宽
 }
 
+// 内容密度：0=紧凑 1=标准 2=宽松。
+// 图标/预览网格改列数（列宽/缩略图随 updateIconGrid 重算）；
+// 列表/详细改行高与图标大小；预览布局本身已是大图，密度主要影响间距。
+void TransferStation::setDensity(int density)
+{
+    m_density = qBound(0, density, 2);
+    if (m_viewStyle == IconView || m_viewStyle == PreviewView) {
+        updateIconGrid();                        // 列数变了，重排网格
+    } else {
+        const int  iconPx  = (m_density >= 2) ? 28 : (m_density <= 0 ? 20 : 24);
+        const int  detailH = (m_density >= 2) ? 56 : (m_density <= 0 ? 40 : 48);
+        const int  gap     = (m_density >= 2) ? 4  : (m_density <= 0 ? 1  : 2);
+        setIconSize(QSize(iconPx, iconPx));
+        setSpacing(gap);
+        if (m_delegate != nullptr)
+            m_delegate->setDetailRowHeight(detailH);
+        doItemsLayout();
+    }
+}
+
+int TransferStation::densityIconColumns() const
+{
+    return m_density <= 0 ? 5 : (m_density >= 2 ? 3 : kIconColumns);
+}
+
 // 切换展示布局：图标（默认）/ 列表 / 详细 / 预览
 void TransferStation::setViewStyle(ViewStyle style)
 {
@@ -754,7 +785,7 @@ void TransferStation::setViewStyle(ViewStyle style)
         break;
     }
     case ListView:
-    case DetailView:
+    case DetailView: {
         setViewMode(QListView::ListMode);
         setFlow(QListView::TopToBottom);
         // 关键：ListMode 下 wrapping=true 会把条目"折"成多列，每列宽度被压到
@@ -764,9 +795,15 @@ void TransferStation::setViewStyle(ViewStyle style)
         setWordWrap(false);
         setTextElideMode(Qt::ElideMiddle);
         setUniformItemSizes(true);
-        setIconSize(style == ListView ? QSize(24, 24) : QSize(32, 32));
-        setSpacing(2);
+        // 行高/图标大小/间距跟随内容密度
+        const int iconPx = (m_density >= 2) ? 28 : (m_density <= 0 ? 20 : 24);
+        const int gap    = (m_density >= 2) ? 4  : (m_density <= 0 ? 1  : 2);
+        setIconSize(QSize(iconPx, iconPx));
+        setSpacing(gap);
+        if (m_delegate != nullptr)
+            m_delegate->setDetailRowHeight(m_density >= 2 ? 56 : (m_density <= 0 ? 40 : 48));
         break;
+    }
     }
     doItemsLayout();                       // 立刻按新布局重排，避免残留旧网格几何
     emit previewHideRequested();
@@ -2404,6 +2441,15 @@ void PopDock::ensureAnimations()
         QWidget::hide();
         setWindowOpacity(1.0);      // 复原，供下次淡入
     });
+}
+
+void PopDock::applyDockSettings(int width, int height, int density)
+{
+    m_prefWidth  = qMax(240, width);
+    m_prefHeight = qMax(260, height);
+    setFixedSize(m_prefWidth, m_prefHeight);
+    if (m_station != nullptr)
+        m_station->setDensity(density);
 }
 
 void PopDock::showAnimated(const QPoint &targetPos, const QRect &ballRect)

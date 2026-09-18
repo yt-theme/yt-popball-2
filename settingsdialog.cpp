@@ -238,6 +238,7 @@ void SettingsDialog::buildUi()
     root->addWidget(buildWindowSection());
     root->addWidget(buildAsideSection());
     root->addWidget(buildChartSection());
+    root->addWidget(buildDockSection());
     root->addWidget(buildAdvancedSection());
     root->addWidget(buildMonitorSection());
     root->addStretch(1);
@@ -620,6 +621,68 @@ QWidget *SettingsDialog::buildAdvancedSection()
     return box;
 }
 
+// 数据中转站弹窗：尺寸 / 优先展示位置 / 内容密度
+QWidget *SettingsDialog::buildDockSection()
+{
+    auto *box = new QWidget(this);
+    auto *v = new QVBoxLayout(box);
+    v->setContentsMargins(0, 0, 0, 0);
+    v->setSpacing(8);
+
+    auto *g = new QLabel(tr("中转站弹窗"), box);
+    g->setProperty("section", "group");
+    v->addWidget(g);
+
+    // 尺寸：宽 × 高
+    auto *sz = new QHBoxLayout();
+    sz->setSpacing(10);
+    sz->addWidget(new QLabel(tr("弹窗宽×高"), box));
+    spinDockWidth  = new QSpinBox(box); spinDockWidth->setObjectName("dockWidth");
+    spinDockWidth->setRange(240, 720);  spinDockWidth->setSingleStep(10);
+    spinDockWidth->setSuffix(tr(" px"));
+    spinDockWidth->setToolTip(tr("数据中转站弹窗的宽度。屏幕放不下时会自动收缩"));
+    spinDockHeight = new QSpinBox(box); spinDockHeight->setObjectName("dockHeight");
+    spinDockHeight->setRange(260, 900); spinDockHeight->setSingleStep(10);
+    spinDockHeight->setSuffix(tr(" px"));
+    spinDockHeight->setToolTip(tr("数据中转站弹窗的高度。屏幕放不下时会自动收缩"));
+    sz->addWidget(spinDockWidth, 1);
+    sz->addWidget(spinDockHeight, 1);
+    v->addLayout(sz);
+
+    // 优先展示位置
+    auto *pos = new QHBoxLayout();
+    pos->setSpacing(10);
+    pos->addWidget(new QLabel(tr("优先展示位置"), box));
+    comboDockPosition = new QComboBox(box); comboDockPosition->setObjectName("dockPosition");
+    comboDockPosition->addItem(tr("自动（空间大的一侧）"), 0);
+    comboDockPosition->addItem(tr("悬浮球右侧"), 1);
+    comboDockPosition->addItem(tr("悬浮球左侧"), 2);
+    comboDockPosition->addItem(tr("屏幕居中"), 3);
+    comboDockPosition->setToolTip(tr("弹窗打开时优先出现在哪里；空间不足时仍会自动夹紧在屏幕内"));
+    pos->addWidget(comboDockPosition, 1);
+    v->addLayout(pos);
+
+    // 内容密度
+    auto *den = new QHBoxLayout();
+    den->setSpacing(10);
+    den->addWidget(new QLabel(tr("内容密度"), box));
+    comboDockDensity = new QComboBox(box); comboDockDensity->setObjectName("dockDensity");
+    comboDockDensity->addItem(tr("紧凑"), 0);
+    comboDockDensity->addItem(tr("标准"), 1);
+    comboDockDensity->addItem(tr("宽松"), 2);
+    comboDockDensity->setToolTip(tr("图标网格的列数/缩略图大小、列表与详细视图的行高"));
+    den->addWidget(comboDockDensity, 1);
+    v->addLayout(den);
+
+    auto *hint = new QLabel(tr("* 尺寸与密度保存后立即生效；位置在下一次打开弹窗时按新规则摆放"), box);
+    hint->setProperty("role", "hint");
+    hint->setWordWrap(true);
+    v->addWidget(hint);
+
+    return box;
+}
+
+// 数据中转站弹窗的入口说明
 QWidget *SettingsDialog::buildMonitorSection()
 {
     auto *box = new QWidget(this);
@@ -808,6 +871,14 @@ void SettingsDialog::loadFromConfig()
     spinAsideRadius->setValue(qBound(0, cfg->getAsideCornerRadius(), spinAsideRadius->maximum()));
 
     editMonitorCmd->setText(cfg->getSystemMonitorCmd());
+
+    // 数据中转站弹窗
+    spinDockWidth->setValue(qBound(spinDockWidth->minimum(),  cfg->getDockWidth(),  spinDockWidth->maximum()));
+    spinDockHeight->setValue(qBound(spinDockHeight->minimum(), cfg->getDockHeight(), spinDockHeight->maximum()));
+    const int dpos = cfg->getDockPosition();
+    comboDockPosition->setCurrentIndex((dpos >= 0 && dpos <= 3) ? dpos : 0);
+    const int dden = cfg->getDockDensity();
+    comboDockDensity->setCurrentIndex((dden >= 0 && dden <= 2) ? dden : 1);
 }
 
 // 从内置默认值把【所有】设置项填回界面。
@@ -873,6 +944,12 @@ void SettingsDialog::loadDefaults()
 
     // 系统监视器
     editMonitorCmd->clear();
+
+    // 数据中转站弹窗（默认：330×452 / 自动位置 / 标准密度）
+    spinDockWidth->setValue(330);
+    spinDockHeight->setValue(452);
+    comboDockPosition->setCurrentIndex(0);
+    comboDockDensity->setCurrentIndex(1);
 }
 
 // ---------------------------------------------------------------- 色块样式
@@ -982,6 +1059,12 @@ void SettingsDialog::applyChanges()
                "该项只支持单条“程序 + 参数”，不支持 shell 运算符，\n"
                "为避免执行危险指令，本次未保存该项，其余设置已生效。"));
     }
+
+    // 数据中转站弹窗
+    cfg->setDockWidth(spinDockWidth->value());
+    cfg->setDockHeight(spinDockHeight->value());
+    cfg->setDockPosition(comboDockPosition->currentData().toInt());
+    cfg->setDockDensity(comboDockDensity->currentData().toInt());
 
     emit settingsApplied();
 }

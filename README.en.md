@@ -209,6 +209,9 @@ see **[DEPENDENCIES.md](DEPENDENCIES.md)**.
 | | `corner_radius` | sidebar corner radius (default 8) |
 | `[position]` | `x` `y` | ball position |
 | `[ui]` | `dock_view_style` | transfer-station default view: 0=icon grid (default) 1=list 2=detail |
+| | `dock_width` / `dock_height` | transfer-station panel size in px (default 330×452; shrinks automatically when the screen is too small) |
+| | `dock_position` | preferred panel position: 0=auto (side with more space, default) 1=right of ball 2=left of ball 3=screen center |
+| | `dock_density` | panel content density: 0=compact 1=standard (default) 2=spacious |
 | `[timer]` | `update_data_interval` / `update_ui_interval` | data / UI refresh interval in ms (default 450) |
 | `[window]` | `shape_mask` | shape mask: 0=auto (detect compositing on X11) 1=force on 2=off |
 | `[system_monitor]` | `cmd` | custom system-monitor command; empty = auto-detect |

@@ -197,6 +197,10 @@ Widget::Widget(QWidget *parent)
         this->config->setDockViewStyle(style);
     });
     this->popDock->setViewStyle(this->config->getDockViewStyle());
+    // 弹窗设置（尺寸 / 内容密度）按配置回填
+    this->popDock->applyDockSettings(this->config->getDockWidth(),
+                                     this->config->getDockHeight(),
+                                     this->config->getDockDensity());
     // 面板内"激活/选中"样式跟随主题强调色（main_border_color）
     this->popDock->setAccentColor(QColor(this->config->getMainBorderColor()));
     // 面板右上角"操作"菜单（设置 / 系统监视器 / 退出）→ 原悬浮球右键菜单的动作
@@ -1071,28 +1075,49 @@ QPoint Widget::popDockTargetPos()
     const int gap    = 10;      // 与悬浮球之间的间隙（不压住球）
 
     // ---- 尺寸自适应 ----
-    int pw = qMin(PopDock::kPreferredWidth,  qMax(240, sr.width()  - margin * 2));
-    int ph = qMin(PopDock::kPreferredHeight, qMax(260, sr.height() - margin * 2));
+    // 首选尺寸来自配置（默认 330×452）；屏幕装不下时收缩
+    const int prefW = this->popDock->preferredWidth();
+    const int prefH = this->popDock->preferredHeight();
+    int pw = qMin(prefW, qMax(240, sr.width()  - margin * 2));
+    int ph = qMin(prefH, qMax(260, sr.height() - margin * 2));
     if (this->popDock != nullptr)
         this->popDock->setFixedSize(pw, ph);
 
-    // ---- 横向：选空间更大的一侧 ----
-    const int spaceL = ball.left() - sr.left();          // 球左侧可用宽度
-    const int spaceR = sr.right() - ball.right();        // 球右侧可用宽度
-    const int need   = pw + gap;
-    bool toRight = (spaceR >= spaceL);                   // 默认开在空间更大的一侧
-    if (toRight && spaceR < need)
-        toRight = false;                                 // 右侧不够 → 翻到左侧
-    else if (!toRight && spaceL < need)
-        toRight = (spaceR >= spaceL);                    // 左侧也不够 → 谁宽用谁
+    // ---- 展示位置：0=自动 1=悬浮球右侧 2=悬浮球左侧 3=屏幕居中 ----
+    const int posMode = (this->config != nullptr) ? this->config->getDockPosition() : 0;
+    int x, y;
+    const int gap10 = gap;
+    if (posMode == 1) {                       // 悬浮球右侧
+        x = ball.right() + gap10;
+    } else if (posMode == 2) {                // 悬浮球左侧
+        x = ball.left() - gap10 - pw;
+    } else if (posMode == 3) {                // 屏幕居中
+        x = sr.center().x() - pw / 2;
+        y = sr.center().y() - ph / 2;
+        const int minY3 = sr.top() + margin;
+        const int maxY3 = qMax(minY3, sr.bottom() - ph - margin);
+        y = qBound(minY3, y, maxY3);
+        return QPoint(qBound(sr.left() + margin, x, qMax(sr.left() + margin, sr.right() - pw - margin)), y);
+    } else {                                  // 0 = 自动：横向选空间更大的一侧
+        const int spaceL = ball.left() - sr.left();          // 球左侧可用宽度
+        const int spaceR = sr.right() - ball.right();        // 球右侧可用宽度
+        const int need   = pw + gap10;
+        bool toRight = (spaceR >= spaceL);                   // 默认开在空间更大的一侧
+        if (toRight && spaceR < need)
+            toRight = false;                                 // 右侧不够 → 翻到左侧
+        else if (!toRight && spaceL < need)
+            toRight = (spaceR >= spaceL);                    // 左侧也不够 → 谁宽用谁
 
-    int x = toRight ? (ball.right() + gap) : (ball.left() - gap - pw);
+        x = toRight ? (ball.right() + gap10) : (ball.left() - gap10 - pw);
+    }
+
+    // ---- 夹紧在屏内 ----
     const int minX = sr.left() + margin;
     const int maxX = qMax(minX, sr.right() - pw - margin);
     x = qBound(minX, x, maxX);
 
     // ---- 纵向：与球中心对齐，再夹紧在屏内 ----
-    int y = ball.center().y() - ph / 2;
+    y = ball.center().y() - ph / 2;
     const int minY = sr.top() + margin;
     const int maxY = qMax(minY, sr.bottom() - ph - margin);
     y = qBound(minY, y, maxY);
@@ -1599,6 +1624,14 @@ void Widget::onSettingsApplied()
     this->setUiFrame();       // 不透明度/阴影/定时器/形状蒙版在这里重套
     // 主题色可能改了 → 数据中转站里的激活/选中样式跟随刷新
     this->popDock->setAccentColor(QColor(this->config->getMainBorderColor()));
+    // 弹窗尺寸 / 内容密度可能改了 → 立即应用；若弹窗正开着就按新尺寸/位置重摆
+    this->popDock->applyDockSettings(this->config->getDockWidth(),
+                                     this->config->getDockHeight(),
+                                     this->config->getDockDensity());
+    if (this->popDock->isVisible()) {
+        const QPoint target = this->popDockTargetPos();   // 内部已按新尺寸 setFixedSize
+        this->popDock->move(target);                      // 直接落位，不重播滑入动画
+    }
     this->update();
 }
 
