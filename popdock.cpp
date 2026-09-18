@@ -2550,7 +2550,7 @@ PopDock::PopDock(QWidget *parent)
         m_countLabel->setObjectName(QStringLiteral("popDockCount"));
         {
             QFont f = m_countLabel->font();
-            f.setPixelSize(14);      // 条目数跟随放大：11px → 14px
+            f.setPixelSize(12);      // 条目数：比标题（14px）小一点，不加粗
             m_countLabel->setFont(f);
         }
         m_countLabel->setStyleSheet(QStringLiteral("background:transparent;color:#8b9199;"));
