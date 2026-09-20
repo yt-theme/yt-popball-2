@@ -18,6 +18,8 @@ struct ClipRecord
     QByteArray png;             // kind=Image：PNG 原始字节
     qint64     bytes  = 0;      // 内容大小（文本字节数 / 文件大小 / 图片字节数）
     qint64     usedAt = 0;      // 最近一次使用时间（ms since epoch），列表按它倒序
+    int        source = 0;      // 来源：0=剪贴板 1=中转站（拖入文件 / 新增记事）。
+                                // 旧库没有此列，升级时统一补 DEFAULT 0（视为剪贴板）。
 };
 
 // 剪贴板历史（SQLite 持久化）。
@@ -52,9 +54,10 @@ public:
 
     // 写入（同 hash 只刷新 used_at）。hash 为空表示不去重。
     // 返回该行的 id（>0）；失败返回 -1。调用方把 id 记在条目上，删除时才能同步删库。
+    // source：0=剪贴板（默认） 1=中转站。
     qint64 put(int kind, const QString &hash, const QString &title,
                const QString &text, const QString &path,
-               const QByteArray &png, qint64 bytes);
+               const QByteArray &png, qint64 bytes, int source = 0);
 
     // 最近 limit 条，按最近使用时间倒序（并列时按 id 倒序，保证次序确定）。
     // 不带 png 大字段，按需再取。

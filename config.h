@@ -63,11 +63,15 @@ private:
     // [ui] 界面偏好
     // 数据中转站面板的展示布局：0=图标网格（默认）1=列表 2=详细
     qint32  dock_view_style;
+    // 悬浮球形态（非贴边竖条时）：0=球形（默认） 1=圆角矩形 2=直角方形 3=长条形
+    qint32  ball_style;
     // 数据中转站弹窗：尺寸 / 优先展示位置 / 内容密度
     qint32  dock_width;      // 弹窗宽度（px，默认 330）
     qint32  dock_height;     // 弹窗高度（px，默认 452）
     qint32  dock_position;   // 0=自动（空间大的一侧） 1=悬浮球右侧 2=悬浮球左侧 3=屏幕居中
     qint32  dock_density;    // 0=紧凑 1=标准（默认） 2=宽松
+    qint32  dock_opacity;    // 弹窗背景不透明度（千分比 0~1000，默认 871 = 87.1%）
+    qint32  dock_remember_scroll; // 弹窗记住上次滚动位置：1=记住 0=不记住（默认，每次打开从顶部）
 
     // [window]
     // 形状蒙版：桌面没开混成(compositing)时，半透明窗口会露出黑色矩形底，
@@ -133,10 +137,13 @@ public:
 
     // [ui]
     void setDockViewStyle(qint32 val);
+    void setBallStyle(qint32 val);   // 悬浮球形态 0=球 1=圆角矩形 2=直角方形 3=长条形
     void setDockWidth(qint32 val);
     void setDockHeight(qint32 val);
     void setDockPosition(qint32 val);
     void setDockDensity(qint32 val);
+    void setDockOpacity(qint32 val);
+    void setRememberScroll(bool on);
 
     // [window]
     void setShapeMask(qint32 val);
@@ -187,10 +194,13 @@ public:
 
     // [ui]
     qint32 getDockViewStyle();
+    qint32 getBallStyle();
     qint32 getDockWidth();
     qint32 getDockHeight();
     qint32 getDockPosition();
     qint32 getDockDensity();
+    qint32 getDockOpacity();
+    bool getRememberScroll();
 
     // [window]
     qint32 getShapeMask();

@@ -5,6 +5,7 @@
 #include <QListWidget>
 #include <QToolButton>
 #include <QButtonGroup>
+#include <QCheckBox>
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QTimer>
@@ -25,9 +26,11 @@ class TransferStation;
 class TsItemDelegate;
 class QPropertyAnimation;
 class QParallelAnimationGroup;
+class QVariantAnimation;
 class QMenu;
 class QPlainTextEdit;
 class QCloseEvent;
+class QWheelEvent;
 #ifdef POPBALL2_HAVE_QT_MULTIMEDIA
 class QMediaPlayer;
 class QVideoSink;
@@ -49,11 +52,12 @@ public:
 
     explicit TransferStation(QWidget *parent = nullptr);
 
-    void addFileItem(const QString &path);
-    // 一批文件按**给定顺序**成组入列（复制/拖入 A,B,C 后，面板里也是 A,B,C）
-    void addFileItems(const QStringList &paths);
-    void addImageItem(const QImage &image, const QString &name = QString());
-    void addTextItem(const QString &text, const QString &label = QString());
+    void addFileItem(const QString &path, int source = 1);
+    // 一批文件按**给定顺序**成组入列（复制/拖入 A,B,C 后，面板里也是 A,B,C）。
+    // source：1=中转站（拖入，默认） 0=剪贴板。
+    void addFileItems(const QStringList &paths, int source = 1);
+    void addImageItem(const QImage &image, const QString &name = QString(), int source = 0);
+    void addTextItem(const QString &text, const QString &label = QString(), int source = 0);
     // 从剪贴板粘贴（图像或文本）到中转站
     void pasteClipboard();
 
@@ -88,6 +92,13 @@ public:
 
     void setTypeFilter(TypeFilter f);
     TypeFilter typeFilter() const { return m_filter; }
+    // 来源筛选：0=全部（默认） 1=仅剪贴板 2=仅中转站（拖入文件/新增记事）。
+    // 与类型筛选正交叠加：条目须同时通过"类型"与"来源"两个条件才可见。
+    void setSourceFilter(int f);
+    int  sourceFilter() const { return m_sourceFilter; }
+    // 某条目是否通过来源筛选（静态，便于自检直接验证判定规则）。
+    // 旧条目 / 旧库记录没有 source 键时按 0（剪贴板）处理。
+    static bool itemMatchesSource(const QVariantMap &data, int filter);
     // 当前筛选下可见的条目数
     int visibleCount() const;
     // 某条目是否属于该筛选（静态，便于自检直接验证判定规则）
@@ -118,6 +129,18 @@ public:
 
     // 按当前布局/面板宽度重算网格单元格
     void updateIconGrid();
+
+    // 网格位移动画：条目增删 / 切换筛选后，剩余可见格子从旧位置平滑滑到新位置（向前对齐）。
+    // oldPos 由调用方在数据变化前快照（snapshotVisibleRects），动画只影响绘制、不耽误交互。
+    void startGridShiftAnimation(const QHash<qint64, QRect> &oldPos);
+    // 快照当前所有可见条目（rank → 视口内位置），供位移动画在增删/筛选前记录旧位置。
+    QHash<qint64, QRect> snapshotVisibleRects() const;
+
+    // 滚动位置记忆：保存当前滚动值 / 恢复上次保存值 / 滚回顶部。
+    // 由 PopDock 在弹窗显隐时按配置调用（默认不记住 → 每次打开都从顶部开始）。
+    void saveScrollPosition();
+    void restoreScrollPosition();
+    void scrollToTop();
 
     // 视频封面帧（异步生成后缓存；没有就返回空）
     QPixmap videoThumbFor(const QString &dedupKey) const;
@@ -170,6 +193,11 @@ protected:
     void resizeEvent(QResizeEvent *event) override;
     void contextMenuEvent(QContextMenuEvent *event) override;
     bool eventFilter(QObject *watched, QEvent *event) override;
+    // 鼠标滚轮滚动列表：累积目标 + 每帧持续趋近的连续平滑滚动（Firefox 式，触控板像素滚动走原生）。
+    // 连续滚动只更新目标值、动画不停顿不跳格；接近目标后自动停止，不耽误交互。
+    void wheelEvent(QWheelEvent *event) override;
+    void scrollTick();          // 每帧把滚动条往目标值推进一步（指数趋近）
+    void abortScrollAnim();     // 外部直接定位滚动（恢复/回顶/筛选跳转）时放弃平滑动画
 
 private:
     // 插入一条条目。rank < 0 = 自动取"当前最新"（严格大于列表里所有条目 ⇒ 排到最前）；
@@ -184,9 +212,9 @@ private:
     // 被回拨、或同一毫秒内连着来好几条，新条目也一定排在最前。
     qint64 nextRank();
     void noteRank(qint64 rank);
-    void addTextItemEx(const QString &text, const QString &label, qint64 dbId, qint64 rank = -1);
-    void addImageItemEx(const QImage &image, const QString &name, qint64 dbId, qint64 rank = -1);
-    void addFileItemEx(const QString &path, qint64 dbId, qint64 rank = -1);
+    void addTextItemEx(const QString &text, const QString &label, qint64 dbId, qint64 rank = -1, int source = 0);
+    void addImageItemEx(const QImage &image, const QString &name, qint64 dbId, qint64 rank = -1, int source = 0);
+    void addFileItemEx(const QString &path, qint64 dbId, qint64 rank = -1, int source = 0);
     QString saveImageTemp(const QImage &img);
     static QPixmap textIcon(const QColor &accent);
     // 视频条目图标：封面帧（或胶片占位图）+ 居中播放按钮
@@ -212,7 +240,9 @@ private:
 
     ViewStyle       m_viewStyle  = IconView;
     TypeFilter      m_filter     = AllItems;  // 当前类型筛选
+    int             m_sourceFilter = 0;       // 来源筛选：0=全部 1=仅剪贴板 2=仅中转站
     int             m_density    = 1;        // 0=紧凑 1=标准 2=宽松
+    int             m_savedScroll = 0;       // 记住的滚动位置（弹窗关闭时保存，下次打开恢复）
     QColor          m_accentColor = QColor::fromRgb(0x41, 0xB0, 0xDD); // 主题强调色（默认=主题蓝）
     TsItemDelegate *m_delegate   = nullptr;   // 图标/列表/详细/预览 四种绘制模式
     QTimer         *m_hoverTimer = nullptr;
@@ -226,6 +256,9 @@ private:
     QSet<QString>           m_videoThumbPending;    // 正在提取中的（避免重复起进程）
     QSet<QString>           m_videoThumbFailed;     // 提取失败的（不再重试）
     qint64                  m_lastRank = 0;         // 已用过的最大排序键（保证严格递增）
+    QVariantAnimation      *m_shiftAnim = nullptr;  // 网格位移动画（增删/筛选后剩余格子向前对齐）
+    QTimer                 *m_scrollTimer = nullptr; // 滚轮连续平滑滚动驱动（约 16ms/帧）
+    int                     m_scrollTarget = -1;  // 滚轮累积的滚动目标值；-1 = 无进行中动画
 };
 
 // 悬停预览气泡：图片 / 文件图标 / 文本内容 / 视频（有 QtMultimedia 时静音播放）。
@@ -343,6 +376,12 @@ public:
     // 应用中转站弹窗设置：尺寸（宽/高，屏幕放不下时仍会由 Widget 收缩）与内容密度。
     // 由 Widget 在构造与设置保存后调用；位置由 Widget 计算，不在这里。
     void applyDockSettings(int width, int height, int density);
+    // 弹窗背景不透明度（千分比 0~1000，默认 871 = 87.1%）
+    void setDockOpacity(int permille);
+    int dockOpacity() const { return m_dockOpacity; }
+    // 弹窗是否记住上次滚动位置：true=关闭再打开回到上次滚动处；false=每次打开从顶部开始（默认）
+    void setRememberScroll(bool on);
+    bool rememberScroll() const { return m_rememberScroll; }
     // 当前首选尺寸（默认 = 静态常量；applyDockSettings 后跟随配置）
     int preferredWidth()  const { return m_prefWidth; }
     int preferredHeight() const { return m_prefHeight; }
@@ -427,10 +466,13 @@ private:
     QWidget         *m_tabsWidget  = nullptr;                            // 类型 tab 容器（按行数自适应高度）
     QHBoxLayout     *m_tabRow1     = nullptr;                            // tab 第一行
     QHBoxLayout     *m_tabRow2     = nullptr;                            // tab 第二行（放不下时换行）
+    QCheckBox       *m_clipOnlyBtn   = nullptr;   // 来源开关：仅剪贴板
+    QCheckBox       *m_transitOnlyBtn = nullptr;  // 来源开关：仅中转数据
     QColor           m_accentColor = QColor::fromRgb(0x41, 0xB0, 0xDD);         // 主题强调色（默认=主题蓝）
     int              m_prefWidth  = kPreferredWidth;    // 弹窗首选尺寸（跟随配置）
     int              m_prefHeight = kPreferredHeight;
-
+    int              m_dockOpacity = 871;               // 弹窗背景不透明度（千分比，默认 87.1%）
+    bool             m_rememberScroll = false;          // 记住上次滚动位置（默认不记住）
     ClipStore       *m_store      = nullptr;  // 剪贴板历史（可为未就绪）
     bool             m_historyLoaded = false; // 历史是否已回填
     QTimer          *m_clipTimer  = nullptr;  // 剪贴板变化防抖

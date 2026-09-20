@@ -8,13 +8,17 @@ always kept on top of the desktop:
 - **System monitoring**: area charts for memory & swap usage in real time, CPU usage curve,
   CPU temperature, CPU frequency, up/down network speed and disk I/O speed — all values shown
   in a seven-segment LCD style, with configurable colors and per-metric visibility;
+- **Multiple ball shapes**: the ball supports four shapes — sphere (default) / rounded
+  rectangle / square / wide bar — each with its own LCD text size and placement (the wide bar
+  lays text out in two rows); switch in Settings;
 - **Edge sidebar**: drag the ball to the left/right edge of the screen and it snaps into a
   rounded vertical bar showing CPU / memory / swap usage as slim bar charts that stay out of
   your way;
 - **Transfer station**: hover the cursor over the ball for a moment (or drop files onto it) and
   a panel pops up — clipboard text, images and files are collected automatically, with four
-  view modes, hover preview, a small text editor, drag-in/drag-out, and history persisted to
-  local SQLite so nothing is lost across restarts.
+  view modes, hover preview, a small text editor, drag-in/drag-out, a "clipboard only /
+  transfer only" source filter, and history persisted to local SQLite so nothing is lost
+  across restarts.
 
 Supported platforms: **macOS** (Apple Silicon / Intel), **Linux** (Xorg / Wayland — Debian/Ubuntu,
 Fedora/RHEL, openSUSE, Arch, Alpine, Void, …) and **Windows**. The sensor layer adapts to
@@ -147,6 +151,11 @@ see **[DEPENDENCIES.md](DEPENDENCIES.md)**.
      mutually exclusive;
      filtering only changes what you see, data and order are untouched, and the counter
      shows "visible / total".
+   - **Source filter**: two switches above the tabs — "Clipboard only" and "Transfer only"
+     (mutually exclusive). "Clipboard only" shows only items pasted/copied from the clipboard,
+     "Transfer only" shows only files dropped in or notes added. Both off (default) = show all.
+     It composes orthogonally with the type tabs (type first, then source), affects only what
+     you see, and legacy records without a source marker count as "clipboard".
    - **Preview**: hovering an item pops a preview (image at full size / text content / file icon /
      muted video playback); the caption line shows the full file name (wraps when long), with a
      detail bar at the bottom showing
@@ -208,10 +217,13 @@ see **[DEPENDENCIES.md](DEPENDENCIES.md)**.
 | | `aside_edge` | snapped side: 10=left, 11=right (managed by the app) |
 | | `corner_radius` | sidebar corner radius (default 8) |
 | `[position]` | `x` `y` | ball position |
-| `[ui]` | `dock_view_style` | transfer-station default view: 0=icon grid (default) 1=list 2=detail |
+| `[ui]` | `ball_style` | ball shape: 0=sphere (default) 1=rounded rectangle 2=square 3=wide bar |
+| | `dock_view_style` | transfer-station default view: 0=icon grid (default) 1=list 2=detail |
 | | `dock_width` / `dock_height` | transfer-station panel size in px (default 330×452; shrinks automatically when the screen is too small) |
 | | `dock_position` | preferred panel position: 0=auto (side with more space, default) 1=right of ball 2=left of ball 3=screen center |
 | | `dock_density` | panel content density: 0=compact 1=standard (default) 2=spacious |
+| | `dock_opacity` | panel background opacity (permille 0-1000, default 871 = 87.1%) |
+| | `dock_remember_scroll` | remember last scroll position in panel: 1=remember 0=don't (default; opens at top) |
 | `[timer]` | `update_data_interval` / `update_ui_interval` | data / UI refresh interval in ms (default 450) |
 | `[window]` | `shape_mask` | shape mask: 0=auto (detect compositing on X11) 1=force on 2=off |
 | `[system_monitor]` | `cmd` | custom system-monitor command; empty = auto-detect |

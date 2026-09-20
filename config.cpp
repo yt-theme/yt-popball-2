@@ -110,11 +110,16 @@ void Config::readConfig()
 
     // [ui] 数据中转站面板的展示布局（0=图标 1=列表 2=详细）
     this->dock_view_style       = this->settingsObj->value("/ui/dock_view_style", 0).toInt();
+    // 悬浮球形态：0=球形（默认）1=圆角矩形 2=直角方形 3=长条形
+    this->ball_style            = this->settingsObj->value("/ui/ball_style", 0).toInt();
     // 弹窗：尺寸 / 位置 / 密度（后加的键，老配置没有必须给默认值）
     this->dock_width            = this->settingsObj->value("/ui/dock_width", 330).toInt();
     this->dock_height           = this->settingsObj->value("/ui/dock_height", 452).toInt();
     this->dock_position         = this->settingsObj->value("/ui/dock_position", 0).toInt();
     this->dock_density          = this->settingsObj->value("/ui/dock_density", 1).toInt();
+    this->dock_opacity          = this->settingsObj->value("/ui/dock_opacity", 871).toInt();
+    // 磨砂玻璃背景：默认开启（悬浮球与弹窗共用）
+    this->dock_remember_scroll  = this->settingsObj->value("/ui/dock_remember_scroll", 0).toInt();
 
     // [window]
     this->shape_mask            = this->settingsObj->value("/window/shape_mask", 0).toInt();
@@ -339,6 +344,12 @@ void Config::setDockViewStyle(qint32 val)
     this->dock_view_style = val;
 }
 
+void Config::setBallStyle(qint32 val)
+{
+    this->settingsObj->setValue("/ui/ball_style", val);
+    this->ball_style = qBound<qint32>(0, val, 3);
+}
+
 void Config::setDockWidth(qint32 val)
 {
     this->settingsObj->setValue("/ui/dock_width", val);
@@ -361,6 +372,18 @@ void Config::setDockDensity(qint32 val)
 {
     this->settingsObj->setValue("/ui/dock_density", val);
     this->dock_density = val;
+}
+
+void Config::setDockOpacity(qint32 val)
+{
+    this->settingsObj->setValue("/ui/dock_opacity", val);
+    this->dock_opacity = val;
+}
+
+void Config::setRememberScroll(bool on)
+{
+    this->settingsObj->setValue("/ui/dock_remember_scroll", on ? 1 : 0);
+    this->dock_remember_scroll = on ? 1 : 0;
 }
 
 // [window]
@@ -541,6 +564,11 @@ qint32 Config::getDockViewStyle()
     return this->dock_view_style;
 }
 
+qint32 Config::getBallStyle()
+{
+    return this->ball_style;
+}
+
 qint32 Config::getDockWidth()
 {
     return this->dock_width;
@@ -559,6 +587,16 @@ qint32 Config::getDockPosition()
 qint32 Config::getDockDensity()
 {
     return this->dock_density;
+}
+
+qint32 Config::getDockOpacity()
+{
+    return this->dock_opacity;
+}
+
+bool Config::getRememberScroll()
+{
+    return this->dock_remember_scroll != 0;
 }
 
 // [window]

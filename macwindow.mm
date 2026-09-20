@@ -4,6 +4,7 @@
 
 #import <Cocoa/Cocoa.h>
 #include <cstdint>
+#include <vector>
 
 void popballApplyMacWindowBehavior(unsigned long long wId)
 {

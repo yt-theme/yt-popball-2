@@ -114,6 +114,7 @@ private:
 
     QSlider *opacitySlider = nullptr;
     QLabel  *opacityLabel  = nullptr;
+    QComboBox *comboBallStyle = nullptr;   // 悬浮球形态：0球 1圆角矩形 2直角方形 3长条形
 
     QSpinBox *spinWidth        = nullptr;
     QSpinBox *spinHeight       = nullptr;
@@ -138,6 +139,9 @@ private:
     QSpinBox  *spinDockHeight   = nullptr;  // 弹窗高度
     QComboBox *comboDockPosition = nullptr; // 优先展示位置：0自动 1右侧 2左侧 3屏幕居中
     QComboBox *comboDockDensity  = nullptr; // 内容密度：0紧凑 1标准 2宽松
+    QSlider   *sliderDockOpacity = nullptr; // 弹窗背景不透明度（千分比 0~1000）
+    QLabel    *lblDockOpacityVal = nullptr; // 当前百分比显示（如 87.1%）
+    QCheckBox *checkRememberScroll = nullptr; // 弹窗记住上次滚动位置（默认不记住）
 
     QPushButton *btnRestore = nullptr;
     QPushButton *btnCancel  = nullptr;

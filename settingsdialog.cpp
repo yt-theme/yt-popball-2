@@ -401,6 +401,19 @@ QWidget *SettingsDialog::buildWindowSection()
     g->setProperty("section", "group");
     v->addWidget(g);
 
+    // 悬浮球形态（球形 / 圆角矩形 / 直角方形 / 长条形）
+    auto *bs = new QHBoxLayout();
+    bs->setSpacing(10);
+    bs->addWidget(new QLabel(tr("悬浮球形态"), box));
+    comboBallStyle = new QComboBox(box);
+    comboBallStyle->setObjectName("ballStyle");
+    comboBallStyle->addItem(tr("球形"), 0);
+    comboBallStyle->addItem(tr("圆角矩形"), 1);
+    comboBallStyle->addItem(tr("直角方形"), 2);
+    comboBallStyle->addItem(tr("长条形"), 3);
+    bs->addWidget(comboBallStyle, 1);
+    v->addLayout(bs);
+
     // 不透明度
     auto *op = new QHBoxLayout();
     op->setSpacing(10);
@@ -674,7 +687,40 @@ QWidget *SettingsDialog::buildDockSection()
     den->addWidget(comboDockDensity, 1);
     v->addLayout(den);
 
-    auto *hint = new QLabel(tr("* 尺寸与密度保存后立即生效；位置在下一次打开弹窗时按新规则摆放"), box);
+    // 背景不透明度（默认 87.1%）
+    auto *op = new QHBoxLayout();
+    op->setSpacing(10);
+    op->addWidget(new QLabel(tr("背景不透明度"), box));
+    sliderDockOpacity = new QSlider(Qt::Horizontal, box);
+    sliderDockOpacity->setObjectName("dockOpacity");
+    sliderDockOpacity->setRange(0, 1000);
+    sliderDockOpacity->setSingleStep(10);
+    sliderDockOpacity->setToolTip(tr("数据中转站弹窗背景的不透明度（0% 全透明 → 100% 不透明）"));
+    op->addWidget(sliderDockOpacity, 1);
+    lblDockOpacityVal = new QLabel(box);
+    lblDockOpacityVal->setObjectName("dockOpacityVal");
+    lblDockOpacityVal->setMinimumWidth(44);
+    lblDockOpacityVal->setAlignment(Qt::AlignRight | Qt::AlignVCenter);
+    op->addWidget(lblDockOpacityVal);
+    const auto refreshOpacityLabel = [this] {
+        lblDockOpacityVal->setText(QStringLiteral("%1%").arg(sliderDockOpacity->value() / 10.0, 0, 'f', 1));
+    };
+    connect(sliderDockOpacity, &QSlider::valueChanged, this, [refreshOpacityLabel](int) { refreshOpacityLabel(); });
+    refreshOpacityLabel();
+    v->addLayout(op);
+
+    // 记住上次滚动位置（默认不记住 → 每次打开弹窗都从顶部开始）
+    auto *mem = new QHBoxLayout();
+    mem->setSpacing(10);
+    checkRememberScroll = new QCheckBox(tr("记住上次滚动位置"), box);
+    checkRememberScroll->setObjectName("rememberScroll");
+    checkRememberScroll->setToolTip(tr("勾选后关闭弹窗会记住当前滚动位置，下次打开回到原处；\n"
+                                       "不勾选（默认）则每次打开都从顶部开始"));
+    mem->addWidget(checkRememberScroll);
+    mem->addStretch(1);
+    v->addLayout(mem);
+
+    auto *hint = new QLabel(tr("* 尺寸、密度与不透明度保存后立即生效；位置在下一次打开弹窗时按新规则摆放"), box);
     hint->setProperty("role", "hint");
     hint->setWordWrap(true);
     v->addWidget(hint);
@@ -853,6 +899,7 @@ void SettingsDialog::loadFromConfig()
     }
 
     opacitySlider->setValue(int(qBound(0.5, cfg->getOpacity(), 1.0) * 100));
+    comboBallStyle->setCurrentIndex(qBound(0, cfg->getBallStyle(), comboBallStyle->count() - 1));
     spinWidth->setValue(qBound(spinWidth->minimum(),  cfg->getWidth(),  spinWidth->maximum()));
     spinHeight->setValue(qBound(spinHeight->minimum(), cfg->getHeight(), spinHeight->maximum()));
     spinBorderWidth->setValue(qBound(0, cfg->getMainBorderWidth(), spinBorderWidth->maximum()));
@@ -879,6 +926,8 @@ void SettingsDialog::loadFromConfig()
     comboDockPosition->setCurrentIndex((dpos >= 0 && dpos <= 3) ? dpos : 0);
     const int dden = cfg->getDockDensity();
     comboDockDensity->setCurrentIndex((dden >= 0 && dden <= 2) ? dden : 1);
+    sliderDockOpacity->setValue(qBound(0, cfg->getDockOpacity(), 1000));
+    checkRememberScroll->setChecked(cfg->getRememberScroll());
 }
 
 // 从内置默认值把【所有】设置项填回界面。
@@ -921,6 +970,7 @@ void SettingsDialog::loadDefaults()
     comboDiskName->setEnabled(false);
 
     // 窗口
+    comboBallStyle->setCurrentIndex(0);   // 悬浮球形态：球形（默认）
     opacitySlider->setValue(91);          // 0.91
     spinWidth->setValue(100);
     spinHeight->setValue(100);
@@ -945,11 +995,13 @@ void SettingsDialog::loadDefaults()
     // 系统监视器
     editMonitorCmd->clear();
 
-    // 数据中转站弹窗（默认：330×452 / 自动位置 / 标准密度）
+    // 数据中转站弹窗（默认：330×452 / 自动位置 / 标准密度 / 背景不透明度 87.1%）
     spinDockWidth->setValue(330);
     spinDockHeight->setValue(452);
     comboDockPosition->setCurrentIndex(0);
     comboDockDensity->setCurrentIndex(1);
+    sliderDockOpacity->setValue(871);
+    checkRememberScroll->setChecked(false);   // 记住上次滚动位置：默认不记住
 }
 
 // ---------------------------------------------------------------- 色块样式
@@ -1048,6 +1100,9 @@ void SettingsDialog::applyChanges()
     cfg->setAsideHeight(spinAsideHeight->value());
     cfg->setAsideCornerRadius(spinAsideRadius->value());
 
+    // 悬浮球形态
+    cfg->setBallStyle(comboBallStyle->currentData().toInt());
+
     // 系统监视器命令：只允许“单条程序+参数”。含 shell 运算符的危险串不落盘，
     // 并提示用户（其余设置照常保存）。
     const QString monitorCmd = editMonitorCmd->text();
@@ -1065,6 +1120,8 @@ void SettingsDialog::applyChanges()
     cfg->setDockHeight(spinDockHeight->value());
     cfg->setDockPosition(comboDockPosition->currentData().toInt());
     cfg->setDockDensity(comboDockDensity->currentData().toInt());
+    cfg->setDockOpacity(sliderDockOpacity->value());
+    cfg->setRememberScroll(checkRememberScroll->isChecked());
 
     emit settingsApplied();
 }

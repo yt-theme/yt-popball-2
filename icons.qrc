@@ -3,5 +3,6 @@
         <file alias="settings.svg">icons/settings.svg</file>
         <file alias="monitor.svg">icons/monitor.svg</file>
         <file alias="power.svg">icons/power.svg</file>
+        <file alias="check.svg">icons/check.svg</file>
     </qresource>
 </RCC>

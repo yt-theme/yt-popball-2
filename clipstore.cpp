@@ -76,11 +76,20 @@ bool ClipStore::open(const QString &dbPath)
         "  png        BLOB,"
         "  bytes      INTEGER NOT NULL DEFAULT 0,"
         "  used_at    INTEGER NOT NULL,"
-        "  created_at INTEGER NOT NULL)");
+        "  created_at INTEGER NOT NULL,"
+        "  source     INTEGER NOT NULL DEFAULT 0)");
     if (!q.exec(ddl)) {
         m_lastError = q.lastError().text();
         qWarning() << "[ClipStore] 建表失败:" << m_lastError;
         return false;
+    }
+
+    // 旧库升级：补 source 列（0=剪贴板 1=中转）。老库的既有记录统一按剪贴板处理。
+    q.exec(QStringLiteral(
+        "ALTER TABLE clips ADD COLUMN source INTEGER NOT NULL DEFAULT 0"));
+    if (q.lastError().isValid()) {
+        // 已存在该列（新库或已升级过）属正常，忽略
+        q.clear();
     }
     if (!q.exec(QStringLiteral(
             "CREATE INDEX IF NOT EXISTS idx_clips_used ON clips(used_at DESC)"))) {
@@ -104,7 +113,7 @@ bool ClipStore::open(const QString &dbPath)
 
 qint64 ClipStore::put(int kind, const QString &hash, const QString &title,
                       const QString &text, const QString &path,
-                      const QByteArray &png, qint64 bytes)
+                      const QByteArray &png, qint64 bytes, int source)
 {
     if (!m_ready)
         return -1;
@@ -116,10 +125,12 @@ qint64 ClipStore::put(int kind, const QString &hash, const QString &title,
     const qint64 now  = QDateTime::currentMSecsSinceEpoch();
     const qint64 used = (now > m_lastUsed) ? now : (m_lastUsed + 1);
     m_lastUsed = used;
-    // 同 hash 直接 UPSERT：只把 used_at 顶到最新（重复内容不新增行，提到最前）
+    // 同 hash 直接 UPSERT：只把 used_at 顶到最新（重复内容不新增行，提到最前）。
+    // source 不在 SET 里：同一内容的来源以**首次写入**为准（去重语义），
+    // 避免剪贴板粘贴/中转拖入来回切换时把来源互相覆盖。
     const QString sql = QStringLiteral(
-        "INSERT INTO clips(kind,hash,title,text,path,png,bytes,used_at,created_at)"
-        " VALUES(:kind,:hash,:title,:text,:path,:png,:bytes,:used,:created)"
+        "INSERT INTO clips(kind,hash,title,text,path,png,bytes,used_at,created_at,source)"
+        " VALUES(:kind,:hash,:title,:text,:path,:png,:bytes,:used,:created,:source)"
         " ON CONFLICT(hash) DO UPDATE SET"
         "   kind=excluded.kind, title=excluded.title, text=excluded.text,"
         "   path=excluded.path, png=excluded.png, bytes=excluded.bytes,"
@@ -137,6 +148,7 @@ qint64 ClipStore::put(int kind, const QString &hash, const QString &title,
     q.bindValue(QStringLiteral(":bytes"),   bytes);
     q.bindValue(QStringLiteral(":used"),    used);
     q.bindValue(QStringLiteral(":created"), used);
+    q.bindValue(QStringLiteral(":source"),  (source != 0) ? 1 : 0);
     if (!q.exec()) {
         m_lastError = q.lastError().text();
         qWarning() << "[ClipStore] 写入失败:" << m_lastError;
@@ -170,7 +182,7 @@ QVector<ClipRecord> ClipStore::recent(int limit) const
     // 排序与面板里的规则完全一致：最近使用在前；并列（老库遗留）时按 id 倒序，
     // 保证任何平台、任何时候读出来的次序都一样。
     q.prepare(QStringLiteral(
-        "SELECT id,kind,hash,title,text,path,bytes,used_at FROM clips"
+        "SELECT id,kind,hash,title,text,path,bytes,used_at,source FROM clips"
         " ORDER BY used_at DESC, id DESC LIMIT :n"));
     q.bindValue(QStringLiteral(":n"), limit);
     if (!q.exec()) {
@@ -187,6 +199,7 @@ QVector<ClipRecord> ClipStore::recent(int limit) const
         r.path   = q.value(5).toString();
         r.bytes  = q.value(6).toLongLong();
         r.usedAt = q.value(7).toLongLong();
+        r.source = q.value(8).toInt();
         out.append(r);
     }
 #endif

@@ -19,6 +19,7 @@
 #include <QFileInfo>
 #include <QFileIconProvider>
 #include <QDesktopServices>
+#include <QScrollBar>
 #include <QStandardPaths>
 #include <QDateTime>
 #include <QGuiApplication>
@@ -38,6 +39,8 @@
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QListView>
+#include <QVariantAnimation>
+#include <QHash>
 #include <QMouseEvent>
 #include <QAbstractItemView>
 #include <QParallelAnimationGroup>
@@ -121,6 +124,23 @@ QString textEditorQss(const QColor &accent)
         "QToolButton:disabled{color:#6b7178;background:transparent;}")
         .arg(rgbaOf(accent, 217))    // 文本选区底色（原 0.85 → alpha 217）
         .arg(rgbaOf(accent, 242));   // 聚焦边框（原 rgba(96,150,205,0.95) → alpha 242）
+}
+
+// 「仅剪贴板 / 仅中转数据」来源开关的 QSS：普通复选项（方框 + 对勾）。
+// 未选中灰色方框，选中主题色打底 + 白色对勾。
+QString sourceToggleQss(const QColor &accent)
+{
+    return QStringLiteral(
+        "QCheckBox{color:#9aa0a6;font-size:11px;spacing:6px;}"
+        "QCheckBox:hover{color:#e8eaed;}"
+        "QCheckBox:checked{color:%1;}"
+        "QCheckBox::indicator{width:14px;height:14px;border:1px solid #565d66;"
+        "border-radius:3px;background:#2b3036;}"
+        "QCheckBox::indicator:hover{border-color:#6b7178;}"
+        "QCheckBox::indicator:checked{background:%2;border-color:%2;"
+        "image:url(:/icons/check.svg);}")
+        .arg(rgbaOf(accent, 235))
+        .arg(rgbaOf(accent, 230));
 }
 
 } // namespace
@@ -222,6 +242,20 @@ public:
         }
     }
 
+    // ---- 网格位移动画 ----
+    // 条目增删 / 切换筛选后，剩余可见格子从各自旧位置平滑滑到新位置（"向前对齐"）。
+    // 只影响绘制：布局与命中测试立即用新位置，动画不耽误显示与操作。
+    // 由 TransferStation 在数据变化前快照旧位置（beginShift 传入），并驱动重绘，
+    // 动画结束调用 endShift 清除快照。
+    void beginShift(const QHash<qint64, QRect> &oldPos, qint64 startMs)
+    {
+        m_shiftOld = oldPos;
+        m_shiftStart = startMs;
+    }
+
+    void endShift() { m_shiftOld.clear(); }
+    bool shiftActive() const { return !m_shiftOld.isEmpty(); }
+
     QSize sizeHint(const QStyleOptionViewItem &opt, const QModelIndex &idx) const override
     {
         switch (m_mode) {
@@ -240,8 +274,41 @@ public:
 private:
     int m_detailRowH = 48;   // 详细模式行高（标准）
 
+    // 网格位移动画参数
+    qint64 m_shiftStart = 0;      // 动画起点（毫秒时间戳）
+    int    m_shiftDur   = 180;    // 位置过渡时长（ms）
+    QHash<qint64, QRect> m_shiftOld;  // 条目 rank → 变化前 viewport 位置
+
     void paint(QPainter *p, const QStyleOptionViewItem &opt, const QModelIndex &idx) const override
     {
+        // 网格模式（图标 / 预览）：增删/筛选后，仍可见的格子从旧位置平滑滑到新位置
+        const bool grid = (m_mode == IconCells || m_mode == PreviewCells);
+        if (grid && idx.isValid() && !m_shiftOld.isEmpty()) {
+            const qint64 rank = idx.data(Qt::UserRole).toMap()
+                                    .value(QStringLiteral("rank")).toLongLong();
+            const auto fit = m_shiftOld.constFind(rank);
+            if (fit != m_shiftOld.constEnd()) {
+                const QRect oldR = fit.value();
+                const QRect newR = opt.rect;
+                if (!oldR.isNull() && oldR != newR) {
+                    const qreal t = qBound<qreal>(0.0,
+                        qreal(QDateTime::currentMSecsSinceEpoch() - m_shiftStart) / m_shiftDur,
+                        1.0);
+                    const QPoint delta(qRound((oldR.x() - newR.x()) * (1.0 - t)),
+                                       qRound((oldR.y() - newR.y()) * (1.0 - t)));
+                    if (!delta.isNull()) {
+                        p->save();
+                        p->translate(delta);
+                        if (m_mode == IconCells)
+                            paintIcon(p, opt, idx);
+                        else
+                            paintPreview(p, opt, idx);
+                        p->restore();
+                        return;
+                    }
+                }
+            }
+        }
         switch (m_mode) {
         case IconCells:
             paintIcon(p, opt, idx);
@@ -731,6 +798,79 @@ void TransferStation::resizeEvent(QResizeEvent *e)
     updateIconGrid();                            // 面板变宽/变窄（小屏收缩）时重算列宽
 }
 
+// 快照当前所有可见条目的旧位置（rank → 视口内矩形），供位移动画使用。
+// 必须在条目增删 / 筛选生效【之前】调用，才能拿到变化前的布局。
+QHash<qint64, QRect> TransferStation::snapshotVisibleRects() const
+{
+    QHash<qint64, QRect> snaps;
+    const int n = count();
+    for (int i = 0; i < n; ++i) {
+        const QListWidgetItem *it = item(i);
+        if (it == nullptr || it->isHidden())
+            continue;
+        snaps.insert(rankOf(it), visualItemRect(it));
+    }
+    return snaps;
+}
+
+// 网格位移动画：条目增删 / 切换筛选后，仍可见的格子从各自旧位置平滑滑到新位置。
+// 只对图标 / 预览网格生效（列表 / 详细保持原样）；动画期间每帧重绘 viewport，
+// 实际绘制位置由 TsItemDelegate::paint 按进度插值。动画纯绘制层，不阻塞交互。
+void TransferStation::startGridShiftAnimation(const QHash<qint64, QRect> &oldPos)
+{
+    if (m_viewStyle != IconView && m_viewStyle != PreviewView)
+        return;
+    if (m_delegate == nullptr || oldPos.isEmpty())
+        return;
+
+    // 替换掉上一次还在跑的动画（连续增删时以最后一次为准）
+    if (m_shiftAnim != nullptr) {
+        m_shiftAnim->stop();
+        m_shiftAnim->deleteLater();
+        m_shiftAnim = nullptr;
+    }
+
+    m_delegate->beginShift(oldPos, QDateTime::currentMSecsSinceEpoch());
+
+    constexpr int kShiftDur = 180;   // 位置过渡时长（ms）：够看清"向前对齐"，又不断片
+    m_shiftAnim = new QVariantAnimation(this);
+    m_shiftAnim->setStartValue(0.0);
+    m_shiftAnim->setEndValue(1.0);
+    m_shiftAnim->setDuration(kShiftDur);
+    connect(m_shiftAnim, &QVariantAnimation::valueChanged, this, [this](const QVariant &) {
+        viewport()->update();                    // 每帧重绘，paint 里按进度插值位置
+    });
+    connect(m_shiftAnim, &QVariantAnimation::finished, this, [this]() {
+        if (m_delegate != nullptr)
+            m_delegate->endShift();
+        if (m_shiftAnim != nullptr) {
+            m_shiftAnim->deleteLater();
+            m_shiftAnim = nullptr;
+        }
+        viewport()->update();                    // 清除动画状态后补一帧干净画面
+    });
+    m_shiftAnim->start();
+}
+
+
+// 滚动位置记忆（由 PopDock 在弹窗显隐时调用）
+void TransferStation::saveScrollPosition()
+{
+    m_savedScroll = verticalScrollBar()->value();
+}
+
+void TransferStation::restoreScrollPosition()
+{
+    abortScrollAnim();
+    verticalScrollBar()->setValue(m_savedScroll);
+}
+
+void TransferStation::scrollToTop()
+{
+    abortScrollAnim();
+    verticalScrollBar()->setValue(0);
+}
+
 // 内容密度：0=紧凑 1=标准 2=宽松。
 // 图标/预览网格改列数（列宽/缩略图随 updateIconGrid 重算）；
 // 列表/详细改行高与图标大小；预览布局本身已是大图，密度主要影响间距。
@@ -901,22 +1041,26 @@ void TransferStation::appendItem(const QIcon &icon, const QString &text,
     it->setFlags(it->flags() | Qt::ItemIsDragEnabled);
 
     const int row = orderedRow(r);
+    const auto oldPos = snapshotVisibleRects();   // 插入前快照（新条目插在顶部时后面格子下移）
     insertItem(row, it);
     noteRank(r);
 
     // 新条目也要服从当前筛选（否则在「图片」tab 下复制一段文本，它会冒出来打断视线）
-    it->setHidden(!itemMatchesFilter(d, m_filter));
+    it->setHidden(!itemMatchesFilter(d, m_filter) || !itemMatchesSource(d, m_sourceFilter));
 
     // 只让"最新的那条"滚进可见区：否则列表已滚过时新条目落在视口外，
     // 看起来像"没加进去"。历史回填（插在中间/末尾）不打断你当前的浏览位置。
     if (row == 0 && !it->isHidden())
+        abortScrollAnim();
         scrollToItem(it, QAbstractItemView::PositionAtTop);
+    startGridShiftAnimation(oldPos);          // 新增后：被挤动的格子平滑向前对齐
     emit stationChanged();
 }
 
 // 按内容指纹移除已有条目；返回是否真的移除了（随后新条目会被重新插入到顶部）
 bool TransferStation::removeExisting(const QString &dedupKey)
 {
+    const auto oldPos = snapshotVisibleRects();   // 删除前快照：剩余格子向前对齐
     bool removed = false;
     for (int i = count() - 1; i >= 0; --i) {
         QListWidgetItem *it = item(i);
@@ -928,6 +1072,8 @@ bool TransferStation::removeExisting(const QString &dedupKey)
             removed = true;
         }
     }
+    if (removed)
+        startGridShiftAnimation(oldPos);          // 去重删除后：剩余格子平滑向前对齐
     return removed;
 }
 
@@ -952,21 +1098,21 @@ QString TransferStation::imageHash(const QImage &img)
         QCryptographicHash::hash(ba, QCryptographicHash::Md5).toHex());
 }
 
-void TransferStation::addFileItem(const QString &path)
+void TransferStation::addFileItem(const QString &path, int source)
 {
-    addFileItemEx(path, -1);
+    addFileItemEx(path, -1, -1, source);
 }
 
 // 一批文件按给定顺序成组入列。每条都会"提到最前"，所以倒着加：
 // 复制 A,B,C ⇒ 面板里就是 A,B,C（不做的话会变成 C,B,A，预览布局里看着尤其乱）。
 // 库里的 used_at 也按同一顺序递增 ⇒ 重启回填后顺序仍然一致。
-void TransferStation::addFileItems(const QStringList &paths)
+void TransferStation::addFileItems(const QStringList &paths, int source)
 {
     for (int i = paths.size() - 1; i >= 0; --i)
-        addFileItem(paths.at(i));
+        addFileItem(paths.at(i), source);
 }
 
-void TransferStation::addFileItemEx(const QString &path, qint64 dbId, qint64 rank)
+void TransferStation::addFileItemEx(const QString &path, qint64 dbId, qint64 rank, int source)
 {
     QFileInfo fi(path);
     if (!fi.exists())
@@ -1001,12 +1147,13 @@ void TransferStation::addFileItemEx(const QString &path, qint64 dbId, qint64 ran
     qint64 rowId = dbId;
     if (!fromHistory && m_store != nullptr)
         rowId = m_store->put(ClipStore::FileKind, key, fi.fileName(), QString(),
-                             path, QByteArray(), fi.size());
+                             path, QByteArray(), fi.size(), source);
 
     QVariantMap d;
     d[QStringLiteral("path")]  = path;
     d[QStringLiteral("name")]  = fi.fileName();
     d[QStringLiteral("dedup")] = key;
+    d[QStringLiteral("source")] = source;   // 0=剪贴板 1=中转站
     if (rowId > 0)
         d[QStringLiteral("dbId")] = rowId;
     appendItem(icon, fi.fileName(), type, d, rank);
@@ -1015,13 +1162,13 @@ void TransferStation::addFileItemEx(const QString &path, qint64 dbId, qint64 ran
         requestVideoThumb(key, path);
 }
 
-void TransferStation::addImageItem(const QImage &image, const QString &name)
+void TransferStation::addImageItem(const QImage &image, const QString &name, int source)
 {
-    addImageItemEx(image, name, -1);
+    addImageItemEx(image, name, -1, -1, source);
 }
 
 void TransferStation::addImageItemEx(const QImage &image, const QString &name, qint64 dbId,
-                                     qint64 rank)
+                                     qint64 rank, int source)
 {
     if (image.isNull())
         return;
@@ -1041,25 +1188,26 @@ void TransferStation::addImageItemEx(const QImage &image, const QString &name, q
         const QByteArray png = imageToPng(image);
         if (!png.isEmpty())
             rowId = m_store->put(ClipStore::ImageKind, key, label, QString(),
-                                 QString(), png, png.size());
+                                 QString(), png, png.size(), source);
     }
 
     QVariantMap d;
     d[QStringLiteral("path")]  = p;
     d[QStringLiteral("name")]  = label;
     d[QStringLiteral("dedup")] = key;
+    d[QStringLiteral("source")] = source;   // 0=剪贴板 1=中转站
     if (rowId > 0)
         d[QStringLiteral("dbId")] = rowId;
     appendItem(QIcon(pm), label, TsType::Image, d, rank);
 }
 
-void TransferStation::addTextItem(const QString &text, const QString &label)
+void TransferStation::addTextItem(const QString &text, const QString &label, int source)
 {
-    addTextItemEx(text, label, -1);
+    addTextItemEx(text, label, -1, -1, source);
 }
 
 void TransferStation::addTextItemEx(const QString &text, const QString &label, qint64 dbId,
-                                    qint64 rank)
+                                    qint64 rank, int source)
 {
     if (text.isEmpty())
         return;
@@ -1072,12 +1220,13 @@ void TransferStation::addTextItemEx(const QString &text, const QString &label, q
     qint64 rowId = dbId;
     if (!fromHistory && m_store != nullptr)
         rowId = m_store->put(ClipStore::TextKind, key, l, text, QString(),
-                             QByteArray(), text.toUtf8().size());
+                             QByteArray(), text.toUtf8().size(), source);
 
     QVariantMap d;
     d[QStringLiteral("text")]  = text;
     d[QStringLiteral("name")]  = l;
     d[QStringLiteral("dedup")] = key;
+    d[QStringLiteral("source")] = source;   // 0=剪贴板 1=中转站
     if (rowId > 0)
         d[QStringLiteral("dbId")] = rowId;
     appendItem(QIcon(textIcon(m_accentColor)), l, TsType::Text, d, rank);
@@ -1095,17 +1244,17 @@ void TransferStation::loadRecords(const QVector<ClipRecord> &records)
         switch (r.kind) {
         case ClipStore::TextKind:
             if (!r.text.isEmpty())
-                addTextItemEx(r.text, r.title, r.id, rank);
+                addTextItemEx(r.text, r.title, r.id, rank, r.source);
             break;
         case ClipStore::FileKind:
             if (!r.path.isEmpty() && QFileInfo::exists(r.path))
-                addFileItemEx(r.path, r.id, rank);
+                addFileItemEx(r.path, r.id, rank, r.source);
             break;
         case ClipStore::ImageKind: {
             const QByteArray png = (m_store != nullptr) ? m_store->pngOf(r.id) : QByteArray();
             const QImage img = QImage::fromData(png, "PNG");
             if (!img.isNull())
-                addImageItemEx(img, r.title, r.id, rank);
+                addImageItemEx(img, r.title, r.id, rank, r.source);
             break;
         }
         default:
@@ -1356,6 +1505,16 @@ bool TransferStation::itemMatchesFilter(const QVariantMap &data, TypeFilter f)
     return categoryOf(data) == int(f);
 }
 
+// 来源筛选判定：0=全部 1=仅剪贴板(source==0) 2=仅中转站(source==1)。
+// 旧条目 / 旧库记录没有 source 键 → 按 0（剪贴板）处理，保证老数据不会凭空消失。
+bool TransferStation::itemMatchesSource(const QVariantMap &data, int filter)
+{
+    if (filter <= 0)
+        return true;
+    const int src = data.value(QStringLiteral("source"), 0).toInt();
+    return (filter == 1) ? (src == 0) : (src == 1);
+}
+
 // 按当前筛选显示/隐藏所有条目。用 setHidden 而不是增删条目：
 //   ① 顺序（rank）完全不动，切回「全部」立刻恢复原样；
 //   ② 去重、库里 used_at 也不受影响 —— 筛选只是"看"的方式，不是数据操作。
@@ -1364,7 +1523,8 @@ void TransferStation::applyFilter()
     for (int i = 0; i < count(); ++i) {
         QListWidgetItem *it = item(i);
         if (it != nullptr)
-            it->setHidden(!itemMatchesFilter(dataOf(it), m_filter));
+            it->setHidden(!itemMatchesFilter(dataOf(it), m_filter)
+                          || !itemMatchesSource(dataOf(it), m_sourceFilter));
     }
 
     // 正悬停的那条被筛掉了：立刻收起预览气泡（否则气泡会挂在一条已不可见的条目上）
@@ -1372,6 +1532,31 @@ void TransferStation::applyFilter()
         updateHover(nullptr, QPoint());
 
     viewport()->update();
+}
+
+// 来源筛选（仅剪贴板 / 仅中转站）：与类型筛选正交叠加，行为与 setTypeFilter 一致
+// （快照 → 应用 → 滚到第一条可见 → 位移动画 → 刷新计数）。
+void TransferStation::setSourceFilter(int f)
+{
+    if (f != 1 && f != 2)
+        f = 0;
+    if (f == m_sourceFilter)
+        return;
+    m_sourceFilter = f;
+    const auto oldPos = snapshotVisibleRects();
+    emit previewHideRequested();
+    applyFilter();
+
+    for (int i = 0; i < count(); ++i) {
+        QListWidgetItem *it = item(i);
+        if (it != nullptr && !it->isHidden()) {
+            abortScrollAnim();
+        scrollToItem(it, QAbstractItemView::PositionAtTop);
+            break;
+        }
+    }
+    startGridShiftAnimation(oldPos);
+    emit stationChanged();                  // 标题区计数要刷新成"可见 / 总数"
 }
 
 int TransferStation::visibleCount() const
@@ -1392,6 +1577,7 @@ void TransferStation::setTypeFilter(TypeFilter f)
     if (f == m_filter)
         return;
     m_filter = f;
+    const auto oldPos = snapshotVisibleRects();   // 筛选前快照：切换后仍可见的格子向前对齐
     emit previewHideRequested();           // 切筛选先收起悬停预览
     applyFilter();
 
@@ -1400,10 +1586,12 @@ void TransferStation::setTypeFilter(TypeFilter f)
     for (int i = 0; i < count(); ++i) {
         QListWidgetItem *it = item(i);
         if (it != nullptr && !it->isHidden()) {
-            scrollToItem(it, QAbstractItemView::PositionAtTop);
+            abortScrollAnim();
+        scrollToItem(it, QAbstractItemView::PositionAtTop);
             break;
         }
     }
+    startGridShiftAnimation(oldPos);          // 筛选切换后：仍可见的格子平滑向前对齐
     emit stationChanged();                  // 标题区计数要刷新成"可见 / 总数"
 }
 
@@ -1605,6 +1793,75 @@ void TransferStation::updateHover(QListWidgetItem *item, const QPoint &globalCen
     }
 }
 
+// 鼠标滚轮滚动列表：Firefox 式连续平滑滚动。
+// 滚轮事件只"累积目标值"，一个常驻定时器每帧（约 16ms）把滚动条往目标指数趋近一小步：
+// 单次滚动是一段顺滑的滑动；连续滚动时目标不断累加、动画持续追赶，不停顿、不跳格；
+// 到达目标（或用户改用其它方式直接定位）后自动停止，全程不阻塞任何 UI 交互。
+// 触控板（pixelDelta 像素级）本身已连续平滑，直接交给基类原生处理。
+void TransferStation::wheelEvent(QWheelEvent *event)
+{
+    if (event->pixelDelta().isNull() && !event->angleDelta().isNull()) {
+        QScrollBar *sb = verticalScrollBar();
+        const int deltaY = event->angleDelta().y();
+        if (deltaY != 0) {
+            // 每格滚动的距离：视口高度的 1/4（约 60~80px）
+            const int step = qMax(24, qRound(sb->pageStep() * 0.25));
+            const int steps = qRound(deltaY / 120.0);
+            // 首次滚轮以当前位置为基准，之后持续累加目标（动画不打断）
+            if (m_scrollTarget < 0)
+                m_scrollTarget = sb->value();
+            m_scrollTarget = qBound(sb->minimum(), m_scrollTarget - steps * step,
+                                    sb->maximum());
+            if (m_scrollTimer == nullptr) {
+                m_scrollTimer = new QTimer(this);
+                m_scrollTimer->setInterval(16);
+                connect(m_scrollTimer, &QTimer::timeout, this,
+                        &TransferStation::scrollTick);
+            }
+            if (!m_scrollTimer->isActive())
+                m_scrollTimer->start();
+        }
+        event->accept();
+        return;
+    }
+    QListWidget::wheelEvent(event);
+}
+
+void TransferStation::scrollTick()
+{
+    QScrollBar *sb = verticalScrollBar();
+    const int cur = sb->value();
+    const int diff = m_scrollTarget - cur;
+    if (diff == 0) {
+        m_scrollTarget = -1;
+        m_scrollTimer->stop();
+        return;
+    }
+    // 值被外部大幅改动（拖滚动条 / scrollToItem 定位）：跟随外部，放弃平滑动画
+    if (qAbs(diff) > qMax(100, sb->pageStep())) {
+        m_scrollTarget = -1;
+        m_scrollTimer->stop();
+        return;
+    }
+    if (qAbs(diff) <= 2) {              // 已到位：直接落点并停止
+        sb->setValue(m_scrollTarget);
+        m_scrollTarget = -1;
+        m_scrollTimer->stop();
+        return;
+    }
+    const int push = qMax(1, qRound(qAbs(diff) * 0.30));   // 每帧走剩余距离的 30%
+    sb->setValue(cur + (diff > 0 ? push : -push));
+}
+
+// 外部直接定位滚动（恢复上次位置 / 回顶 / 筛选跳转 / 加载历史）时放弃平滑动画，
+// 避免动画把值"拉回去"
+void TransferStation::abortScrollAnim()
+{
+    m_scrollTarget = -1;
+    if (m_scrollTimer != nullptr)
+        m_scrollTimer->stop();
+}
+
 bool TransferStation::eventFilter(QObject *watched, QEvent *event)
 {
     if (watched == viewport()) {
@@ -1763,6 +2020,7 @@ bool TransferStation::applyTextEdit(qint64 dbId, const QString &originalKey, con
     const QString key   = QStringLiteral("t:") + text;
 
     // 改成了与另一条重复的内容：按去重语义合并（删掉那条），与"重新复制"的行为一致
+    const auto oldPos = snapshotVisibleRects();   // 删除前快照：剩余格子向前对齐
     for (int i = count() - 1; i >= 0; --i) {
         QListWidgetItem *other = item(i);
         if (other == nullptr || other == it)
@@ -1774,6 +2032,7 @@ bool TransferStation::applyTextEdit(qint64 dbId, const QString &originalKey, con
             delete takeItem(i);
         }
     }
+    startGridShiftAnimation(oldPos);    // 去重合并删掉一条后：剩余格子平滑向前对齐
 
     QVariantMap d = dataOf(it);
     d[QStringLiteral("text")]     = text;
@@ -1796,11 +2055,13 @@ void TransferStation::removeItem(QListWidgetItem *it)
 {
     if (it == nullptr)
         return;
+    const auto oldPos = snapshotVisibleRects();   // 删除前快照：剩余格子向前对齐
     const QVariantMap d = dataOf(it);
     const qint64 dbId = d.value(QStringLiteral("dbId")).toLongLong();
     if (dbId > 0 && m_store != nullptr)
         m_store->remove(dbId);           // 历史库里的也一起删掉
     delete takeItem(row(it));
+    startGridShiftAnimation(oldPos);          // 删除后：剩余格子平滑向前对齐，无空白期
     emit stationChanged();
 }
 
@@ -1836,10 +2097,10 @@ void TransferStation::dropEvent(QDropEvent *e)
     } else if (m->hasImage()) {
         const QImage img = qvariant_cast<QImage>(m->imageData());
         if (!img.isNull())
-            addImageItem(img);
+            addImageItem(img, QString(), 1);   // 拖入 = 中转站数据
         e->acceptProposedAction();
     } else if (m->hasText()) {
-        addTextItem(m->text());
+        addTextItem(m->text(), QString(), 1);  // 拖入 = 中转站数据
         e->acceptProposedAction();
     } else {
         e->ignore();
@@ -2452,6 +2713,17 @@ void PopDock::applyDockSettings(int width, int height, int density)
         m_station->setDensity(density);
 }
 
+void PopDock::setDockOpacity(int permille)
+{
+    m_dockOpacity = qBound(0, permille, 1000);
+    update();   // 重绘背景，立即反映新的不透明度
+}
+
+void PopDock::setRememberScroll(bool on)
+{
+    m_rememberScroll = on;
+}
+
 void PopDock::showAnimated(const QPoint &targetPos, const QRect &ballRect)
 {
     ensureAnimations();
@@ -2605,6 +2877,48 @@ PopDock::PopDock(QWidget *parent)
         hl->addWidget(m_monitorBtn);
         hl->addWidget(m_powerBtn);
         root->addWidget(header, 0);
+    }
+
+    // ---------- 来源开关：仅剪贴板 / 仅中转数据 ----------
+    // 两个开关互斥：勾一个自动取消另一个；都关 = 显示全部（默认）。
+    // 只影响"看"的方式（setHidden），不动条目、不动顺序、不动库；
+    // 与下面的类型 tab 正交叠加（先过类型、再过来源）。
+    {
+        auto *srcRow = new QWidget(this);
+        srcRow->setObjectName(QStringLiteral("popDockSourceRow"));
+        srcRow->setStyleSheet(QStringLiteral("background:transparent;"));
+        auto *sr = new QHBoxLayout(srcRow);
+        sr->setContentsMargins(4, 0, 4, 0);
+        sr->setSpacing(14);
+        m_clipOnlyBtn = new QCheckBox(tr("仅剪贴板"), srcRow);
+        m_clipOnlyBtn->setObjectName(QStringLiteral("clipOnly"));
+        m_transitOnlyBtn = new QCheckBox(tr("仅中转数据"), srcRow);
+        m_transitOnlyBtn->setObjectName(QStringLiteral("transitOnly"));
+        m_clipOnlyBtn->setCursor(Qt::PointingHandCursor);
+        m_transitOnlyBtn->setCursor(Qt::PointingHandCursor);
+        m_clipOnlyBtn->setStyleSheet(sourceToggleQss(m_accentColor));
+        m_transitOnlyBtn->setStyleSheet(sourceToggleQss(m_accentColor));
+        sr->addWidget(m_clipOnlyBtn);
+        sr->addWidget(m_transitOnlyBtn);
+        sr->addStretch(1);
+        root->addWidget(srcRow, 0);
+
+        auto applySourceFilter = [this]() {
+            int f = 0;
+            if (m_clipOnlyBtn->isChecked())       f = 1;   // 仅剪贴板
+            else if (m_transitOnlyBtn->isChecked()) f = 2; // 仅中转数据
+            if (m_station != nullptr) m_station->setSourceFilter(f);
+            hidePreview();
+            refreshCount();
+        };
+        connect(m_clipOnlyBtn, &QCheckBox::toggled, this, [this, applySourceFilter](bool on) {
+            if (on) { const QSignalBlocker b(m_transitOnlyBtn); m_transitOnlyBtn->setChecked(false); }
+            applySourceFilter();
+        });
+        connect(m_transitOnlyBtn, &QCheckBox::toggled, this, [this, applySourceFilter](bool on) {
+            if (on) { const QSignalBlocker b(m_clipOnlyBtn); m_clipOnlyBtn->setChecked(false); }
+            applySourceFilter();
+        });
     }
 
     // ---------- 类型 tab：全部 / 文档 / 图片 / 视频 / 安装包 / 压缩包 / 音频 / 可执行 / 字体 / 数据库 / 设计 ----------
@@ -2921,6 +3235,11 @@ void PopDock::setAccentColor(const QColor &color)
         m_monitorBtn->setIcon(monitorIcon(color));
     if (m_powerBtn != nullptr)
         m_powerBtn->setIcon(powerIcon(color));
+    // 来源开关（仅剪贴板 / 仅中转数据）的选中色跟随主题
+    if (m_clipOnlyBtn != nullptr)
+        m_clipOnlyBtn->setStyleSheet(sourceToggleQss(color));
+    if (m_transitOnlyBtn != nullptr)
+        m_transitOnlyBtn->setStyleSheet(sourceToggleQss(color));
 }
 
 // 类型 tab（全部 / 文档 / 图片 / 视频 / 安装包 / 压缩包 / 音频 / 可执行 / 字体 / 数据库 / 设计）。
@@ -3019,7 +3338,7 @@ void PopDock::captureClipboard()
     if (m->hasImage()) {
         const QImage img = qvariant_cast<QImage>(m->imageData());
         if (!img.isNull()) {
-            m_station->addImageItem(img);
+            m_station->addImageItem(img, QString(), 1);   // 拖入 = 中转站数据
             return;
         }
     }
@@ -3027,7 +3346,7 @@ void PopDock::captureClipboard()
     if (m->hasText()) {
         const QString t = m->text();
         if (!t.trimmed().isEmpty())
-            m_station->addTextItem(t);
+            m_station->addTextItem(t, QString(), 1);      // 拖入 = 中转站数据
     }
 }
 
@@ -3079,6 +3398,13 @@ void PopDock::showEvent(QShowEvent *event)
     ensureHistoryLoaded();          // 先把历史补进来
     captureClipboard();             // 再记录一次当前剪贴板（保证刚复制的内容在最前）
     refreshCount();
+    // 滚动位置：默认"不记住"→ 每次打开都从顶部开始；
+    // 勾选"记住上次滚动位置"→ 回到上次关闭时的滚动处（captureClipboard 之后恢复，
+    // 避免新剪贴板条目的"滚到顶部"覆盖掉记忆位置）。
+    if (m_rememberScroll)
+        m_station->restoreScrollPosition();
+    else
+        m_station->scrollToTop();
     m_station->setFocus();          // 拿到焦点，Ctrl/Cmd+V 粘贴才生效
 }
 
@@ -3086,23 +3412,25 @@ void PopDock::hideEvent(QHideEvent *event)
 {
     QWidget::hideEvent(event);
     hidePreview();                  // 面板收起时预览气泡一并收起
+    if (m_rememberScroll)
+        m_station->saveScrollPosition();   // 记住滚动位置：关闭时保存当前滚动值
 }
 
 void PopDock::addFiles(const QStringList &paths)
 {
-    m_station->addFileItems(paths);           // 保持调用方给的顺序
+    m_station->addFileItems(paths, 1);        // 外部拖入 = 中转站数据
     m_station->setFocus();
 }
 
 void PopDock::addImage(const QImage &image)
 {
-    m_station->addImageItem(image);
+    m_station->addImageItem(image, QString(), 1);   // 外部拖入 = 中转站数据
     m_station->setFocus();
 }
 
 void PopDock::addText(const QString &text)
 {
-    m_station->addTextItem(text);
+    m_station->addTextItem(text, QString(), 1);     // 外部拖入 = 中转站数据
     m_station->setFocus();
 }
 
@@ -3117,7 +3445,7 @@ void PopDock::onNoteReturn()
 {
     const QString t = m_noteEdit->text().trimmed();
     if (!t.isEmpty())
-        m_station->addTextItem(t);      // 直接用内容当标题：图标/列表里都能一眼看到
+        m_station->addTextItem(t, QString(), 1);    // 新增记事 = 中转站数据
     m_noteEdit->clear();
     m_noteRow->hide();
     m_station->setFocus();
@@ -3246,6 +3574,8 @@ void PopDock::paintEvent(QPaintEvent *e)
     p.setRenderHint(QPainter::Antialiasing);
     const QRectF r = QRectF(rect()).adjusted(0.5, 0.5, -0.5, -0.5);
     p.setPen(QPen(QColor(74, 80, 92), 1));
-    p.setBrush(QColor(30, 33, 39, 244));
+    // 背景不透明度跟随配置（m_dockOpacity 千分比 → 0~255 alpha）。
+    const int bgAlpha = qRound(255.0 * m_dockOpacity / 1000.0);
+    p.setBrush(QColor(30, 33, 39, bgAlpha));
     p.drawRoundedRect(r, 14, 14);
 }

@@ -1,6 +1,9 @@
 #include "widget.h"
 
 #include "popdock.h"
+#if defined(Q_OS_MACOS)
+#  include "macwindow.h"
+#endif
 
 #include <QBitmap>
 #include <QImage>
@@ -74,8 +77,7 @@ constexpr int kCompositingCheckEveryUiTicks = 10;
 // ---------------- 贴边竖条（SHAPE_ASIDE）的几个距离常量 ----------------
 // 小球"可视边缘"离屏幕左右边缘这么近（px）就吸上去变成竖条。
 // 留一点容差，不用非得把球怼到屏幕外面才触发。
-constexpr int kAsideSnapThreshold = 12;
-// 竖条状态下，往屏幕里侧拖超过这么多像素算"要把球拉出来"。
+constexpr int kAsideSnapThreshold = 12;// 竖条状态下，往屏幕里侧拖超过这么多像素算"要把球拉出来"。
 // 必须明显大于 kAsideSnapThreshold：松开时小球正好离边缘十几像素，
 // 否则松开又会被立刻吸回竖条，看起来像"拉不出来"。
 constexpr int kAsideDetachPx = 16;
@@ -85,6 +87,13 @@ constexpr int kAsidePopOutGap = kAsideSnapThreshold + 8;
 // 按下后总位移不超过这么多像素 = 单击（用于"单击球/竖条开关 PopDock 面板"的判定）。
 // 超过它就算拖动：拖动会立刻收起面板，避免面板挡着球。
 constexpr int kBallClickPx = 4;
+
+// ---------------- 悬浮球形态（ball_style）相关常量 ----------------
+// 0=球形（默认） 1=圆角矩形 2=直角方形 3=长条形。
+// 长条形是横向长条：宽 190、高 64（含阴影留边；LCD 按 2 行横排适配）。
+constexpr int kBallBar      = 3;
+constexpr int kBallBarW     = 190;
+constexpr int kBallBarH     = 64;
 
 #if defined(POPBALL_HAVE_X11)
 // X11：检测桌面上有没有「混成管理器(compositing manager)」在跑。
@@ -197,10 +206,13 @@ Widget::Widget(QWidget *parent)
         this->config->setDockViewStyle(style);
     });
     this->popDock->setViewStyle(this->config->getDockViewStyle());
-    // 弹窗设置（尺寸 / 内容密度）按配置回填
+    // 弹窗设置（尺寸 / 内容密度 / 背景不透明度）按配置回填
     this->popDock->applyDockSettings(this->config->getDockWidth(),
                                      this->config->getDockHeight(),
                                      this->config->getDockDensity());
+    this->popDock->setDockOpacity(this->config->getDockOpacity());
+    // 弹窗是否记住上次滚动位置（默认不记住 → 每次打开从顶部开始）
+    this->popDock->setRememberScroll(this->config->getRememberScroll());
     // 面板内"激活/选中"样式跟随主题强调色（main_border_color）
     this->popDock->setAccentColor(QColor(this->config->getMainBorderColor()));
     // 面板右上角"操作"菜单（设置 / 系统监视器 / 退出）→ 原悬浮球右键菜单的动作
@@ -218,13 +230,17 @@ void Widget::applyLcdLayout()
     this->relayoutVisibleLcds();
 }
 
-// 依 lcdRowMask 把"当前可见"的信息行自上而下均匀铺在球内。
-//   只显示 3 行时行高自动变大，5 行时自动压缩——既不留空洞，也不会被挤出球外
-//   （原实现用固定 h/5.7 + n*w/5.5 的公式，加到磁盘两行后第 6 行 y 已超过球高）。
+// 依 lcdRowMask 把"当前可见"的信息行铺在球内。
+//   球形：自上而下均匀铺开，行宽按所在高度的弦长收缩（文字不被圆边切掉）；
+//   圆角矩形 / 直角方形：同样竖排，但可用宽度是满的（没有圆边挤压）；
+//   长条形：改为 2 行横排 —— 第 1 行 温度|频率，第 2 行 网速上|网速下|磁盘，
+//   每行内按实际可见项数均分列宽，字号由 QLCDNumber 按控件尺寸自动缩放。
+//   只显示 3 行时行高自动变大，5 行时自动压缩——既不留空洞，也不会被挤出球外。
 void Widget::relayoutVisibleLcds()
 {
-    const qint32 w = config->getWidth();
-    const qint32 h = config->getHeight();
+    const qint32 w = this->width();     // 窗口实际尺寸（长条形态与配置宽不同）
+    const qint32 h = this->height();
+    const int ballStyle = config->getBallStyle();
 
     // mask 为 0 时（还没跑过 paintEvent）按"全显示"先摆一套合理几何，首帧后会按真实显隐收紧
     const quint8 mask = (this->lcdRowMask != 0) ? this->lcdRowMask : quint8(0x1F);
@@ -232,6 +248,52 @@ void Widget::relayoutVisibleLcds()
     for (int i = 0; i < ROW_COUNT; ++i)
         if (mask & (1 << i)) ++visible;
     if (visible <= 0) return;
+
+    // ---------------- 长条形：2 行横排 ----------------
+    if (ballStyle == kBallBar) {
+        // 第 1 行：温度 / 频率；第 2 行：网速上 / 网速下 / 磁盘
+        const int rowOf[ROW_COUNT] = { 0, 0, 1, 1, 1 };
+        const int topH  = qRound(h * 0.40);   // 第一行（温度/频率，数值更宽）
+        const int botY  = qRound(h * 0.44);
+        const int botH  = h - botY;
+        const int pad   = 2;
+        int row0Cnt = 0, row1Cnt = 0;
+        for (int i = 0; i < ROW_COUNT; ++i)
+            if (mask & (1 << i)) { (rowOf[i] == 0 ? row0Cnt : row1Cnt)++; }
+        const int x0 = pad, w0 = (w - pad * 2) / qMax(1, row0Cnt);
+        const int x1 = pad, w1 = (w - pad * 2) / qMax(1, row1Cnt);
+        int c0 = 0, c1 = 0;
+        for (int i = 0; i < ROW_COUNT; ++i) {
+            if (!(mask & (1 << i))) continue;
+            if (rowOf[i] == 0) {
+                this->lcdRowRect[i] = QRect(x0 + c0 * w0, qMax(1, topH / 4), w0 - pad, topH - topH / 2);
+                ++c0;
+            } else {
+                this->lcdRowRect[i] = QRect(x1 + c1 * w1, botY, w1 - pad, botH);
+                ++c1;
+            }
+        }
+        const double netScale = 0.8;
+        QLCDNumber *lcds[ROW_COUNT] = {
+            this->cpuTempLCD, this->cpuFreqLCD,
+            this->diskIoLCD,
+            this->netUploadLCD, this->netDownloadLCD
+        };
+        for (int i = 0; i < ROW_COUNT; ++i) {
+            if (!(mask & (1 << i)) || lcds[i] == nullptr) continue;
+            QRect r = this->lcdRowRect[i];
+            if (i == ROW_DISK || i == ROW_NET_UP || i == ROW_NET_DOWN) {
+                const int hh = qMax(1, qRound(r.height() * netScale));
+                r.setTop(r.top() + (r.height() - hh) / 2);
+                r.setHeight(hh);
+            }
+            lcds[i]->setGeometry(r);
+        }
+        return;
+    }
+
+    // ---------------- 球形 / 圆角矩形 / 直角方形：竖直排布 ----------------
+    const bool isCircle = (ballStyle == 0);
 
     // 行高上限同时参考宽度和高度，避免可见行少时字体被撑得离谱
     const double maxRowH = qMin(double(w) / 5.0, double(h) / 5.5);
@@ -264,11 +326,14 @@ void Widget::relayoutVisibleLcds()
         if (prevGroup >= 0 && group[i] != prevGroup) y += gap;
 
         // 球是圆的：越靠上/下的行可用宽度越窄，按该行中心高度处的弦长收缩左右边界，
-        // 免得文字被球体圆边切掉两头。
-        const double cy = y + rowH / 2.0;
-        const double dy = qAbs(cy - double(h) / 2.0);
-        const double halfChord = (dy < r) ? qSqrt(r * r - dy * dy) : 0.0;
-        const double usable = qMax(double(w) * 0.35, halfChord * 2.0 * 0.98);
+        // 免得文字被球体圆边切掉两头。方形 / 圆角矩形没有圆边挤压，可用全宽。
+        double usable = double(w) * 0.88;
+        if (isCircle) {
+            const double cy = y + rowH / 2.0;
+            const double dy = qAbs(cy - double(h) / 2.0);
+            const double halfChord = (dy < r) ? qSqrt(r * r - dy * dy) : 0.0;
+            usable = qMax(double(w) * 0.35, halfChord * 2.0 * 0.98);
+        }
 
         const QRect rect(qRound((w - usable) / 2.0), qRound(y),
                          qRound(usable), qRound(rowH));
@@ -331,6 +396,10 @@ QSize Widget::sizeForShape(qint32 shape) const
     if (shape == SHAPE_ASIDE && this->config->getSnapToEdge())
         return QSize(this->config->getAsideWidth()  + this->config->getShadowRadius() * 2,
                      this->config->getAsideHeight() + this->config->getShadowRadius() * 2);
+    // 长条形：横向长条，尺寸固定（LCD 文字按此适配）
+    if (this->config->getBallStyle() == kBallBar)
+        return QSize(kBallBarW + this->config->getShadowRadius() * 2,
+                     kBallBarH + this->config->getShadowRadius() * 2);
     return QSize(this->config->getWidth(), this->config->getHeight());
 }
 
@@ -668,7 +737,6 @@ void Widget::setUiFrame()
     // 屏幕边界限制 / 贴边吸附
     this->applyEdgeSnap();
 
-
     // shadow 投影
     // 只创建一次：QWidget::setGraphicsEffect 会接管 effect 的所有权，
     // 重复创建（每次拖动松手都会 setUiFrame）会在析构时造成重复释放。
@@ -833,7 +901,14 @@ void Widget::applyShapeMask(bool on)
         }
         else
         {
-            p.drawEllipse(shapeRect);
+            // 非贴边形态的蒙版与背景形状保持一致（球/圆角矩形/直角方形/长条形）
+            const int ballStyle = config->getBallStyle();
+            switch (ballStyle) {
+            case 1:  p.drawRoundedRect(shapeRect, 18, 18); break;   // 圆角矩形
+            case 2:  p.drawRect(shapeRect); break;                  // 直角方形
+            case 3:  p.drawRoundedRect(shapeRect, 12, 12); break;   // 长条形
+            default: p.drawEllipse(shapeRect); break;               // 球形
+            }
         }
     }
     this->setMask(QBitmap::fromImage(maskImg.createAlphaMask()));
@@ -1624,10 +1699,13 @@ void Widget::onSettingsApplied()
     this->setUiFrame();       // 不透明度/阴影/定时器/形状蒙版在这里重套
     // 主题色可能改了 → 数据中转站里的激活/选中样式跟随刷新
     this->popDock->setAccentColor(QColor(this->config->getMainBorderColor()));
-    // 弹窗尺寸 / 内容密度可能改了 → 立即应用；若弹窗正开着就按新尺寸/位置重摆
+    // 弹窗尺寸 / 内容密度 / 背景不透明度可能改了 → 立即应用；若弹窗正开着就按新尺寸/位置重摆
     this->popDock->applyDockSettings(this->config->getDockWidth(),
                                      this->config->getDockHeight(),
                                      this->config->getDockDensity());
+    this->popDock->setDockOpacity(this->config->getDockOpacity());
+    // 滚动位置记忆开关：下次打开弹窗时按新规则（默认不记住 → 顶部）
+    this->popDock->setRememberScroll(this->config->getRememberScroll());
     if (this->popDock->isVisible()) {
         const QPoint target = this->popDockTargetPos();   // 内部已按新尺寸 setFixedSize
         this->popDock->move(target);                      // 直接落位，不重播滑入动画
@@ -1691,37 +1769,52 @@ void Widget::paintEvent(QPaintEvent *)
         painter.end();
         break;
     }
-    case SHAPE_CIRCLE:
+    case SHAPE_CIRCLE:   // 球 + 圆角矩形/直角方形/长条形（由 ball_style 决定具体形状）
     {
 
         qint32 main_border_width    = config->getMainBorderWidth();
         qint32 shadow_radius        = config->getShadowRadius();
-        qint32 main_width           = config->getWidth();
-        qint32 main_height          = config->getHeight();
+        qint32 main_width           = this->width();    // 窗口实际尺寸（长条形态与配置宽不同）
+        qint32 main_height          = this->height();
         qint32 charts_rows          = config->getChartsRows();
         qint32 edging_width         = config->getMainBorderWidth() + config->getShadowRadius();
 
         if (charts_rows < 1) { charts_rows = 1; }   // 防止除零
 
+        // 非贴边形态的"外观"：0=球形（默认）1=圆角矩形 2=直角方形 3=长条形
+        const int ballStyle = config->getBallStyle();
 
-        // main circle && border
-        painter.setBrush(QColor(config->getMainColor()));
+        // main shape && border（按形态：球=椭圆，圆角矩形/长条=圆角矩形，方形=直角矩形）
+        QColor ballFill(config->getMainColor());
+        painter.setBrush(ballFill);
         QPen pen(QColor(config->getMainBorderColor()), main_border_width, Qt::SolidLine, Qt::SquareCap, Qt::RoundJoin);
         painter.setPen(pen);
-        painter.drawEllipse(
-                    main_border_width/2 + shadow_radius,
-                    main_border_width/2 + shadow_radius,
-                    main_width  - main_border_width - (shadow_radius * 2),
-                    main_height - main_border_width - (shadow_radius * 2) );
+        const QRectF shapeRect(main_border_width / 2.0 + shadow_radius,
+                               main_border_width / 2.0 + shadow_radius,
+                               main_width  - main_border_width - (shadow_radius * 2),
+                               main_height - main_border_width - (shadow_radius * 2));
+        switch (ballStyle) {
+        case 1:  painter.drawRoundedRect(shapeRect, 18, 18); break;   // 圆角矩形
+        case 2:  painter.drawRect(shapeRect); break;                  // 直角方形
+        case 3:  painter.drawRoundedRect(shapeRect, 12, 12); break;   // 长条形
+        default: painter.drawEllipse(shapeRect); break;               // 球形（默认）
+        }
 
-        // clip
+        // clip（与背景形状一致，避免曲线/LCD 溢出形状边缘）
         QPainterPath clipPath;
-        clipPath.moveTo(main_border_width/2 + shadow_radius, main_border_width/2 + shadow_radius);
-        clipPath.arcTo(main_border_width/2 + shadow_radius + 2,
-                       main_border_width/2 + shadow_radius + 2,
-                       main_width  - main_border_width - (shadow_radius * 2) - 4,
-                       main_height - main_border_width - (shadow_radius * 2) - 4,
-                       0, 360);
+        const QRectF clipRect(main_border_width / 2.0 + shadow_radius + 2,
+                              main_border_width / 2.0 + shadow_radius + 2,
+                              main_width  - main_border_width - (shadow_radius * 2) - 4,
+                              main_height - main_border_width - (shadow_radius * 2) - 4);
+        switch (ballStyle) {
+        case 1:  clipPath.addRoundedRect(clipRect, 16, 16); break;
+        case 2:  clipPath.addRect(clipRect); break;
+        case 3:  clipPath.addRoundedRect(clipRect, 10, 10); break;
+        default: clipPath.moveTo(clipRect.center().x(), clipRect.top());
+                 clipPath.arcTo(clipRect, 90, 360);
+                 clipPath.closeSubpath();
+                 break;
+        }
         painter.setClipPath(clipPath);
 
         // 本轮各 LCD 行的"应显示"位图：决定竖直排布（见 relayoutVisibleLcds）
@@ -1806,7 +1899,10 @@ void Widget::paintEvent(QPaintEvent *)
             this->relayoutVisibleLcds();
         }
 
-        // mem charts（内存不可用或总量为 0 时不绘制，避免除零）
+        // mem charts（内存不可用或总量为 0 时不绘制，避免除零）。
+        // 长条形（ballStyle==3）不画曲线图：横条太窄，画了也看不清。
+        if (ballStyle != 3)
+        {
         quint64 mem_total = this->sysInfo->getMemTotal();
         if (this->sysInfo->isMemAvailable() && mem_total > 0)
         {
@@ -1867,6 +1963,7 @@ void Widget::paintEvent(QPaintEvent *)
         cpuUsagePath.lineTo(main_width, main_height - edging_width);
         cpuUsagePath.lineTo(0, main_height - edging_width);
         painter.fillPath(cpuUsagePath, QColor(this->config->getCpuUsageColor()));
+        }   // end if (ballStyle != 3) —— 长条形不画曲线图
 
         // 磁盘总速度：读+写之和，用 LCD 数码字体显示 MB/s 数值（两位小数）。
         // QLCDNumber 画不出字母，单位"MB/s"省略，数值本身已是 MB/s。
