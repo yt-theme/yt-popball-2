@@ -4,6 +4,8 @@
 #include <QLocale>
 #include <QTranslator>
 #include <QIcon>
+#include <QSettings>
+#include <QDir>
 
 #if defined(Q_OS_MACOS)
 #  include "macwindow.h"
@@ -27,15 +29,29 @@ int main(int argc, char *argv[])
     popballHideFromDock();
 #endif
 
+    // 界面语言：设置里的「界面语言」优先（0=跟随系统 1=简体中文 2=English）。
+    // 跟随系统时按 Qt 惯例遍历 QLocale::system().uiLanguages() 逐级匹配（zh-CN → zh → …）。
     QTranslator translator;
-    const QStringList uiLanguages = QLocale::system().uiLanguages();
-    for (const QString &locale : uiLanguages) {
-        const QString baseName = "popball2_" + QLocale(locale).name();
-        if (translator.load(":/i18n/" + baseName)) {
-            a.installTranslator(&translator);
-            break;
+    bool loaded = false;
+    const QSettings userCfg(QDir::home().filePath(".popball2_config.ini"),
+                            QSettings::IniFormat);
+    const int lang = userCfg.value("/ui/language", 0).toInt();
+    if (lang == 1) {
+        loaded = translator.load(QStringLiteral(":/i18n/popball2_zh_CN"));
+    } else if (lang == 2) {
+        loaded = translator.load(QStringLiteral(":/i18n/popball2_en"));
+    } else {
+        const QStringList uiLanguages = QLocale::system().uiLanguages();
+        for (const QString &locale : uiLanguages) {
+            const QString baseName = "popball2_" + QLocale(locale).name();
+            if (translator.load(QStringLiteral(":/i18n/") + baseName)) {
+                loaded = true;
+                break;
+            }
         }
     }
+    if (loaded)
+        a.installTranslator(&translator);
     Widget w;
     w.show();
     return a.exec();

@@ -2273,7 +2273,7 @@ void PreviewPopup::showText(const QString &text, const QString &caption)
 
     QString cap = caption;
     if (truncated)
-        cap += QStringLiteral(" · 内容过长，已省略");
+        cap += tr(" · 内容过长，已省略");
     m_caption->setText(cap);       // 标题行完整展示（超长由 wordWrap 换行）
     m_caption->setVisible(!cap.isEmpty());
 
@@ -2321,7 +2321,7 @@ void PreviewPopup::showVideo(const QString &path, const QString &caption,
     m_content->setPixmap(first);                      // 先显示封面帧，解码出画面就切过去
     m_content->setFixedSize(m_videoSize);
 
-    m_caption->setText(caption + QStringLiteral(" · 悬停预览（静音）"));   // 完整展示（超长换行）
+    m_caption->setText(caption + tr(" · 悬停预览（静音）"));   // 完整展示（超长换行）
     m_caption->setVisible(true);
 
     m_player->setSource(QUrl::fromLocalFile(path));
@@ -2333,7 +2333,7 @@ void PreviewPopup::showVideo(const QString &path, const QString &caption,
 #else
     Q_UNUSED(path);
     if (!fallbackStill.isNull())
-        showPixmap(fallbackStill, caption + QStringLiteral(" · 双击用系统播放器打开"));
+        showPixmap(fallbackStill, caption + tr(" · 双击用系统播放器打开"));
     else
         showText(tr("（本机未启用视频预览：双击用系统播放器打开）"), caption);
 #endif

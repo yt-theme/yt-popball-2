@@ -56,7 +56,8 @@ HEADERS += \
     popdock.h
 
 TRANSLATIONS += \
-    popball2_zh_CN.ts
+    popball2_zh_CN.ts \
+    popball2_en.ts
 CONFIG += lrelease
 CONFIG += embed_translations
 

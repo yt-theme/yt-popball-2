@@ -120,6 +120,7 @@ void Config::readConfig()
     this->dock_opacity          = this->settingsObj->value("/ui/dock_opacity", 871).toInt();
     // 磨砂玻璃背景：默认开启（悬浮球与弹窗共用）
     this->dock_remember_scroll  = this->settingsObj->value("/ui/dock_remember_scroll", 0).toInt();
+    this->language              = this->settingsObj->value("/ui/language", 0).toInt();
 
     // [window]
     this->shape_mask            = this->settingsObj->value("/window/shape_mask", 0).toInt();
@@ -597,6 +598,17 @@ qint32 Config::getDockOpacity()
 bool Config::getRememberScroll()
 {
     return this->dock_remember_scroll != 0;
+}
+
+void Config::setLanguage(qint32 val)
+{
+    this->settingsObj->setValue("/ui/language", val);
+    this->language = val;
+}
+
+int Config::getLanguage()
+{
+    return this->language;
 }
 
 // [window]

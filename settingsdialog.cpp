@@ -27,18 +27,20 @@ namespace {
 struct ColorDef { const char *key; const char *label; };
 // 顺序即界面显示顺序（左右两列排布）；applyPreset / loadDefaults 的取值顺序必须与此一致
 // 「悬浮球文字」是总项：一键同步温度/频率/网速/磁盘IO四个文字颜色
+// label 用 QT_TRANSLATE_NOOP 登记到 SettingsDialog 上下文：
+// 这样 lupdate 能提取（tr() 不能包运行时变量），运行时 tr() 又正好用同类上下文查表。
 const ColorDef kColors[] = {
-    { "main_color",        "主球背景" },
-    { "main_border_color", "球体边框" },
-    { "mem_color",         "内存图" },
-    { "swap_color",        "交换分区" },
-    { "cpu_usage_color",   "CPU 占用" },
-    { "shadow_color",      "阴影" },
-    { "text_color",        "悬浮球文字" },
-    { "cpu_temp_color",    "温度文字" },
-    { "cpu_freq_color",    "频率文字" },
-    { "net_speed_color",   "网速文字" },
-    { "disk_io_color",     "磁盘IO文字" },
+    { "main_color",        QT_TRANSLATE_NOOP("SettingsDialog", "主球背景") },
+    { "main_border_color", QT_TRANSLATE_NOOP("SettingsDialog", "球体边框") },
+    { "mem_color",         QT_TRANSLATE_NOOP("SettingsDialog", "内存图") },
+    { "swap_color",        QT_TRANSLATE_NOOP("SettingsDialog", "交换分区") },
+    { "cpu_usage_color",   QT_TRANSLATE_NOOP("SettingsDialog", "CPU 占用") },
+    { "shadow_color",      QT_TRANSLATE_NOOP("SettingsDialog", "阴影") },
+    { "text_color",        QT_TRANSLATE_NOOP("SettingsDialog", "悬浮球文字") },
+    { "cpu_temp_color",    QT_TRANSLATE_NOOP("SettingsDialog", "温度文字") },
+    { "cpu_freq_color",    QT_TRANSLATE_NOOP("SettingsDialog", "频率文字") },
+    { "net_speed_color",   QT_TRANSLATE_NOOP("SettingsDialog", "网速文字") },
+    { "disk_io_color",     QT_TRANSLATE_NOOP("SettingsDialog", "磁盘IO文字") },
 };
 const int kColorCount = int(sizeof(kColors) / sizeof(kColors[0]));
 
@@ -48,12 +50,12 @@ struct PresetDef {
     const char *main, *border, *mem, *swap, *cpu, *shadow, *text;
 };
 const PresetDef kPresets[] = {
-    { "经典蓝", "#13191C", "#41B0DD", "#24568F", "#8C0E2B47", "#4590C8FF", "#000000", "#FFFFFF" },
-    { "活力蓝", "#13191C", "#41B0DD", "#2E6FC4", "#8C2A5E93", "#4FB7DDFF", "#000000", "#FFFFFF" },
-    { "霓虹夜", "#0D1117", "#22D3EE", "#2563EB", "#8C7C3AED", "#4522D3EE", "#000000", "#FFFFFF" },
-    { "薄荷",   "#0C1B17", "#34D399", "#059669", "#8C0F3D2E", "#596EE7B7", "#000000", "#FFFFFF" },
-    { "落日橙", "#1C1208", "#FB923C", "#EA580C", "#8C7C2D12", "#45FDBA74", "#000000", "#FFFFFF" },
-    { "极光紫", "#150F1E", "#A78BFA", "#7C3AED", "#8C2E1065", "#59E879F9", "#000000", "#FFFFFF" },
+    { QT_TRANSLATE_NOOP("SettingsDialog", "经典蓝"), "#13191C", "#41B0DD", "#24568F", "#8C0E2B47", "#4590C8FF", "#000000", "#FFFFFF" },
+    { QT_TRANSLATE_NOOP("SettingsDialog", "活力蓝"), "#13191C", "#41B0DD", "#2E6FC4", "#8C2A5E93", "#4FB7DDFF", "#000000", "#FFFFFF" },
+    { QT_TRANSLATE_NOOP("SettingsDialog", "霓虹夜"), "#0D1117", "#22D3EE", "#2563EB", "#8C7C3AED", "#4522D3EE", "#000000", "#FFFFFF" },
+    { QT_TRANSLATE_NOOP("SettingsDialog", "薄荷"),   "#0C1B17", "#34D399", "#059669", "#8C0F3D2E", "#596EE7B7", "#000000", "#FFFFFF" },
+    { QT_TRANSLATE_NOOP("SettingsDialog", "落日橙"), "#1C1208", "#FB923C", "#EA580C", "#8C7C2D12", "#45FDBA74", "#000000", "#FFFFFF" },
+    { QT_TRANSLATE_NOOP("SettingsDialog", "极光紫"), "#150F1E", "#A78BFA", "#7C3AED", "#8C2E1065", "#59E879F9", "#000000", "#FFFFFF" },
 };
 const int kPresetCount = int(sizeof(kPresets) / sizeof(kPresets[0]));
 
@@ -296,7 +298,7 @@ QWidget *SettingsDialog::buildColorSection()
     for (int i = 0; i < kColorCount; ++i) {
         ColorRow row;
         row.key   = QString::fromLatin1(kColors[i].key);
-        row.label = QString::fromUtf8(kColors[i].label);
+        row.label = tr(kColors[i].label);
         row.btn   = new QPushButton(box);
         row.btn->setProperty("role", "swatch");
         row.btn->setCursor(Qt::PointingHandCursor);
@@ -401,6 +403,18 @@ QWidget *SettingsDialog::buildWindowSection()
     g->setProperty("section", "group");
     v->addWidget(g);
 
+    // 界面语言（0=跟随系统 1=简体中文 2=English；语言名用自身语言显示，业界惯例）
+    auto *lg = new QHBoxLayout();
+    lg->setSpacing(10);
+    lg->addWidget(new QLabel(tr("界面语言"), box));
+    comboLanguage = new QComboBox(box);
+    comboLanguage->setObjectName("language");
+    comboLanguage->addItem(tr("跟随系统（自动）"), 0);
+    comboLanguage->addItem(QStringLiteral("简体中文"), 1);
+    comboLanguage->addItem(QStringLiteral("English"), 2);
+    lg->addWidget(comboLanguage, 1);
+    v->addLayout(lg);
+
     // 悬浮球形态（球形 / 圆角矩形 / 直角方形 / 长条形）
     auto *bs = new QHBoxLayout();
     bs->setSpacing(10);
@@ -501,7 +515,7 @@ QWidget *SettingsDialog::buildAsideSection()
         { "宽 36",   36, 10 },
     };
     for (const SizePreset &p : kSizePresets) {
-        auto *b = new QPushButton(QString::fromUtf8(p.text), box);
+        auto *b = new QPushButton(tr(p.text), box);
         b->setProperty("role", "preset");
         b->setCursor(Qt::PointingHandCursor);
         b->setToolTip(tr("竖条宽 %1 px、圆角 %2 px，点击立即生效").arg(p.width).arg(p.radius));
@@ -791,7 +805,7 @@ void SettingsDialog::buildPresetRow(QVBoxLayout *parentLayout)
     grid->setHorizontalSpacing(8);
     grid->setVerticalSpacing(6);
     for (int i = 0; i < kPresetCount; ++i) {
-        QPushButton *b = new QPushButton(QString::fromUtf8(kPresets[i].name), this);
+        QPushButton *b = new QPushButton(tr(kPresets[i].name), this);
         b->setProperty("role", "preset");
         b->setIcon(presetIcon(kPresets[i]));
         b->setIconSize(QSize(30, 12));
@@ -900,6 +914,7 @@ void SettingsDialog::loadFromConfig()
 
     opacitySlider->setValue(int(qBound(0.5, cfg->getOpacity(), 1.0) * 100));
     comboBallStyle->setCurrentIndex(qBound(0, cfg->getBallStyle(), comboBallStyle->count() - 1));
+    comboLanguage->setCurrentIndex(qBound(0, cfg->getLanguage(), comboLanguage->count() - 1));
     spinWidth->setValue(qBound(spinWidth->minimum(),  cfg->getWidth(),  spinWidth->maximum()));
     spinHeight->setValue(qBound(spinHeight->minimum(), cfg->getHeight(), spinHeight->maximum()));
     spinBorderWidth->setValue(qBound(0, cfg->getMainBorderWidth(), spinBorderWidth->maximum()));
@@ -971,6 +986,7 @@ void SettingsDialog::loadDefaults()
 
     // 窗口
     comboBallStyle->setCurrentIndex(0);   // 悬浮球形态：球形（默认）
+    comboLanguage->setCurrentIndex(0);   // 界面语言：跟随系统（默认）
     opacitySlider->setValue(91);          // 0.91
     spinWidth->setValue(100);
     spinHeight->setValue(100);
@@ -1102,6 +1118,7 @@ void SettingsDialog::applyChanges()
 
     // 悬浮球形态
     cfg->setBallStyle(comboBallStyle->currentData().toInt());
+    cfg->setLanguage(comboLanguage->currentData().toInt());
 
     // 系统监视器命令：只允许“单条程序+参数”。含 shell 运算符的危险串不落盘，
     // 并提示用户（其余设置照常保存）。
@@ -1122,6 +1139,13 @@ void SettingsDialog::applyChanges()
     cfg->setDockDensity(comboDockDensity->currentData().toInt());
     cfg->setDockOpacity(sliderDockOpacity->value());
     cfg->setRememberScroll(checkRememberScroll->isChecked());
+
+    // 界面语言切换需重启生效（QTranslator 在应用启动时加载）；只提示一次
+    if (cfg->getLanguage() != m_langApplied) {
+        m_langApplied = cfg->getLanguage();
+        QMessageBox::information(this, tr("界面语言"),
+            tr("界面语言已保存，重启应用后生效。"));
+    }
 
     emit settingsApplied();
 }

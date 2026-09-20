@@ -72,6 +72,7 @@ private:
     qint32  dock_density;    // 0=紧凑 1=标准（默认） 2=宽松
     qint32  dock_opacity;    // 弹窗背景不透明度（千分比 0~1000，默认 871 = 87.1%）
     qint32  dock_remember_scroll; // 弹窗记住上次滚动位置：1=记住 0=不记住（默认，每次打开从顶部）
+    qint32  language;           // 界面语言：0=跟随系统（默认） 1=简体中文 2=English
 
     // [window]
     // 形状蒙版：桌面没开混成(compositing)时，半透明窗口会露出黑色矩形底，
@@ -144,6 +145,7 @@ public:
     void setDockDensity(qint32 val);
     void setDockOpacity(qint32 val);
     void setRememberScroll(bool on);
+    void setLanguage(qint32 val);
 
     // [window]
     void setShapeMask(qint32 val);
@@ -201,6 +203,7 @@ public:
     qint32 getDockDensity();
     qint32 getDockOpacity();
     bool getRememberScroll();
+    int getLanguage();
 
     // [window]
     qint32 getShapeMask();

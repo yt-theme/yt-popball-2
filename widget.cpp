@@ -602,7 +602,7 @@ QVector<AsideMetric> Widget::collectAsideMetrics() const
                               ? this->sysInfo->getMemUsed()
                               : this->mem_data_history.back();
         if (this->sysInfo->isMemAvailable() && total > 0)
-            metrics.append({ QStringLiteral("内存"),
+            metrics.append({ tr("内存"),
                              qBound(0.0, double(used) / double(total), 1.0),
                              QColor(this->config->getMemColor()) });
     }
@@ -614,7 +614,7 @@ QVector<AsideMetric> Widget::collectAsideMetrics() const
                               ? this->sysInfo->getSwapUsed()
                               : this->swap_data_history.back();
         if (this->sysInfo->isSwapAvailable() && total > 0)
-            metrics.append({ QStringLiteral("交换"),
+            metrics.append({ tr("交换"),
                              qBound(0.0, double(used) / double(total), 1.0),
                              QColor(this->config->getSwapColor()) });
     }
@@ -1293,7 +1293,7 @@ static bool launchMonitorOnce(const QString &key, const QString &program,
     if (!p->waitForStarted(1500)) {
         if (errMsg)
             *errMsg = p->errorString().isEmpty()
-                      ? QStringLiteral("无法启动 %1").arg(program)
+                      ? QCoreApplication::translate("Widget", "无法启动 %1").arg(program)
                       : p->errorString();
         p->deleteLater();
         live.remove(key);
@@ -1408,7 +1408,7 @@ static bool launchMonitorCommand(const QString &cmdline, QString *errMsg)
 {
     const QString cmd = cmdline.trimmed();
     if (cmd.isEmpty()) {
-        if (errMsg) *errMsg = QStringLiteral("命令为空");
+        if (errMsg) *errMsg = QCoreApplication::translate("Widget", "命令为空");
         return false;
     }
     // 危险字符拦截（关键）：只允许“单条程序 + 参数”，杜绝 shell 运算符。
@@ -1461,7 +1461,7 @@ static bool launchMonitorCommand(const QString &cmdline, QString *errMsg)
                               QStringList{ QStringLiteral("-a"), program }, nullptr))
             return true;
 #endif
-        if (errMsg) *errMsg = QStringLiteral("未找到程序：%1").arg(program);
+        if (errMsg) *errMsg = QCoreApplication::translate("Widget", "未找到程序：%1").arg(program);
         return false;
     }
     return launchMonitorPath(exe, args, errMsg);

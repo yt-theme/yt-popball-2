@@ -115,6 +115,8 @@ private:
     QSlider *opacitySlider = nullptr;
     QLabel  *opacityLabel  = nullptr;
     QComboBox *comboBallStyle = nullptr;   // 悬浮球形态：0球 1圆角矩形 2直角方形 3长条形
+    QComboBox *comboLanguage  = nullptr;   // 界面语言：0跟随系统 1简体中文 2English
+    int       m_langApplied   = -1;   // 已应用的语言（用于“切换后重启生效”提示）
 
     QSpinBox *spinWidth        = nullptr;
     QSpinBox *spinHeight       = nullptr;

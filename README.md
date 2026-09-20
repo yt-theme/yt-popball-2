@@ -12,7 +12,9 @@ popball2 —— 用 Qt6 制作的桌面「悬浮球」系统监控挂件 + 剪�
   CPU 占用 / 内存 / 交换分区，贴边不挡视线；
 - **数据中转站**：把鼠标在悬浮球上停留片刻（或拖文件到球上）即可弹出 —— 剪贴板
   里的文本、图片、文件会被自动收进来，支持四种视图、悬停预览、文本编辑、拖入/拖出，
-  以及「仅剪贴板 / 仅中转数据」来源过滤，历史记录持久化到本地 SQLite，重启不丢。
+  以及「仅剪贴板 / 仅中转数据」来源过滤，历史记录持久化到本地 SQLite，重启不丢；
+- **中英双语**：界面支持 跟随系统 / 简体中文 / English 三种语言，设置里一键切换，
+  翻译走 Qt 官方 lupdate/lrelease + .ts/.qm 管线，新增界面文案后跑两条命令即可更新。
 
 支持 **macOS**（Apple Silicon / Intel）、**Linux**（Xorg / Wayland，Debian/Ubuntu、
 Fedora/RHEL、openSUSE、Arch、Alpine、Void 等）与 **Windows**；采集层已适配 x86_64、
@@ -50,6 +52,7 @@ ARM64、Apple Silicon、IBM POWER、IBM Z，以及高通骁龙 / 联发科天玑
 | 剪贴板历史 | SQLite 持久化（默认 `~/.popball2_clipboard.db`，`POPBALL2_DB` 可覆盖）；按内容指纹去重，重复只提升排序不新增；默认保留最近 200 条；图片以 PNG 二进制入库 |
 | 面板操作按钮 | 中转站面板右上角：⚙ 设置、柱状图 系统监视器、⏻ 退出 独立按钮；系统监视器命令可在设置里自定义（留空自动检测，单实例启动） |
 | 窗口行为 | 小球常驻最顶层、位置自动记住；macOS 为「配件型」应用（不在 Dock、不在 Cmd+Tab、跨桌面显示、全屏应用之上可见） |
+| 本地化 | 界面语言：0=跟随系统（默认）1=简体中文 2=English；设置窗口「窗 口 → 界面语言」切换，保存后重启生效；语言名用自身语言显示（业界惯例） |
 
 #### 快速开始
 
@@ -171,11 +174,14 @@ linuxdeploy / appimagetool / runtime，缺失时才联网下载。注意 AppImag
    渲染时把原图灰色 `#515151` 替换为主题强调色（`main_border_color`），
    切换主题即时刷新（编译需 Qt SVG 模块，`qtHaveModule(svg)` 自动启用）。
 5. **配置**：`~/.popball2_config.ini`（可用环境变量 `POPBALL2_CONFIG` 指向其它路径）。
-   颜色、大小、刷新间隔、显示哪些组件、贴边竖条、中转站默认视图都在这里改，详见下表。
-6. 桌面没开混成（compositing）时，可在配置里设 `shape_mask=1` 让窗口退回形状蒙版
+   颜色、大小、刷新间隔、显示哪些组件、贴边竖条、中转站默认视图、界面语言都在这里改，详见下表。
+6. **界面语言**：设置窗口「窗 口 → 界面语言」可选 跟随系统（自动）/ 简体中文 / English。
+   选择后点「应用」或「确定」，会提示「重启应用后生效」；重启后整个界面（设置窗口、
+   数据中转站面板、预览、文本编辑器、提示框）都会切换。直接改配置文件 `[ui] language` 同样有效。
+7. 桌面没开混成（compositing）时，可在配置里设 `shape_mask=1` 让窗口退回形状蒙版
    （圆球=圆形、竖条=圆角矩形），避免出现矩形黑框；`shape_mask=2` 强制关闭，`0` 为自动检测。
-7. 取不到的指标（例如 Apple Silicon 的 CPU 频率）会自动隐藏，不会显示假数据。
-8. macOS 上应用是「配件型」：不会出现在 Dock 和 Cmd+Tab 里，切换桌面、全屏应用之上
+8. 取不到的指标（例如 Apple Silicon 的 CPU 频率）会自动隐藏，不会显示假数据。
+9. macOS 上应用是「配件型」：不会出现在 Dock 和 Cmd+Tab 里，切换桌面、全屏应用之上
    都保持可见，就像 360 悬浮球那样。
 
 #### 配置文件说明（~/.popball2_config.ini）
@@ -186,7 +192,8 @@ linuxdeploy / appimagetool / runtime，缺失时才联网下载。注意 AppImag
 | | `aside_width` `aside_height` | 贴边竖条的宽与高（默认 30×100） |
 | | `opacity` | 窗口不透明度（默认 0.91） |
 | | `shadow_radius` / `shadow_color` | 阴影长度（0=无阴影）/ 阴影颜色 |
-| | `shape` | 形态：0=圆球，1=贴边竖条（一般由程序自动切换） || | `main_color` `main_border_color` `main_border_width` | 球体背景 / 边框颜色 / 边框宽度 |
+| | `shape` | 形态：0=圆球，1=贴边竖条（一般由程序自动切换） |
+| | `main_color` `main_border_color` `main_border_width` | 球体背景 / 边框颜色 / 边框宽度 |
 | | `mem_color` `swap_color` | 内存 / 交换面积图颜色 |
 | | `cpu_usage_color` `cpu_usage_width` | CPU 曲线颜色 / 线宽 |
 | | `cpu_freq_color` `cpu_temp_color` `net_speed_color` `disk_io_color` | 频率 / 温度 / 网速 / 磁盘文字颜色 |
@@ -198,7 +205,8 @@ linuxdeploy / appimagetool / runtime，缺失时才联网下载。注意 AppImag
 | | `aside_edge` | 当前吸附侧：10=左，11=右（程序自记） |
 | | `corner_radius` | 竖条圆角半径（默认 8） |
 | `[position]` | `x` `y` | 小球位置 |
-| `[ui]` | `ball_style` | 悬浮球形态：0=球形（默认）1=圆角矩形 2=直角方形 3=长条形 |
+| `[ui]` | `language` | 界面语言：0=跟随系统（默认）1=简体中文 2=English（设置窗「窗 口 → 界面语言」切换，重启生效） |
+| | `ball_style` | 悬浮球形态：0=球形（默认）1=圆角矩形 2=直角方形 3=长条形 |
 | | `dock_view_style` | 数据中转站默认布局：0=图标网格（默认）1=列表 2=详细 |
 | | `dock_width` / `dock_height` | 数据中转站弹窗尺寸（px，默认 330×452；屏幕放不下自动收缩） |
 | | `dock_position` | 弹窗优先展示位置：0=自动（空间大的一侧，默认）1=悬浮球右侧 2=悬浮球左侧 3=屏幕居中 |
@@ -209,6 +217,30 @@ linuxdeploy / appimagetool / runtime，缺失时才联网下载。注意 AppImag
 | `[window]` | `shape_mask` | 形状蒙版：0=自动（X11 下检测混成）1=强制开启 2=关闭 |
 | `[system_monitor]` | `cmd` | 面板「⚙ → 系统监视器」自定义命令，留空自动检测 |
 | `[meta]` | `config_version` | 配置结构版本号（自动迁移用，一般不用手改） |
+
+#### 多语言 / 本地化（i18n）
+
+- **实现方案**：Qt 官方 i18n 管线 —— 源码里所有用户可见文本用 `tr()`（或
+  `QCoreApplication::translate("Widget", …)` / `QT_TRANSLATE_NOOP("SettingsDialog", …)`
+  处理无上下文上下文场景），`popball2.pro` 里 `TRANSLATIONS` 声明
+  `popball2_zh_CN.ts` / `popball2_en.ts`，`CONFIG += lrelease embed_translations`
+  把编译好的 `.qm` 嵌入可执行文件资源 `:/i18n/`，`main.cpp` 启动时按用户设置加载。
+- **语言选择优先级**（`main.cpp`）：配置 `[ui] language` → `1` 强制简体中文、
+  `2` 强制 English、`0`（默认）跟随系统 —— 按 `QLocale::system().uiLanguages()`
+  逐级匹配（zh-CN → zh → …，与 Qt 官方示例一致）。
+- **新增/修改界面文案后，更新翻译**（两行命令）：
+  ```bash
+  lupdate popball2.pro -ts popball2_zh_CN.ts popball2_en.ts   # 扫描源码里的 tr() 更新 .ts
+  lrelease popball2_zh_CN.ts popball2_en.ts                    # 生成 .qm（构建时自动嵌入）
+  ```
+  然后重新 `qmake && make` 即可。macOS 上工具在 `/opt/homebrew/bin/`（qttools）。
+- **翻译约定**：源代码字符串永远用中文（zh_CN.ts 的翻译即源串）；en.ts 填英文；
+  语言选项名用自身语言显示（「简体中文」/「English」不翻译，业界惯例）；
+  占位符 `%1/%2/%3` 保留；颜色项标签与主题名等「运行期变量」用
+  `QT_TRANSLATE_NOOP` 登记上下文，保证 lupdate 能提取。
+- **注意事项**：`tr()` 不能包运行时变量（lupdate 提取不到）——需要查表的数组
+  字符串必须用 `QT_TRANSLATE_NOOP`；改了 `TRANSLATIONS` 后必须重新 `qmake`，
+  `embed_translations` 才会把新 qm 编进资源。
 
 #### 开源协议
 
