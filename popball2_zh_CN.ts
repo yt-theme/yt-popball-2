@@ -21,207 +21,207 @@
 <context>
     <name>PopDock</name>
     <message>
-        <location filename="popdock.cpp" line="2811" />
+        <location filename="popdock.cpp" line="2814" />
         <source>数据中转站</source>
         <translation>数据中转站</translation>
     </message>
     <message>
-        <location filename="popdock.cpp" line="2843" />
+        <location filename="popdock.cpp" line="2846" />
         <source>剪贴板里复制的内容、拖到悬浮球的中转文件，都会显示在这里。</source>
         <translation>剪贴板里复制的内容、拖到悬浮球的中转文件，都会显示在这里。</translation>
     </message>
     <message>
-        <location filename="popdock.cpp" line="2868" />
+        <location filename="popdock.cpp" line="2871" />
         <source>设置</source>
         <translation>设置</translation>
     </message>
     <message>
-        <location filename="popdock.cpp" line="2871" />
+        <location filename="popdock.cpp" line="2874" />
         <source>系统监视器</source>
         <translation>系统监视器</translation>
     </message>
     <message>
-        <location filename="popdock.cpp" line="2874" />
+        <location filename="popdock.cpp" line="2877" />
         <source>退出</source>
         <translation>退出</translation>
     </message>
     <message>
-        <location filename="popdock.cpp" line="2893" />
+        <location filename="popdock.cpp" line="2896" />
         <source>仅剪贴板</source>
         <translation>仅剪贴板</translation>
     </message>
     <message>
-        <location filename="popdock.cpp" line="2895" />
+        <location filename="popdock.cpp" line="2898" />
         <source>仅中转数据</source>
         <translation>仅中转数据</translation>
     </message>
     <message>
-        <location filename="popdock.cpp" line="2950" />
+        <location filename="popdock.cpp" line="2953" />
         <source>全部</source>
         <translation>全部</translation>
     </message>
     <message>
-        <location filename="popdock.cpp" line="2950" />
+        <location filename="popdock.cpp" line="2953" />
         <source>文档</source>
         <translation>文档</translation>
     </message>
     <message>
-        <location filename="popdock.cpp" line="2950" />
+        <location filename="popdock.cpp" line="2953" />
         <source>图片</source>
         <translation>图片</translation>
     </message>
     <message>
-        <location filename="popdock.cpp" line="2950" />
+        <location filename="popdock.cpp" line="2953" />
         <source>视频</source>
         <translation>视频</translation>
     </message>
     <message>
-        <location filename="popdock.cpp" line="2950" />
+        <location filename="popdock.cpp" line="2953" />
         <source>安装包</source>
         <translation>安装包</translation>
     </message>
     <message>
-        <location filename="popdock.cpp" line="2951" />
+        <location filename="popdock.cpp" line="2954" />
         <source>压缩包</source>
         <translation>压缩包</translation>
     </message>
     <message>
-        <location filename="popdock.cpp" line="2951" />
+        <location filename="popdock.cpp" line="2954" />
         <source>音频</source>
         <translation>音频</translation>
     </message>
     <message>
-        <location filename="popdock.cpp" line="2951" />
+        <location filename="popdock.cpp" line="2954" />
         <source>可执行</source>
         <translation>可执行</translation>
     </message>
     <message>
-        <location filename="popdock.cpp" line="2951" />
+        <location filename="popdock.cpp" line="2954" />
         <source>字体</source>
         <translation>字体</translation>
     </message>
     <message>
-        <location filename="popdock.cpp" line="2951" />
+        <location filename="popdock.cpp" line="2954" />
         <source>数据库</source>
         <translation>数据库</translation>
     </message>
     <message>
-        <location filename="popdock.cpp" line="2951" />
+        <location filename="popdock.cpp" line="2954" />
         <source>设计</source>
         <translation>设计</translation>
     </message>
     <message>
-        <location filename="popdock.cpp" line="2954" />
+        <location filename="popdock.cpp" line="2957" />
         <source>显示全部条目</source>
         <translation>显示全部条目</translation>
     </message>
     <message>
-        <location filename="popdock.cpp" line="2955" />
+        <location filename="popdock.cpp" line="2958" />
         <source>只看文本与文档类文件（txt / md / pdf / Office / 代码…）</source>
         <translation>只看文本与文档类文件（txt / md / pdf / Office / 代码…）</translation>
     </message>
     <message>
-        <location filename="popdock.cpp" line="2956" />
+        <location filename="popdock.cpp" line="2959" />
         <source>只看剪贴板图片与图片文件（png / jpg / gif…）</source>
         <translation>只看剪贴板图片与图片文件（png / jpg / gif…）</translation>
     </message>
     <message>
-        <location filename="popdock.cpp" line="2957" />
+        <location filename="popdock.cpp" line="2960" />
         <source>只看视频文件（mp4 / mov / mkv…）</source>
         <translation>只看视频文件（mp4 / mov / mkv…）</translation>
     </message>
     <message>
-        <location filename="popdock.cpp" line="2958" />
+        <location filename="popdock.cpp" line="2961" />
         <source>只看安装包（apk / ipa / exe / dmg / deb…）</source>
         <translation>只看安装包（apk / ipa / exe / dmg / deb…）</translation>
     </message>
     <message>
-        <location filename="popdock.cpp" line="2959" />
+        <location filename="popdock.cpp" line="2962" />
         <source>只看压缩包（zip / rar / 7z / tar…）</source>
         <translation>只看压缩包（zip / rar / 7z / tar…）</translation>
     </message>
     <message>
-        <location filename="popdock.cpp" line="2960" />
+        <location filename="popdock.cpp" line="2963" />
         <source>只看音频文件（mp3 / wav / flac…）</source>
         <translation>只看音频文件（mp3 / wav / flac…）</translation>
     </message>
     <message>
-        <location filename="popdock.cpp" line="2961" />
+        <location filename="popdock.cpp" line="2964" />
         <source>只看可执行文件（无后缀可执行 / .command / .so / .dylib…）</source>
         <translation>只看可执行文件（无后缀可执行 / .command / .so / .dylib…）</translation>
     </message>
     <message>
-        <location filename="popdock.cpp" line="2962" />
+        <location filename="popdock.cpp" line="2965" />
         <source>只看字体文件（ttf / otf / woff / woff2…）</source>
         <translation>只看字体文件（ttf / otf / woff / woff2…）</translation>
     </message>
     <message>
-        <location filename="popdock.cpp" line="2963" />
+        <location filename="popdock.cpp" line="2966" />
         <source>只看数据库与数据文件（db / sqlite / mdb / dat…）</source>
         <translation>只看数据库与数据文件（db / sqlite / mdb / dat…）</translation>
     </message>
     <message>
-        <location filename="popdock.cpp" line="2964" />
+        <location filename="popdock.cpp" line="2967" />
         <source>只看设计 / CAD / 3D 源文件（psd / ai / dwg / stl…）</source>
         <translation>只看设计 / CAD / 3D 源文件（psd / ai / dwg / stl…）</translation>
     </message>
     <message>
-        <location filename="popdock.cpp" line="3019" />
+        <location filename="popdock.cpp" line="3022" />
         <source>输入记事，回车或点 ✓ 保存…</source>
         <translation>输入记事，回车或点 ✓ 保存…</translation>
     </message>
     <message>
-        <location filename="popdock.cpp" line="3038" />
+        <location filename="popdock.cpp" line="3041" />
         <source>保存记事</source>
         <translation>保存记事</translation>
     </message>
     <message>
-        <location filename="popdock.cpp" line="3054" />
+        <location filename="popdock.cpp" line="3057" />
         <source>图标</source>
         <translation>图标</translation>
     </message>
     <message>
-        <location filename="popdock.cpp" line="3054" />
+        <location filename="popdock.cpp" line="3057" />
         <source>列表</source>
         <translation>列表</translation>
     </message>
     <message>
-        <location filename="popdock.cpp" line="3054" />
+        <location filename="popdock.cpp" line="3057" />
         <source>详细</source>
         <translation>详细</translation>
     </message>
     <message>
-        <location filename="popdock.cpp" line="3054" />
+        <location filename="popdock.cpp" line="3057" />
         <source>预览</source>
         <translation>预览</translation>
     </message>
     <message>
-        <location filename="popdock.cpp" line="3065" />
+        <location filename="popdock.cpp" line="3068" />
         <source>预览：只显示缩略图</source>
         <translation>预览：只显示缩略图</translation>
     </message>
     <message>
-        <location filename="popdock.cpp" line="3065" />
+        <location filename="popdock.cpp" line="3068" />
         <source>切换展示布局</source>
         <translation>切换展示布局</translation>
     </message>
     <message>
-        <location filename="popdock.cpp" line="3085" />
+        <location filename="popdock.cpp" line="3088" />
         <source>新增记事</source>
         <translation>新增记事</translation>
     </message>
     <message>
-        <location filename="popdock.cpp" line="3187" />
+        <location filename="popdock.cpp" line="3190" />
         <source>%1 项</source>
         <translation>%1 项</translation>
     </message>
     <message>
-        <location filename="popdock.cpp" line="3188" />
+        <location filename="popdock.cpp" line="3191" />
         <source>%1 / %2 项</source>
         <translation>%1 / %2 项</translation>
     </message>
     <message>
-        <location filename="popdock.cpp" line="3486" />
+        <location filename="popdock.cpp" line="3587" />
         <source>文本 · %1 字</source>
         <translation>文本 · %1 字</translation>
     </message>
@@ -376,7 +376,7 @@
     </message>
     <message>
         <location filename="settingsdialog.cpp" line="263" />
-        <location filename="settingsdialog.cpp" line="1174" />
+        <location filename="settingsdialog.cpp" line="1188" />
         <source>恢复默认</source>
         <translation>恢复默认</translation>
     </message>
@@ -452,7 +452,7 @@
     </message>
     <message>
         <location filename="settingsdialog.cpp" line="409" />
-        <location filename="settingsdialog.cpp" line="1146" />
+        <location filename="settingsdialog.cpp" line="1160" />
         <source>界面语言</source>
         <translation>界面语言</translation>
     </message>
@@ -677,99 +677,109 @@
         <translation>数据中转站弹窗的高度。屏幕放不下时会自动收缩</translation>
     </message>
     <message>
-        <location filename="settingsdialog.cpp" line="682" />
+        <location filename="settingsdialog.cpp" line="683" />
+        <source>恢复默认尺寸</source>
+        <translation type="unfinished">恢复默认尺寸</translation>
+    </message>
+    <message>
+        <location filename="settingsdialog.cpp" line="685" />
+        <source>把弹窗大小恢复为默认的 330 × 452，点「应用」或「确定」后生效</source>
+        <translation type="unfinished">把弹窗大小恢复为默认的 330 × 452，点「应用」或「确定」后生效</translation>
+    </message>
+    <message>
+        <location filename="settingsdialog.cpp" line="696" />
         <source>优先展示位置</source>
         <translation>优先展示位置</translation>
     </message>
     <message>
-        <location filename="settingsdialog.cpp" line="684" />
+        <location filename="settingsdialog.cpp" line="698" />
         <source>自动（空间大的一侧）</source>
         <translation>自动（空间大的一侧）</translation>
     </message>
     <message>
-        <location filename="settingsdialog.cpp" line="685" />
+        <location filename="settingsdialog.cpp" line="699" />
         <source>悬浮球右侧</source>
         <translation>悬浮球右侧</translation>
     </message>
     <message>
-        <location filename="settingsdialog.cpp" line="686" />
+        <location filename="settingsdialog.cpp" line="700" />
         <source>悬浮球左侧</source>
         <translation>悬浮球左侧</translation>
     </message>
     <message>
-        <location filename="settingsdialog.cpp" line="687" />
+        <location filename="settingsdialog.cpp" line="701" />
         <source>屏幕居中</source>
         <translation>屏幕居中</translation>
     </message>
     <message>
-        <location filename="settingsdialog.cpp" line="688" />
+        <location filename="settingsdialog.cpp" line="702" />
         <source>弹窗打开时优先出现在哪里；空间不足时仍会自动夹紧在屏幕内</source>
         <translation>弹窗打开时优先出现在哪里；空间不足时仍会自动夹紧在屏幕内</translation>
     </message>
     <message>
-        <location filename="settingsdialog.cpp" line="695" />
+        <location filename="settingsdialog.cpp" line="709" />
         <source>内容密度</source>
         <translation>内容密度</translation>
     </message>
     <message>
-        <location filename="settingsdialog.cpp" line="697" />
+        <location filename="settingsdialog.cpp" line="711" />
         <source>紧凑</source>
         <translation>紧凑</translation>
     </message>
     <message>
-        <location filename="settingsdialog.cpp" line="698" />
+        <location filename="settingsdialog.cpp" line="712" />
         <source>标准</source>
         <translation>标准</translation>
     </message>
     <message>
-        <location filename="settingsdialog.cpp" line="699" />
+        <location filename="settingsdialog.cpp" line="713" />
         <source>宽松</source>
         <translation>宽松</translation>
     </message>
     <message>
-        <location filename="settingsdialog.cpp" line="700" />
+        <location filename="settingsdialog.cpp" line="714" />
         <source>图标网格的列数/缩略图大小、列表与详细视图的行高</source>
         <translation>图标网格的列数/缩略图大小、列表与详细视图的行高</translation>
     </message>
     <message>
-        <location filename="settingsdialog.cpp" line="707" />
+        <location filename="settingsdialog.cpp" line="721" />
         <source>背景不透明度</source>
         <translation>背景不透明度</translation>
     </message>
     <message>
-        <location filename="settingsdialog.cpp" line="712" />
+        <location filename="settingsdialog.cpp" line="726" />
         <source>数据中转站弹窗背景的不透明度（0% 全透明 → 100% 不透明）</source>
         <translation>数据中转站弹窗背景的不透明度（0% 全透明 → 100% 不透明）</translation>
     </message>
     <message>
-        <location filename="settingsdialog.cpp" line="729" />
+        <location filename="settingsdialog.cpp" line="743" />
         <source>记住上次滚动位置</source>
         <translation>记住上次滚动位置</translation>
     </message>
     <message>
-        <location filename="settingsdialog.cpp" line="731" />
+        <location filename="settingsdialog.cpp" line="745" />
         <source>勾选后关闭弹窗会记住当前滚动位置，下次打开回到原处；
 不勾选（默认）则每次打开都从顶部开始</source>
         <translation>勾选后关闭弹窗会记住当前滚动位置，下次打开回到原处；
 不勾选（默认）则每次打开都从顶部开始</translation>
     </message>
     <message>
-        <location filename="settingsdialog.cpp" line="737" />
+        <location filename="settingsdialog.cpp" line="751" />
         <source>* 尺寸、密度与不透明度保存后立即生效；位置在下一次打开弹窗时按新规则摆放</source>
         <translation>* 尺寸、密度与不透明度保存后立即生效；位置在下一次打开弹窗时按新规则摆放</translation>
     </message>
     <message>
-        <location filename="settingsdialog.cpp" line="753" />
+        <location filename="settingsdialog.cpp" line="767" />
         <source>系统监视器</source>
         <translation>系统监视器</translation>
     </message>
     <message>
-        <location filename="settingsdialog.cpp" line="762" />
+        <location filename="settingsdialog.cpp" line="776" />
         <source>留空 = 自动按桌面环境检测</source>
         <translation>留空 = 自动按桌面环境检测</translation>
     </message>
     <message>
-        <location filename="settingsdialog.cpp" line="765" />
+        <location filename="settingsdialog.cpp" line="779" />
         <source>右键菜单「系统监视器」调用的命令。
 只支持单条“程序 + 参数”，不支持 shell 运算符（; | &amp; &gt; &lt; ` 等）。
 可填绝对路径命令，也支持带参数，例如：
@@ -784,47 +794,47 @@
   open -a "Activity Monitor"</translation>
     </message>
     <message>
-        <location filename="settingsdialog.cpp" line="771" />
+        <location filename="settingsdialog.cpp" line="785" />
         <source>选择程序</source>
         <translation>选择程序</translation>
     </message>
     <message>
-        <location filename="settingsdialog.cpp" line="773" />
+        <location filename="settingsdialog.cpp" line="787" />
         <source>在文件系统里挑一个程序，自动填入命令框</source>
         <translation>在文件系统里挑一个程序，自动填入命令框</translation>
     </message>
     <message>
-        <location filename="settingsdialog.cpp" line="779" />
+        <location filename="settingsdialog.cpp" line="793" />
         <source>* 留空时按系统自动挑选：macOS→活动监视器，Windows→任务管理器，Linux→按 GNOME/KDE/XFCE 等桌面自动匹配</source>
         <translation>* 留空时按系统自动挑选：macOS→活动监视器，Windows→任务管理器，Linux→按 GNOME/KDE/XFCE 等桌面自动匹配</translation>
     </message>
     <message>
-        <location filename="settingsdialog.cpp" line="790" />
+        <location filename="settingsdialog.cpp" line="804" />
         <source>选择系统监视器程序</source>
         <translation>选择系统监视器程序</translation>
     </message>
     <message>
-        <location filename="settingsdialog.cpp" line="792" />
+        <location filename="settingsdialog.cpp" line="806" />
         <source>程序可执行文件 (*);;所有文件 (*)</source>
         <translation>程序可执行文件 (*);;所有文件 (*)</translation>
     </message>
     <message>
-        <location filename="settingsdialog.cpp" line="813" />
+        <location filename="settingsdialog.cpp" line="827" />
         <source>应用这套配色并立即生效</source>
         <translation>应用这套配色并立即生效</translation>
     </message>
     <message>
-        <location filename="settingsdialog.cpp" line="1054" />
+        <location filename="settingsdialog.cpp" line="1068" />
         <source>选择颜色 - %1</source>
         <translation>选择颜色 - %1</translation>
     </message>
     <message>
-        <location filename="settingsdialog.cpp" line="1129" />
+        <location filename="settingsdialog.cpp" line="1143" />
         <source>系统监视器命令不安全</source>
         <translation>系统监视器命令不安全</translation>
     </message>
     <message>
-        <location filename="settingsdialog.cpp" line="1130" />
+        <location filename="settingsdialog.cpp" line="1144" />
         <source>「系统监视器」命令包含不允许的字符（; | &amp; &lt; &gt; ` $() 或换行）。
 该项只支持单条“程序 + 参数”，不支持 shell 运算符，
 为避免执行危险指令，本次未保存该项，其余设置已生效。</source>
@@ -833,12 +843,12 @@
 为避免执行危险指令，本次未保存该项，其余设置已生效。</translation>
     </message>
     <message>
-        <location filename="settingsdialog.cpp" line="1147" />
+        <location filename="settingsdialog.cpp" line="1161" />
         <source>界面语言已保存，重启应用后生效。</source>
         <translation>界面语言已保存，重启应用后生效。</translation>
     </message>
     <message>
-        <location filename="settingsdialog.cpp" line="1175" />
+        <location filename="settingsdialog.cpp" line="1189" />
         <source>确定要把所有设置恢复为默认值吗？
 
 这只会把默认值填回本窗口，还需点「应用」或「确定」才会真正生效。</source>
@@ -927,37 +937,37 @@
 <context>
     <name>Widget</name>
     <message>
-        <location filename="widget.cpp" line="605" />
+        <location filename="widget.cpp" line="612" />
         <source>内存</source>
         <translation>内存</translation>
     </message>
     <message>
-        <location filename="widget.cpp" line="617" />
+        <location filename="widget.cpp" line="624" />
         <source>交换</source>
         <translation>交换</translation>
     </message>
     <message>
-        <location filename="widget.cpp" line="1296" />
+        <location filename="widget.cpp" line="1303" />
         <source>无法启动 %1</source>
         <translation>无法启动 %1</translation>
     </message>
     <message>
-        <location filename="widget.cpp" line="1411" />
+        <location filename="widget.cpp" line="1418" />
         <source>命令为空</source>
         <translation>命令为空</translation>
     </message>
     <message>
-        <location filename="widget.cpp" line="1464" />
+        <location filename="widget.cpp" line="1471" />
         <source>未找到程序：%1</source>
         <translation>未找到程序：%1</translation>
     </message>
     <message>
-        <location filename="widget.cpp" line="1592" />
+        <location filename="widget.cpp" line="1599" />
         <source>系统监视器启动失败</source>
         <translation>系统监视器启动失败</translation>
     </message>
     <message>
-        <location filename="widget.cpp" line="1593" />
+        <location filename="widget.cpp" line="1600" />
         <source>配置的「系统监视器」命令无法启动：
 %1
 
@@ -974,28 +984,28 @@
 或暂时留空以走自动检测。</translation>
     </message>
     <message>
-        <location filename="widget.cpp" line="1608" />
-        <location filename="widget.cpp" line="1613" />
-        <location filename="widget.cpp" line="1680" />
+        <location filename="widget.cpp" line="1615" />
+        <location filename="widget.cpp" line="1620" />
+        <location filename="widget.cpp" line="1687" />
         <source>系统监视器</source>
         <translation>系统监视器</translation>
     </message>
     <message>
-        <location filename="widget.cpp" line="1609" />
+        <location filename="widget.cpp" line="1616" />
         <source>无法打开「活动监视器」。
 %1</source>
         <translation>无法打开「活动监视器」。
 %1</translation>
     </message>
     <message>
-        <location filename="widget.cpp" line="1614" />
+        <location filename="widget.cpp" line="1621" />
         <source>无法打开「任务管理器」。
 %1</source>
         <translation>无法打开「任务管理器」。
 %1</translation>
     </message>
     <message>
-        <location filename="widget.cpp" line="1681" />
+        <location filename="widget.cpp" line="1688" />
         <source>找不到可用的系统监视器或终端模拟器。
 %1
 

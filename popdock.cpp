@@ -2704,11 +2704,28 @@ void PopDock::ensureAnimations()
     });
 }
 
+void PopDock::resizeEvent(QResizeEvent *e)
+{
+    QWidget::resizeEvent(e);
+    // macOS 对无边框窗口的边缘拖拽走"原生缩放"（WindowServer 直接改窗口尺寸），
+    // Qt 的 mouseMoveEvent 收不到事件，也收不到 press（mouseButtons() 不可靠）。
+    // 所以这里以 resizeEvent 的最终尺寸为准：尺寸一旦变化就同步配置（内存+落盘）。
+    // 程序主动 resize（applyDockSettings / 显示定位）用的是 m_prefWidth，
+    // 与 e->size() 相等时为幂等，不会误写；仅小屏收缩场景会写收缩值（可接受）。
+    const QSize s = e->size();
+    if (s.width() != m_prefWidth || s.height() != m_prefHeight) {
+        m_prefWidth  = s.width();
+        m_prefHeight = s.height();
+        emit sizeEdited(m_prefWidth, m_prefHeight);
+    }
+}
+
 void PopDock::applyDockSettings(int width, int height, int density)
 {
-    m_prefWidth  = qMax(240, width);
-    m_prefHeight = qMax(260, height);
-    setFixedSize(m_prefWidth, m_prefHeight);
+    m_prefWidth  = qMax(kMinDockWidth,  width);
+    m_prefHeight = qMax(kMinDockHeight, height);
+    setMinimumSize(kMinDockWidth, kMinDockHeight);
+    resize(m_prefWidth, m_prefHeight);
     if (m_station != nullptr)
         m_station->setDensity(density);
 }
@@ -2792,7 +2809,9 @@ PopDock::PopDock(QWidget *parent)
 {
     setWindowFlags(Qt::FramelessWindowHint | Qt::Tool | Qt::NoDropShadowWindowHint);
     setAttribute(Qt::WA_TranslucentBackground);
-    setFixedSize(kPreferredWidth, kPreferredHeight);
+    // 允许鼠标在边缘拖拽调整大小：只设最小尺寸，不再 setFixedSize
+    setMinimumSize(kMinDockWidth, kMinDockHeight);
+    resize(kPreferredWidth, kPreferredHeight);
 
     auto *root = new QVBoxLayout(this);
     root->setContentsMargins(12, 10, 12, 12);        // 统一的窗口内边距
@@ -3356,6 +3375,133 @@ void PopDock::installDockTracking(QObject *obj)
     for (QObject *c : obj->children())
         if (c->isWidgetType())
             installDockTracking(c);
+}
+
+// ---------------------------------------------------------------- 鼠标边缘调整大小
+// 用户在弹窗四条边缘/四角拖拽改变大小；放开后把新尺寸发 sizeEdited（Widget 落盘持久化），
+// 并同步首选尺寸，使"下次打开 / 设置窗回显"都按新尺寸。热区 6px，最小 240×260。
+//
+// 平台差异：
+//  - X11 / Windows / macOS：QMouseEvent::globalPosition() 提供可靠的全局坐标，
+//    四条边缘/四角拖拽全部精确支持。
+//  - Wayland：协议不向客户端暴露全局鼠标坐标。拖右/下边缘时窗口左/上缘固定，
+//    局部坐标增量 = 屏幕增量，可以精确计算；拖左/上边缘时窗口自身移动会改变局部
+//    坐标参考系，无法推算位移，因此 Wayland 下只启用右/下边缘（拖右/下已能完成
+//    放大与缩小，左/上缘保持固定）。最终尺寸统一由 resizeEvent 兜底落盘。
+static bool popDockPlatformIsWayland()
+{
+    return QGuiApplication::platformName().compare(QLatin1String("wayland"),
+                                                   Qt::CaseInsensitive) == 0;
+}
+
+int PopDock::resizeEdgeAt(const QPoint &localPos) const
+{
+    const int h = kResizeHandle;
+    int edges = kResizeNone;
+    if (localPos.x() <= h)                          edges |= kResizeL;
+    if (localPos.x() >= width() - 1 - h)            edges |= kResizeR;
+    if (localPos.y() <= h)                          edges |= kResizeT;
+    if (localPos.y() >= height() - 1 - h)           edges |= kResizeB;
+    if (popDockPlatformIsWayland())
+        edges &= (kResizeR | kResizeB);
+    return edges;
+}
+
+Qt::CursorShape PopDock::cursorForEdges(int edges)
+{
+    switch (edges) {
+    case kResizeL: case kResizeR:            return Qt::SizeHorCursor;
+    case kResizeT: case kResizeB:            return Qt::SizeVerCursor;
+    case kResizeL | kResizeT:
+    case kResizeR | kResizeB:                return Qt::SizeFDiagCursor;   // ↘/↖
+    case kResizeR | kResizeT:
+    case kResizeL | kResizeB:                return Qt::SizeBDiagCursor;   // ↗/↙
+    default:                                 return Qt::ArrowCursor;
+    }
+}
+
+void PopDock::mousePressEvent(QMouseEvent *event)
+{
+    if (event->button() == Qt::LeftButton) {
+        const int edges = resizeEdgeAt(event->position().toPoint());
+        if (edges != kResizeNone) {
+            m_mouseResizing = true;
+            m_resizeEdges   = edges;
+            m_resizeStart   = geometry();
+            m_resizePressPos   = event->globalPosition().toPoint();
+            m_resizePressLocal = event->position().toPoint();
+            // 拖拽期间锁定"悬停收起"：拖右/下边缘时光标必然移出弹窗边界，
+            // 不锁的话轮询会判成"离开"→ 300ms 后把弹窗收走 → 松手时的释放事件
+            // 丢失 → 新尺寸既不更新首选尺寸也不落盘，下次调出又变回旧尺寸。
+            beginInteraction();
+            event->accept();
+            return;
+        }
+    }
+    QWidget::mousePressEvent(event);
+}
+
+void PopDock::mouseMoveEvent(QMouseEvent *event)
+{
+    if (m_mouseResizing) {
+        const QPoint d = popDockPlatformIsWayland()
+                         ? (event->position().toPoint() - m_resizePressLocal)
+                         : (event->globalPosition().toPoint() - m_resizePressPos);
+        QRect g = m_resizeStart;
+        if (m_resizeEdges & kResizeR)
+            g.setWidth(qMax(kMinDockWidth, m_resizeStart.width() + d.x()));
+        if (m_resizeEdges & kResizeB)
+            g.setHeight(qMax(kMinDockHeight, m_resizeStart.height() + d.y()));
+        if (m_resizeEdges & kResizeL) {
+            int newLeft = m_resizeStart.left() + d.x();
+            if (m_resizeStart.right() - newLeft + 1 < kMinDockWidth)
+                newLeft = m_resizeStart.right() - kMinDockWidth + 1;
+            g.setLeft(newLeft);
+        }
+        if (m_resizeEdges & kResizeT) {
+            int newTop = m_resizeStart.top() + d.y();
+            if (m_resizeStart.bottom() - newTop + 1 < kMinDockHeight)
+                newTop = m_resizeStart.bottom() - kMinDockHeight + 1;
+            g.setTop(newTop);
+        }
+        setGeometry(g);
+        // 拖拽过程中每次尺寸变化都立即同步配置（内存 + 落盘）：
+        // 不依赖松手时的释放事件（释放事件可能因弹窗被收起等原因丢失），
+        // 也不依赖 width() 的同步时机——macOS 顶级窗口 setGeometry 可能异步生效，
+        // 直接用本次拖拽的请求尺寸 g（用户鼠标拖到的目标）落盘。
+        if (g.width() != m_prefWidth || g.height() != m_prefHeight) {
+            m_prefWidth  = g.width();
+            m_prefHeight = g.height();
+            emit sizeEdited(m_prefWidth, m_prefHeight);
+        }
+        event->accept();
+        return;
+    }
+    // 平时：光标移到边缘热区时换成对应的缩放光标
+    setCursor(cursorForEdges(resizeEdgeAt(event->position().toPoint())));
+    QWidget::mouseMoveEvent(event);
+}
+
+void PopDock::mouseReleaseEvent(QMouseEvent *event)
+{
+    if (m_mouseResizing && event->button() == Qt::LeftButton) {
+        m_mouseResizing = false;
+        m_resizeEdges   = kResizeNone;
+        endInteraction();
+        // 落盘已在拖拽过程中按请求尺寸实时完成，这里不再写回，
+        // 避免窗口系统几何同步滞后时把配置覆盖回旧值。
+        event->accept();
+        return;
+    }
+    QWidget::mouseReleaseEvent(event);
+}
+
+void PopDock::leaveEvent(QEvent *event)
+{
+    // 拖拽中光标可以移出窗口继续调整（标准行为）；平时离开时恢复默认光标
+    if (!m_mouseResizing)
+        unsetCursor();
+    QWidget::leaveEvent(event);
 }
 
 bool PopDock::eventFilter(QObject *watched, QEvent *e)

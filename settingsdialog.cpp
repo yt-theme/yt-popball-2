@@ -676,6 +676,20 @@ QWidget *SettingsDialog::buildDockSection()
     sz->addWidget(spinDockHeight, 1);
     v->addLayout(sz);
 
+    // 恢复默认尺寸：一键把弹窗大小填回 330×452（点应用/确定保存生效）
+    auto *rsz = new QHBoxLayout();
+    rsz->setSpacing(10);
+    rsz->addStretch(1);
+    btnDockSizeReset = new QPushButton(tr("恢复默认尺寸"), box);
+    btnDockSizeReset->setObjectName("dockSizeReset");
+    btnDockSizeReset->setToolTip(tr("把弹窗大小恢复为默认的 330 × 452，点「应用」或「确定」后生效"));
+    connect(btnDockSizeReset, &QPushButton::clicked, this, [this] {
+        spinDockWidth->setValue(330);
+        spinDockHeight->setValue(452);
+    });
+    rsz->addWidget(btnDockSizeReset);
+    v->addLayout(rsz);
+
     // 优先展示位置
     auto *pos = new QHBoxLayout();
     pos->setSpacing(10);

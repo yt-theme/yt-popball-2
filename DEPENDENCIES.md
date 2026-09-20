@@ -92,6 +92,12 @@ chmod +x popball2-1.0.0-x86_64.AppImage
   libqt6multimedia6 | libqt6multimedia6t64
   ```
   （`*t64` 是 64 位时间制式变体，Debian 13 / Ubuntu 24.04+ 用；用 `|` 兼容两种）
+- **图形会话（X11 / Wayland）**：Xorg 会话用 Qt 的 **xcb** 平台插件（`qt6-qpa-plugins`，
+  通常随 `libqt6gui6` 传递依赖装好）；Wayland 会话需要 **`qt6-wayland`** 提供的
+  wayland 平台插件。两者都装后，**同一二进制在 Xorg 与 Wayland 下都能直接跑**（Qt 自动
+  检测会话）。缺插件时启动会报 `could not load the Qt platform plugin "xcb"/"wayland"`，
+  用包管理器补装对应包即可。弹窗尺寸调整在 Wayland 下自动启用右/下边缘拖拽（协议不提供
+  全局鼠标坐标，左/上缘固定；X11 与 Windows 四边缘全支持），尺寸一律实时落盘。
 - **剪贴板历史（SQLite）**：程序用 QtSql 的 QSQLITE 驱动把中转站内容持久化到
   `~/.popball2_clipboard.db`。deb 里以 `Recommends: libqt6sql6-sqlite` 声明驱动插件
   （apt 默认会装上；用 `--no-install-recommends` 时不会装）。缺这个插件时程序**照常运行**，

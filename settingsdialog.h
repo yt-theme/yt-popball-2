@@ -139,6 +139,7 @@ private:
     // 数据中转站弹窗
     QSpinBox  *spinDockWidth    = nullptr;  // 弹窗宽度
     QSpinBox  *spinDockHeight   = nullptr;  // 弹窗高度
+    QPushButton *btnDockSizeReset = nullptr; // 弹窗恢复默认尺寸（330×452）
     QComboBox *comboDockPosition = nullptr; // 优先展示位置：0自动 1右侧 2左侧 3屏幕居中
     QComboBox *comboDockDensity  = nullptr; // 内容密度：0紧凑 1标准 2宽松
     QSlider   *sliderDockOpacity = nullptr; // 弹窗背景不透明度（千分比 0~1000）

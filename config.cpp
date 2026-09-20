@@ -354,12 +354,14 @@ void Config::setBallStyle(qint32 val)
 void Config::setDockWidth(qint32 val)
 {
     this->settingsObj->setValue("/ui/dock_width", val);
+    this->settingsObj->sync();   // 弹窗尺寸拖拽即落盘：异常退出也不丢
     this->dock_width = val;
 }
 
 void Config::setDockHeight(qint32 val)
 {
     this->settingsObj->setValue("/ui/dock_height", val);
+    this->settingsObj->sync();   // 同上
     this->dock_height = val;
 }
 

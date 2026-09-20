@@ -376,6 +376,7 @@ public:
     // 应用中转站弹窗设置：尺寸（宽/高，屏幕放不下时仍会由 Widget 收缩）与内容密度。
     // 由 Widget 在构造与设置保存后调用；位置由 Widget 计算，不在这里。
     void applyDockSettings(int width, int height, int density);
+    void resizeEvent(QResizeEvent *event) override;
     // 弹窗背景不透明度（千分比 0~1000，默认 871 = 87.1%）
     void setDockOpacity(int permille);
     int dockOpacity() const { return m_dockOpacity; }
@@ -410,12 +411,19 @@ signals:
     void settingsRequested();
     void systemMonitorRequested();
     void quitRequested();
+    // 用户拖拽弹窗边缘调整大小后发出（Widget 负责写入配置持久化；本对象同步首选尺寸）
+    void sizeEdited(int width, int height);
 
 protected:
     void showEvent(QShowEvent *event) override;
     void hideEvent(QHideEvent *event) override;
     void paintEvent(QPaintEvent *event) override;
     bool eventFilter(QObject *watched, QEvent *event) override;
+    // ---- 鼠标边缘调整大小（拖弹窗边框改尺寸；放开后发 sizeEdited 落盘） ----
+    void mousePressEvent(QMouseEvent *event) override;
+    void mouseMoveEvent(QMouseEvent *event) override;
+    void mouseReleaseEvent(QMouseEvent *event) override;
+    void leaveEvent(QEvent *event) override;
 
 private slots:
     void onNoteHover();             // 新增记事：浮出输入框
@@ -470,6 +478,18 @@ private:
     QCheckBox       *m_transitOnlyBtn = nullptr;  // 来源开关：仅中转数据
     QColor           m_accentColor = QColor::fromRgb(0x41, 0xB0, 0xDD);         // 主题强调色（默认=主题蓝）
     int              m_prefWidth  = kPreferredWidth;    // 弹窗首选尺寸（跟随配置）
+    // 鼠标边缘调整大小
+    enum { kResizeNone = 0, kResizeL = 1, kResizeR = 2, kResizeT = 4, kResizeB = 8 };
+    static constexpr int kMinDockWidth  = 240;    // 与设置窗 spin 范围 / applyDockSettings 一致
+    static constexpr int kMinDockHeight = 260;
+    static constexpr int kResizeHandle  = 6;      // 边缘热区宽度（px）
+    int    m_resizeEdges   = kResizeNone;         // 当前正在拖拽的边（位标志）
+    QRect  m_resizeStart;                         // 按下时窗口几何（屏幕坐标）
+    QPoint m_resizePressPos;                      // 按下时鼠标全局位置
+    QPoint m_resizePressLocal;                    // Wayland 下无全局坐标，用局部按下点算增量
+    bool   m_mouseResizing = false;
+    int    resizeEdgeAt(const QPoint &localPos) const;   // 光标位置 → 边缘位标志
+    static Qt::CursorShape cursorForEdges(int edges);    // 边缘 → 光标形状
     int              m_prefHeight = kPreferredHeight;
     int              m_dockOpacity = 871;               // 弹窗背景不透明度（千分比，默认 87.1%）
     bool             m_rememberScroll = false;          // 记住上次滚动位置（默认不记住）

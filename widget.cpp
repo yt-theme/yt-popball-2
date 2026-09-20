@@ -218,6 +218,13 @@ Widget::Widget(QWidget *parent)
     // 面板右上角"操作"菜单（设置 / 系统监视器 / 退出）→ 原悬浮球右键菜单的动作
     connect(this->popDock, &PopDock::settingsRequested, this, &Widget::onMenuSettings);
     connect(this->popDock, &PopDock::systemMonitorRequested, this, &Widget::onMenuSystemMonitor);
+    // 用户拖弹窗边缘调整大小 → 写配置持久化（下次打开/设置窗回显都按新尺寸）
+    connect(this->popDock, &PopDock::sizeEdited, this, [this](int w, int h) {
+        if (this->config != nullptr) {
+            this->config->setDockWidth(w);
+            this->config->setDockHeight(h);
+        }
+    });
     connect(this->popDock, &PopDock::quitRequested, this, &Widget::onMenuQuit);
     this->setAcceptDrops(true);   // 允许把文件拖到球上
 }
@@ -1156,7 +1163,7 @@ QPoint Widget::popDockTargetPos()
     int pw = qMin(prefW, qMax(240, sr.width()  - margin * 2));
     int ph = qMin(prefH, qMax(260, sr.height() - margin * 2));
     if (this->popDock != nullptr)
-        this->popDock->setFixedSize(pw, ph);
+        this->popDock->resize(pw, ph);   // 只调整尺寸，不再固定：用户可拖边缘改大小
 
     // ---- 展示位置：0=自动 1=悬浮球右侧 2=悬浮球左侧 3=屏幕居中 ----
     const int posMode = (this->config != nullptr) ? this->config->getDockPosition() : 0;
