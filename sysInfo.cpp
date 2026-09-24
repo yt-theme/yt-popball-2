@@ -9,6 +9,9 @@
 #include <QJsonArray>
 #include <QJsonValue>
 #include <QStandardPaths>
+#include <QProcess>
+#include <QDir>
+#include <QFileInfo>
 #include <cstring>
 #include <cwchar>
 
@@ -307,6 +310,30 @@ bool isVirtualNetInterface(const QString &name)
             return true;
     return false;
 }
+
+// GPU 温度：在 device/hwmon 下找 temp*_input（毫摄氏度→℃），junction 优先，否则首个有效值
+double linuxHwmonGpuTemp(const QString &deviceDir)
+{
+    double first = -1.0, junction = -1.0;
+    QDir hd(deviceDir + QStringLiteral("/hwmon"));
+    const QStringList hws = hd.entryList(QDir::Dirs | QDir::NoDotAndDotDot);
+    for (const QString &h : hws) {
+        const QString d = deviceDir + QStringLiteral("/hwmon/") + h;
+        QDir dd(d);
+        const QStringList inputs =
+            dd.entryList(QStringList() << QStringLiteral("temp*_input"), QDir::Files);
+        for (const QString &f : inputs) {
+            const QString base = f.section(QLatin1Char('_'), 0, 0);
+            const QString lab = readTextFile(d + QLatin1Char('/') + base
+                                             + QStringLiteral("_label")).toLower();
+            const double v = readTextFile(d + QLatin1Char('/') + f).toDouble() / 1000.0;
+            if (!(v > 0.0 && v < 150.0)) continue;
+            if (first < 0.0) first = v;
+            if (lab.contains(QStringLiteral("junction"))) junction = v;
+        }
+    }
+    return junction >= 0.0 ? junction : first;
+}
 #endif // Q_OS_LINUX
 
 #if defined(Q_OS_MACOS)
@@ -477,6 +504,103 @@ bool smcReadCpuTemperature(io_connect_t conn, const QList<quint32> &keys, double
     *outTemp = best;
     return true;
 }
+
+// ---------------------------------------------------------------------------------------
+//  macOS：GPU 占用率（IOAccelerator 的 PerformanceStatistics）
+//   Intel 集显 / AMD 独显 / Apple Silicon 通用，无需特殊权限。
+// ---------------------------------------------------------------------------------------
+double macReadGpuUtilization(QString *nameOut)
+{
+    io_iterator_t it = 0;
+    kern_return_t kr = IOServiceGetMatchingServices(
+        kIOMainPortDefault, IOServiceMatching("IOAccelerator"), &it);
+    if (kr != kIOReturnSuccess)
+        return -1.0;
+
+    double best = -1.0;
+    io_object_t obj = 0;
+    while ((obj = IOIteratorNext(it)) != 0) {
+        if (nameOut != nullptr && nameOut->isEmpty()) {
+            CFTypeRef bn = IORegistryEntryCreateCFProperty(
+                obj, CFSTR("IOGLBundleName"), kCFAllocatorDefault, 0);
+            if (bn != nullptr && CFGetTypeID(bn) == CFStringGetTypeID()) {
+                char buf[160] = {0};
+                if (CFStringGetCString((CFStringRef)bn, buf, sizeof(buf),
+                                       kCFStringEncodingUTF8))
+                    *nameOut = QString::fromUtf8(buf);
+            }
+            if (bn != nullptr) CFRelease(bn);
+        }
+
+        CFTypeRef props = IORegistryEntryCreateCFProperty(
+            obj, CFSTR("PerformanceStatistics"), kCFAllocatorDefault, 0);
+        if (props != nullptr && CFGetTypeID(props) == CFDictionaryGetTypeID()) {
+            CFDictionaryRef d = (CFDictionaryRef)props;
+            static const CFStringRef kCandidates[] = {
+                CFSTR("Device Utilization %"),
+                CFSTR("GPU Activity(Device Control)"),
+                CFSTR("Renderer Utilization %"),
+                CFSTR("Tiler Utilization %"),
+            };
+            for (const CFStringRef &key : kCandidates) {
+                CFTypeRef v = CFDictionaryGetValue(d, key);
+                if (v != nullptr && CFGetTypeID(v) == CFNumberGetTypeID()) {
+                    double x = 0.0;
+                    if (CFNumberGetValue((CFNumberRef)v, kCFNumberDoubleType, &x)
+                        && x >= 0.0 && x <= 100.0)
+                        best = qMax(best, x);
+                }
+            }
+        }
+        if (props != nullptr) CFRelease(props);
+        IOObjectRelease(obj);
+    }
+    IOObjectRelease(it);
+    return best;
+}
+
+// GPU 温度键：T 开头、第二个字符为 G/g（Intel 独显 TG0D/TG0P、AMD TG@D/TGGC、
+// Apple Silicon 若暴露 Tg.. 也会被捕获）。与 CPU 键（TC/Tp/Te/Tc）不冲突。
+QList<quint32> smcDiscoverGpuTempKeys(io_connect_t conn)
+{
+    QList<quint32> keys;
+    const quint32 keyCount = smcKeyFromStr("#KEY");
+    unsigned int  ksize = 0;
+    char          ktype[5] = {0};
+    unsigned char kb[32]  = {0};
+    if (!smcKeyInfo(conn, keyCount, &ksize, ktype)
+        || !smcReadBytes(conn, keyCount, ksize, kb))
+        return keys;
+
+    unsigned int total = 0;
+    for (unsigned int i = 0; i < ksize && i < 4; ++i)
+        total = (total << 8) | kb[i];
+    if (total == 0 || total > 20000)
+        return keys;
+
+    for (unsigned int i = 0; i < total; ++i) {
+        SmcKeyData in, out;
+        memset(&in, 0, sizeof(in));
+        memset(&out, 0, sizeof(out));
+        in.data8  = kSmcCmdReadIndex;
+        in.data32 = i;
+        if (smcCall(conn, kSmcKernelIndex, &in, &out) != kIOReturnSuccess)
+            continue;
+        char k[5];
+        smcKeyToStr(k, out.key);
+        if (k[0] != 'T' || (k[1] != 'G' && k[1] != 'g'))
+            continue;
+        unsigned int size = 0;
+        char type[5] = {0};
+        if (!smcKeyInfo(conn, out.key, &size, type))
+            continue;
+        if (size != 4 && size != 2)
+            continue;
+        keys.append(out.key);
+    }
+    return keys;
+}
+
 #endif // Q_OS_MACOS
 
 #if defined(Q_OS_WIN)
@@ -1320,6 +1444,95 @@ void SysInfo::updateSysinfo()
         this->cpuTemperatureOk = false;
     }
 
+    // ---------------------------------------------------------------------- GPU 占用率 / 温度
+    {
+        double gu = -1.0, gt = -1.0; QString gname;
+
+        // 1) NVIDIA：nvidia-smi 一次拿到占用、温度、型号
+        {
+            QProcess qp;
+            qp.start(QStringLiteral("nvidia-smi"), QStringList()
+                << QStringLiteral("--query-gpu=utilization.gpu,temperature.gpu,name")
+                << QStringLiteral("--format=csv,noheader,nounits"));
+            if (qp.waitForFinished(800)) {
+                const QString line =
+                    QString::fromLocal8Bit(qp.readAllStandardOutput())
+                        .section(QLatin1Char('\n'), 0, 0);
+                const QStringList c = line.split(QLatin1Char(','));
+                if (c.size() >= 1) gu = c[0].trimmed().toDouble();
+                if (c.size() >= 2) gt = c[1].trimmed().toDouble();
+                if (c.size() >= 3) gname = c[2].trimmed();
+            }
+        }
+
+        // 2) 开源驱动 sysfs（amdgpu / intel / 其它）
+        if (gu < 0.0) {
+            QDir drm(QStringLiteral("/sys/class/drm"));
+            const QStringList cards =
+                drm.entryList(QStringList() << QStringLiteral("card*"), QDir::Dirs);
+            for (const QString &card : cards) {
+                if (card.contains(QLatin1Char('-'))) continue;   // 跳过 cardN-M 输出节点
+                const QString dev = QStringLiteral("/sys/class/drm/") + card
+                                  + QStringLiteral("/device");
+                if (!QFileInfo::exists(dev + QStringLiteral("/driver"))) continue;
+
+                if (gname.isEmpty())
+                    gname = readTextFile(dev + QStringLiteral("/product_name")).trimmed();
+
+                // amdgpu：内核直接给瞬时占用百分比
+                const QString busyPct =
+                    readTextFile(dev + QStringLiteral("/gpu_busy_percent")).trimmed();
+                if (!busyPct.isEmpty()) {
+                    bool ok = false;
+                    const double v = busyPct.toDouble(&ok);
+                    if (ok) gu = v;
+                }
+
+                // Intel（xe / 新 i915）：各引擎 busy/total 差值算瞬时利用率
+                if (gu < 0.0) {
+                    const QStringList engRoots = {
+                        dev + QStringLiteral("/tile0/gt0/engines"),
+                        dev + QStringLiteral("/gt/gt0/engines"),
+                        dev + QStringLiteral("/engines") };
+                    for (const QString &er : engRoots) {
+                        if (!QFileInfo::exists(er)) continue;
+                        QDir rd(er);
+                        const QStringList engs =
+                            rd.entryList(QDir::Dirs | QDir::NoDotAndDotDot);
+                        for (const QString &eng : engs) {
+                            const QString ed = er + QLatin1Char('/') + eng;
+                            const quint64 b =
+                                readTextFile(ed + QStringLiteral("/busy")).toULongLong();
+                            const quint64 tt =
+                                readTextFile(ed + QStringLiteral("/total")).toULongLong();
+                            auto it = this->_gpuEngineLast.constFind(ed);
+                            if (it != this->_gpuEngineLast.constEnd() && tt > it->second) {
+                                const quint64 db  = b  - it->first;
+                                const quint64 dt2 = tt - it->second;
+                                if (dt2 > 0)
+                                    gu = qMax(gu, double(db) * 100.0 / double(dt2));
+                            }
+                            this->_gpuEngineLast[ed] = qMakePair(b, tt);
+                        }
+                        if (gu >= 0.0) break;
+                    }
+                }
+
+                // 温度
+                const double t = linuxHwmonGpuTemp(dev);
+                if (t > 0.0) gt = t;
+
+                if (gu >= 0.0) break;
+            }
+        }
+
+        this->gpuUsageOk = (gu >= 0.0 && gu <= 100.0);
+        if (this->gpuUsageOk) this->gpuUsage = gu;
+        this->gpuTemperatureOk = (gt >= 0.0);
+        if (this->gpuTemperatureOk) this->gpuTemperature = gt;
+        if (!gname.isEmpty()) this->gpuName = gname;
+    }
+
     // ---------------------------------------------------------------------- CPU 频率
     double mhz = 0.0;
     if (probeCpuFrequencyMHz(&mhz)) {
@@ -1471,6 +1684,9 @@ void SysInfo::checkTemperatorFilePath()
     this->_smcOpen     = true;
     this->_smcCpuKeys  = smcDiscoverCpuTempKeys(conn);
     this->cpuTemperatureOk = !this->_smcCpuKeys.isEmpty();
+    this->_smcGpuKeys  = smcDiscoverGpuTempKeys(conn);
+    this->gpuTemperatureOk = !this->_smcGpuKeys.isEmpty();
+    qDebug() << "[SysInfo] AppleSMC GPU 温度键:" << this->_smcGpuKeys.size() << "个";
 
     if (this->cpuTemperatureOk)
         qDebug() << "[SysInfo] arch=" << QSysInfo::currentCpuArchitecture()
@@ -1478,6 +1694,7 @@ void SysInfo::checkTemperatorFilePath()
     else
         qDebug() << "[SysInfo] arch=" << QSysInfo::currentCpuArchitecture()
                  << "未枚举到 CPU 温度键，将不显示温度";
+
 }
 
 void SysInfo::updateSysinfo()
@@ -1534,6 +1751,33 @@ void SysInfo::updateSysinfo()
     } else {
         this->cpuTemperature   = 0.0;
         this->cpuTemperatureOk = false;
+    }
+
+    // ---------------------------------------------------------------------- GPU 占用率
+    {
+        QString gname;
+        const double gu = macReadGpuUtilization(&gname);
+        if (gu >= 0.0) {
+            this->gpuUsage   = gu;
+            this->gpuUsageOk = true;
+            if (!gname.isEmpty()) this->gpuName = gname;
+        } else {
+            this->gpuUsage   = 0.0;
+            this->gpuUsageOk = false;
+        }
+    }
+    // ---------------------------------------------------------------------- GPU 温度
+    {
+        double gt = 0.0;
+        if (this->_smcOpen && !this->_smcGpuKeys.isEmpty()
+            && smcReadCpuTemperature(static_cast<io_connect_t>(this->_smcConn),
+                                     this->_smcGpuKeys, &gt)) {
+            this->gpuTemperature   = gt;
+            this->gpuTemperatureOk = true;
+        } else {
+            this->gpuTemperature   = 0.0;
+            this->gpuTemperatureOk = false;
+        }
     }
 
     // ---------------------------------------------------------------------- CPU 频率
@@ -1917,6 +2161,67 @@ void SysInfo::updateSysinfo()
         this->finalizeDiskIo(diskDelta);
     }
 
+    // ---------------------------------------------------------------------- GPU 占用率
+    // PDH「GPU Engine」利用率（Win10 1709+，任务管理器同款，Intel/NVIDIA/AMD 通用）。
+    // 各引擎并行运行，整机占用取所有 (进程×GPU×引擎) 实例利用率的最大值。
+    {
+        const qlonglong gpuNow = QDateTime::currentMSecsSinceEpoch();
+        if (!this->gpuPdhReady) {
+            if (!(this->gpuPdhTried && (gpuNow - this->gpuPdhTryMs) < 3000)) {
+                this->gpuPdhTried = true;
+                this->gpuPdhTryMs = gpuNow;
+                this->gpuCounters.clear();
+                if (this->gpuQuery != nullptr) {
+                    PdhCloseQuery(this->gpuQuery); this->gpuQuery = nullptr;
+                }
+                PDH_HQUERY q = nullptr;
+                if (PdhOpenQueryW(nullptr, 0, &q) == ERROR_SUCCESS && q != nullptr) {
+                    DWORD pathSize = 0;
+                    PDH_STATUS st = PdhExpandCounterPathW(
+                        L"\GPU Engine(*)\Utilization Percentage", nullptr, &pathSize);
+                    if (st == 0x800007D2L && pathSize > 0) {
+                        QVector<wchar_t> pbuf(pathSize);
+                        st = PdhExpandCounterPathW(
+                            L"\GPU Engine(*)\Utilization Percentage",
+                            pbuf.data(), &pathSize);
+                        if (st == ERROR_SUCCESS) {
+                            for (const wchar_t *p = pbuf.constData(); *p != L'\0';
+                                 p += wcslen(p) + 1) {
+                                PDH_HCOUNTER h = nullptr;
+                                PdhAddEnglishCounterW(q, p, 0, &h);
+                                if (h != nullptr) this->gpuCounters.push_back(h);
+                            }
+                        }
+                    }
+                    if (!this->gpuCounters.isEmpty()) {
+                        this->gpuQuery = q; this->gpuPdhReady = true;
+                        PdhCollectQueryData(q);   // 首次仅建基线
+                    } else {
+                        PdhCloseQuery(q);
+                    }
+                }
+            }
+        }
+        if (this->gpuPdhReady) {
+            PdhCollectQueryData(this->gpuQuery);
+            double mx = 0.0; bool any = false;
+            PDH_FMT_COUNTERVALUE v; DWORD fmtType = 0;
+            for (PDH_HCOUNTER h : this->gpuCounters) {
+                if (PdhGetFormattedCounterValue(h, PDH_FMT_DOUBLE, &fmtType, &v)
+                        == ERROR_SUCCESS && v.CStatus == ERROR_SUCCESS
+                        && v.doubleValue >= 0.0 && v.doubleValue <= 100.0) {
+                    mx = qMax(mx, v.doubleValue); any = true;
+                }
+            }
+            this->gpuUsageOk = any;
+            if (any) this->gpuUsage = mx;
+        } else {
+            this->gpuUsageOk = false;
+        }
+        // Windows 纯系统 API 不提供 GPU 温度（需厂商 SDK）：保持不可用，UI 自动隐藏
+        this->gpuTemperatureOk = false;
+    }
+
     this->lastUpdateTime = QDateTime::currentMSecsSinceEpoch();
 }
 
@@ -1934,6 +2239,9 @@ qulonglong SysInfo::getSwapFree()      { return this->memoryInfo.swap_free; }
 double     SysInfo::getCpuFreq()       { return this->cpuFreq; }
 double     SysInfo::getCpuUsage()      { return this->cpuUsage; }
 double     SysInfo::getCpuTemperature(){ return this->cpuTemperature; }
+double     SysInfo::getGpuUsage()      { return this->gpuUsage; }
+double     SysInfo::getGpuTemperature(){ return this->gpuTemperature; }
+QString    SysInfo::getGpuName()       { return this->gpuName; }
 qulonglong SysInfo::getReceive()       { return this->receive; }
 qulonglong SysInfo::getTransmit()      { return this->transmit; }
 qulonglong SysInfo::getDiskReadBytes()  { return this->disk_read; }
@@ -2011,3 +2319,5 @@ bool SysInfo::isSwapAvailable()           { return this->swapOk; }
 bool SysInfo::isCpuFreqAvailable()        { return this->cpuFreqOk; }
 bool SysInfo::isCpuTemperatureAvailable() { return this->cpuTemperatureOk; }
 bool SysInfo::isDiskIoAvailable()         { return this->diskIoOk; }
+bool SysInfo::isGpuUsageAvailable()       { return this->gpuUsageOk; }
+bool SysInfo::isGpuTemperatureAvailable() { return this->gpuTemperatureOk; }

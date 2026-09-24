@@ -293,14 +293,15 @@ void Widget::relayoutVisibleLcds()
         const int topY = 5, bottomY = 5;     // 数据区上下内边距
         const bool tVis = (mask & (1 << ROW_TEMP))     != 0;
         const bool fVis = (mask & (1 << ROW_FREQ))     != 0;
+        const bool gVis = (mask & (1 << ROW_GPU_TEMP)) != 0;
         const bool uVis = (mask & (1 << ROW_NET_UP))   != 0;
         const bool dVis = (mask & (1 << ROW_NET_DOWN)) != 0;
         const bool kVis = (mask & (1 << ROW_DISK))     != 0;
-        const int rowCount = (tVis || fVis ? 1 : 0) + (uVis ? 1 : 0)
-                           + (dVis ? 1 : 0) + (kVis ? 1 : 0);
+        const int rowCount = (tVis || fVis ? 1 : 0) + (gVis ? 1 : 0)
+                           + (uVis ? 1 : 0) + (dVis ? 1 : 0) + (kVis ? 1 : 0);
         const int rowH = qMax(10, (h - topY - bottomY) / qMax(1, rowCount));
         int y = topY;
-        // 行 1：温度 | 频率（两项并排）
+        // 行 1：CPU 温度 | CPU 频率（两项并排）
         if (tVis || fVis) {
             const int n  = (tVis ? 1 : 0) + (fVis ? 1 : 0);
             const int cw = qMax(1, (dataW - gapX) / n);
@@ -309,7 +310,9 @@ void Widget::relayoutVisibleLcds()
             if (fVis) { this->lcdRowRect[ROW_FREQ] = QRect(cx, y, dataW - (cx - dataX) - 1, rowH); }
             y += rowH;
         }
-        // 行 2：磁盘；行 3/4：网速上、网速下——网速放最下（用户指定顺序），各自独立一行
+        // 行 2：GPU 温度（独立行，完整标签）
+        if (gVis) { this->lcdRowRect[ROW_GPU_TEMP] = QRect(dataX, y, dataW - 1, rowH); y += rowH; }
+        // 行 3：磁盘；行 4/5：网速上、网速下——网速放最下（用户指定顺序），各自独立一行
         if (kVis) { this->lcdRowRect[ROW_DISK]     = QRect(dataX, y, dataW - 1, rowH); y += rowH; }
         if (uVis) { this->lcdRowRect[ROW_NET_UP]   = QRect(dataX, y, dataW - 1, rowH); y += rowH; }
         if (dVis) { this->lcdRowRect[ROW_NET_DOWN] = QRect(dataX, y, dataW - 1, rowH); y += rowH; }
@@ -318,7 +321,8 @@ void Widget::relayoutVisibleLcds()
         QLCDNumber *lcds[ROW_COUNT] = {
             this->cpuTempLCD, this->cpuFreqLCD,
             this->diskIoLCD,
-            this->netUploadLCD, this->netDownloadLCD
+            this->netUploadLCD, this->netDownloadLCD,
+            nullptr   // ROW_GPU_TEMP 无独立 LCD 控件
         };
         for (int i = 0; i < ROW_COUNT; ++i) {
             if (lcds[i] != nullptr && !lcds[i]->isHidden()) lcds[i]->hide();
@@ -337,7 +341,7 @@ void Widget::relayoutVisibleLcds()
     // 行按"类"分组：网速的上行/下行属于同一类（类内不加间距、贴在一起），
     // 温度 / 频率 / 磁盘各自成类。富余空间只匀给类与类之间的间隔，
     // 所以"温度+网速"、"温度+频率"时上下带间距，网速上下行之间没有空隙。
-    const int group[ROW_COUNT] = { 0, 1, 2, 3, 3 };   // NET_UP / NET_DOWN 同组
+    const int group[ROW_COUNT] = { 0, 1, 2, 3, 3, 4 };  // GPU 温度独立成组
     int classGapCount = 0;
     int prevGroup = -1;
     for (int i = 0; i < ROW_COUNT; ++i) {
@@ -381,7 +385,8 @@ void Widget::relayoutVisibleLcds()
     QLCDNumber *lcds[ROW_COUNT] = {
         this->cpuTempLCD, this->cpuFreqLCD,
         this->diskIoLCD,                          // 磁盘行也用 LCD 数码字体（与其它行一致）
-        this->netUploadLCD, this->netDownloadLCD
+        this->netUploadLCD, this->netDownloadLCD,
+        nullptr   // ROW_GPU_TEMP 无独立 LCD（仅长条形态 paintEvent 显示）
     };
     for (int i = 0; i < ROW_COUNT; ++i) {
         if (!(mask & (1 << i)) || lcds[i] == nullptr) continue;
@@ -802,9 +807,12 @@ void Widget::setUiFrame()
     fitHistory(&this->mem_data_history);
     fitHistory(&this->swap_data_history);
     {   // CPU 占用是 double，单独处理
-        QVector<double> &v = this->cpuUsage_data_history;
-        while (v.size() > charts_rows) v.pop_front();
-        while (v.size() < charts_rows) v.push_back(0.0);
+        QVector<double> *dvs[] = { &this->cpuUsage_data_history,
+                                   &this->gpuUsage_data_history };
+        for (QVector<double> *v : dvs) {
+            while (v->size() > charts_rows) v->pop_front();
+            while (v->size() < charts_rows) v->push_back(0.0);
+        }
     }
 
     // timer
@@ -1773,6 +1781,10 @@ void Widget::updateDataAndHistory()
     // cpu usage history
     if (cpuUsage_data_history.size() >= config->getChartsRows()) cpuUsage_data_history.pop_front();
     this->cpuUsage_data_history.push_back(this->sysInfo->getCpuUsage());
+
+    if (gpuUsage_data_history.size() >= config->getChartsRows()) gpuUsage_data_history.pop_front();
+    this->gpuUsage_data_history.push_back(
+        this->sysInfo->isGpuUsageAvailable() ? this->sysInfo->getGpuUsage() : 0.0);
     // mem history
     if (mem_data_history.size() >= config->getChartsRows()) mem_data_history.pop_front();
     this->mem_data_history.push_back(this->sysInfo->getMemUsed());
@@ -1897,6 +1909,10 @@ void Widget::paintEvent(QPaintEvent *)
                 this->cpuTempLCD->hide();
             }
         }
+
+        // GPU 温度（长条 paintEvent 以指标值显示；平台支持且开关打开时才占布局）
+        if (config->getGpuTempShow() == SHOW && this->sysInfo->isGpuTemperatureAvailable())
+            lcdMask |= (1 << ROW_GPU_TEMP);
 
         if (config->getNetSpeedShow() == SHOW)
         {
@@ -2083,6 +2099,33 @@ void Widget::paintEvent(QPaintEvent *)
             painter.setBrush(Qt::NoBrush);
             painter.drawPath(cpuStrokePath);
         }
+
+        // gpu 占用率曲线（仅在该平台可用时绘制）
+        if (isBar && this->sysInfo->isGpuUsageAvailable()) {
+            const QVector<double> gpuData = this->gpuUsage_data_history;
+            QPainterPath gpuPath, gpuStroke;
+            gpuPath.moveTo(gLeft, gBase);
+            bool gFirst = true;
+            const int gN = gpuData.size();
+            const double gStep = double(gW) / qMax(1, gN - 1);
+            for (int i = 0; i < gN; ++i) {
+                double u = gpuData[i];
+                if (!qIsFinite(u)) u = 0.0;
+                u = qBound(0.0, u, 100.0);
+                const QPointF pt(gLeft + gStep * i, gBase - (u / 100.0) * gH);
+                if (gFirst) { gpuStroke.moveTo(pt); gFirst = false; }
+                else         { gpuStroke.lineTo(pt); }
+                gpuPath.lineTo(pt);
+            }
+            gpuPath.lineTo(gRight, gBase);
+            gpuPath.lineTo(gLeft, gBase);
+            QColor gf = QColor(config->getGpuUsageColor()); gf.setAlpha(150);
+            painter.fillPath(gpuPath, gf);
+            QColor gl = QColor(config->getGpuUsageColor()); gl.setAlpha(235);
+            painter.setPen(QPen(gl, 1.8));
+            painter.setBrush(Qt::NoBrush);
+            painter.drawPath(gpuStroke);
+        }
         if (chartClipped) painter.restore();
 
         // ---- 长条形：右侧数据区文字（QPainter 直接绘制，字体/颜色/单位完全可控） ----
@@ -2183,7 +2226,14 @@ void Widget::paintEvent(QPaintEvent *)
                 painter.drawText(r, Qt::AlignLeft | Qt::AlignVCenter,
                                  QString::number(qRound(this->sysInfo->getCpuFreq())));
             }
-            // 行 2：磁盘；行 3/4：上行、下行（网速放最下，用户指定顺序）
+            // GPU 温度（独立行，完整标签）
+            if (lcdMask & (1 << ROW_GPU_TEMP)) {
+                const QString tagGpu = enLang ? QStringLiteral("GPU") : QStringLiteral("显卡");
+                drawValue(this->lcdRowRect[ROW_GPU_TEMP], tagGpu,
+                          QString::number(qRound(this->sysInfo->getGpuTemperature())),
+                          QStringLiteral("℃"));
+            }
+            // 行 3：磁盘；行 4/5：上行、下行（网速放最下，用户指定顺序）
             const int intervalMs = this->config->getUpdateDataInterval();
             const double seconds = intervalMs > 0 ? intervalMs / 1000.0 : 1.0;
             if (lcdMask & (1 << ROW_DISK)) {

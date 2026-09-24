@@ -37,6 +37,7 @@ const ColorDef kColors[] = {
     { "mem_color",         QT_TRANSLATE_NOOP("SettingsDialog", "内存图") },
     { "swap_color",        QT_TRANSLATE_NOOP("SettingsDialog", "交换分区") },
     { "cpu_usage_color",   QT_TRANSLATE_NOOP("SettingsDialog", "CPU 占用") },
+    { "gpu_usage_color",   QT_TRANSLATE_NOOP("SettingsDialog", "GPU 占用") },
     { "shadow_color",      QT_TRANSLATE_NOOP("SettingsDialog", "阴影") },
     { "text_color",        QT_TRANSLATE_NOOP("SettingsDialog", "悬浮球文字") },
     { "cpu_temp_color",    QT_TRANSLATE_NOOP("SettingsDialog", "温度文字") },
@@ -372,18 +373,20 @@ QWidget *SettingsDialog::buildShowSection()
     g->setProperty("section", "group");
     v->addWidget(g);
 
-    auto *row = new QHBoxLayout();
-    row->setSpacing(18);
+    auto *grid = new QGridLayout();
+    grid->setHorizontalSpacing(18);
+    grid->setVerticalSpacing(10);
     chkTemp = new QCheckBox(tr("CPU 温度"), box);
     chkFreq = new QCheckBox(tr("CPU 频率"), box);
     chkNet  = new QCheckBox(tr("网速"), box);
     chkDiskIo = new QCheckBox(tr("磁盘读写"), box);
-    row->addWidget(chkTemp);
-    row->addWidget(chkFreq);
-    row->addWidget(chkNet);
-    row->addWidget(chkDiskIo);
-    row->addStretch(1);
-    v->addLayout(row);
+    chkGpuTemp = new QCheckBox(tr("GPU 温度"), box);
+    QCheckBox *showChks[] = { chkTemp, chkFreq, chkNet, chkDiskIo, chkGpuTemp };
+    const int kShowCols = 3;
+    for (int i = 0; i < int(sizeof(showChks) / sizeof(showChks[0])); ++i)
+        grid->addWidget(showChks[i], i / kShowCols, i % kShowCols, Qt::AlignLeft);
+    grid->setColumnStretch(kShowCols, 1);
+    v->addLayout(grid);
 
     // ---- 磁盘读写统计哪块盘 ----
     auto *drow = new QHBoxLayout();
@@ -930,6 +933,7 @@ QString SettingsDialog::configColor(const QString &key) const
     if (key == QLatin1String("mem_color"))         return cfg->getMemColor();
     if (key == QLatin1String("swap_color"))        return cfg->getSwapColor();
     if (key == QLatin1String("cpu_usage_color"))   return cfg->getCpuUsageColor();
+    if (key == QLatin1String("gpu_usage_color"))   return cfg->getGpuUsageColor();
     if (key == QLatin1String("shadow_color"))      return cfg->getShadowColor();
     if (key == QLatin1String("text_color"))        return cfg->getCpuTempColor();  // 总项：以温度文字为代表
     if (key == QLatin1String("cpu_temp_color"))    return cfg->getCpuTempColor();
@@ -946,6 +950,7 @@ void SettingsDialog::setConfigColor(const QString &key, const QString &value)
     else if (key == QLatin1String("mem_color"))         cfg->setMemColor(value);
     else if (key == QLatin1String("swap_color"))        cfg->setSwapColor(value);
     else if (key == QLatin1String("cpu_usage_color"))   cfg->setCpuUsageColor(value);
+    else if (key == QLatin1String("gpu_usage_color"))   cfg->setGpuUsageColor(value);
     else if (key == QLatin1String("shadow_color"))      cfg->setShadowColor(value);
     // 「悬浮球文字」总项：一次同步四个文字色（温度/频率/网速/磁盘IO）
     else if (key == QLatin1String("text_color")) {
@@ -972,6 +977,7 @@ void SettingsDialog::loadFromConfig()
     }
     chkTemp->setChecked(cfg->getCpuTempShow() == 1);
     chkFreq->setChecked(cfg->getCpuFreqShow() == 1);
+    chkGpuTemp->setChecked(cfg->getGpuTempShow() == 1);
     chkNet->setChecked(cfg->getNetSpeedShow() == 1);
     chkDiskIo->setChecked(cfg->getDiskIoShow() == 1);
 
@@ -1044,6 +1050,7 @@ void SettingsDialog::loadDefaults()
         { "mem_color",         "#2E6FC4" },
         { "swap_color",        "#8C2A5E93" },
         { "cpu_usage_color",   "#4FB7DDFF" },
+        { "gpu_usage_color",   "#FFC084FC" },
         { "shadow_color",      "#000000" },
         { "text_color",        "#fff" },
         { "cpu_temp_color",    "#fff" },
@@ -1061,6 +1068,7 @@ void SettingsDialog::loadDefaults()
     // 显示
     chkTemp->setChecked(true);
     chkFreq->setChecked(false);
+    chkGpuTemp->setChecked(true);
     chkNet->setChecked(true);
     chkDiskIo->setChecked(false);   // 磁盘读写默认不展示，需要的人自己勾
     // 磁盘选择：默认 = IO 最高的盘
@@ -1173,6 +1181,7 @@ void SettingsDialog::applyChanges()
 
     cfg->setCpuTempShow(chkTemp->isChecked() ? 1 : 0);
     cfg->setCpuFreqShow(chkFreq->isChecked() ? 1 : 0);
+    cfg->setGpuTempShow(chkGpuTemp->isChecked() ? 1 : 0);
     cfg->setNetSpeedShow(chkNet->isChecked() ? 1 : 0);
     cfg->setDiskIoShow(chkDiskIo->isChecked() ? 1 : 0);
     // 磁盘选择：0 = IO 最高的盘（默认）, 1 = 指定盘

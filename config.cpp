@@ -82,6 +82,7 @@ void Config::readConfig()
     this->mem_color             = this->settingsObj->value("/appearance/mem_color", "#2E6FC4").toString();
     this->swap_color            = this->settingsObj->value("/appearance/swap_color", "#8C2A5E93").toString();
     this->cpu_usage_color       = this->settingsObj->value("/appearance/cpu_usage_color", "#4FB7DDFF").toString();
+    this->gpu_usage_color       = this->settingsObj->value("/appearance/gpu_usage_color", "#FFC084FC").toString();
     this->cpu_usage_width       = this->settingsObj->value("/appearance/cpu_usage_width", 1.1).toDouble();
     this->cpu_freq_color        = this->settingsObj->value("/appearance/cpu_freq_color", "#fff").toString();
     this->cpu_temp_color        = this->settingsObj->value("/appearance/cpu_temp_color", "#fff").toString();
@@ -99,6 +100,7 @@ void Config::readConfig()
 
     // [components_show]
     this->cpu_temp_show         = this->settingsObj->value("/components_show/cpu_temp_show", 1).toInt();
+    this->gpu_temp_show         = this->settingsObj->value("/components_show/gpu_temp_show", 1).toInt();
     this->cpu_freq_show         = this->settingsObj->value("/components_show/cpu_freq_show", 0).toInt();
     this->net_speed_show        = this->settingsObj->value("/components_show/net_speed_show", 1).toInt();
     // 磁盘读写默认不展示（用户可在设置里勾选「磁盘读写」打开）
@@ -239,6 +241,11 @@ void Config::setCpuUsageColor(QString val)
     this->settingsObj->setValue("/appearance/cpu_usage_color", val);
     this->cpu_usage_color = val;
 }
+void Config::setGpuUsageColor(QString val)
+{
+    this->settingsObj->setValue("/appearance/gpu_usage_color", val);
+    this->gpu_usage_color = val;
+}
 
 void Config::setCpuUsageWidth(double val)
 {
@@ -309,6 +316,11 @@ void Config::setCpuTempShow(qint8 val)
 {
     this->settingsObj->setValue("/components_show/cpu_temp_show", val);
     this->cpu_temp_show = val;
+}
+void Config::setGpuTempShow(qint8 val)
+{
+    this->settingsObj->setValue("/components_show/gpu_temp_show", val);
+    this->gpu_temp_show = val;
 }
 void Config::setCpuFreqShow(qint8 val)
 {
@@ -481,6 +493,10 @@ QString Config::getCpuUsageColor()
 {
     return this->cpu_usage_color;
 }
+QString Config::getGpuUsageColor()
+{
+    return this->gpu_usage_color;
+}
 double Config::getCpuUsageWidth()
 {
     return this->cpu_usage_width;
@@ -537,6 +553,10 @@ qint32 Config::getAsideCornerRadius()
 qint8 Config::getCpuTempShow()
 {
     return this->cpu_temp_show;
+}
+qint8 Config::getGpuTempShow()
+{
+    return this->gpu_temp_show;
 }
 qint8 Config::getCpuFreqShow()
 {

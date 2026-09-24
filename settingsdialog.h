@@ -106,6 +106,7 @@ private:
 
     QCheckBox *chkTemp = nullptr;
     QCheckBox *chkFreq = nullptr;
+    QCheckBox *chkGpuTemp = nullptr;
     QCheckBox *chkNet  = nullptr;
     QCheckBox *chkDiskIo = nullptr;
 

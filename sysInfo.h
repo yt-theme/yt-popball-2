@@ -76,6 +76,8 @@ private:
 #if defined(Q_OS_LINUX)
     // CPU 温度候选文件（启动时探测一次，之后只读这些文件）
     QStringList         _temp_paths = {};
+    // Intel GPU 各引擎 busy/total 上次采样（算瞬时利用率）
+    QHash<QString, QPair<quint64, quint64>> _gpuEngineLast = {};
 #endif
 
     // mem & swap
@@ -93,6 +95,13 @@ private:
     double cpuUsageIdleLast     = 0.0;
     double cpuUsage             = 0.0;
     bool   cpuUsageHasPrev      = false;
+
+    // gpu（占用率 0~100 / 温度 ℃ / 型号名）
+    double gpuUsage             = 0.0;
+    bool   gpuUsageOk           = false;
+    double gpuTemperature       = 0.0;
+    bool   gpuTemperatureOk     = false;
+    QString gpuName;
 
     // last update time
     qlonglong lastUpdateTime    = 0;
@@ -138,6 +147,13 @@ private:
     bool                    pdhReady  = false;   // PDH 查询已初始化成功
     bool                    pdhTried  = false;   // 是否已尝试过初始化（失败后隔段时间重试）
     qlonglong               pdhTryMs  = 0;       // 上次初始化尝试时间（重试退避用）
+
+    // GPU 占用率：PDH「GPU Engine」利用率计数器（Win10 1709+，任务管理器同款，跨厂商）
+    PDH_HQUERY              gpuQuery  = nullptr;
+    QVector<PDH_HCOUNTER>   gpuCounters = {};
+    bool                    gpuPdhReady = false;
+    bool                    gpuPdhTried = false;
+    qlonglong               gpuPdhTryMs = 0;
 #endif
 
 #if defined(Q_OS_MACOS)
@@ -145,6 +161,7 @@ private:
     unsigned int   _smcConn     = 0;     // io_connect_t
     bool           _smcOpen     = false;
     QList<quint32> _smcCpuKeys  = {};    // 启动时枚举出的 CPU 温度键
+    QList<quint32> _smcGpuKeys  = {};    // 启动时枚举出的 GPU 温度键
 #endif
 
     // 公共收尾：按各盘本间隔 (读,写) 差值，按"指定盘 / IO 最高的盘"选出生效盘
@@ -168,6 +185,9 @@ public:
     double  getCpuFreq();
     double  getCpuUsage();
     double  getCpuTemperature();
+    double  getGpuUsage();
+    double  getGpuTemperature();
+    QString getGpuName();
     qulonglong getReceive();
     qulonglong getTransmit();
     qulonglong getDiskReadBytes();
@@ -185,6 +205,8 @@ public:
     bool isCpuFreqAvailable();
     bool isCpuTemperatureAvailable();
     bool isDiskIoAvailable();
+    bool isGpuUsageAvailable();
+    bool isGpuTemperatureAvailable();
 };
 
 #if defined(Q_OS_WIN)

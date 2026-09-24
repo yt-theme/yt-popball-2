@@ -81,6 +81,7 @@ private:
     QVector<quint64> mem_data_history;
     QVector<quint64> swap_data_history;
     QVector<double>  cpuUsage_data_history;
+    QVector<double>  gpuUsage_data_history;
 
     // widgets
     QLCDNumber *cpuTempLCD       = nullptr;
@@ -98,7 +99,7 @@ private:
     // 竖直排布按实际可见的行数自适应：只显示 3 行时行高更大，5 行时自动压缩，
     // 既不留空洞、也不会被挤出球外。
     enum LcdRow {
-        ROW_TEMP = 0, ROW_FREQ, ROW_DISK, ROW_NET_UP, ROW_NET_DOWN, ROW_COUNT
+        ROW_TEMP = 0, ROW_FREQ, ROW_DISK, ROW_NET_UP, ROW_NET_DOWN, ROW_GPU_TEMP, ROW_COUNT
     };
     quint8 lcdRowMask = 0;                    // 各行的"应显示"位图
     QRect  lcdRowRect[ROW_COUNT];             // 各行在球内的矩形（LCD 摆放用）

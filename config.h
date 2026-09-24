@@ -33,6 +33,7 @@ private:
     QString mem_color;
     QString swap_color;
     QString cpu_usage_color;
+    QString gpu_usage_color;
     double  cpu_usage_width;
     QString cpu_freq_color;
     QString cpu_temp_color;
@@ -52,6 +53,7 @@ private:
 
     // [components_show]
     qint8 cpu_temp_show;
+    qint8 gpu_temp_show;
     qint8 cpu_freq_show;
     qint8 net_speed_show;
     qint8 disk_io_show;            // 1=显示磁盘读写速度, 0=隐藏
@@ -113,6 +115,7 @@ public:
     void setMemColor(QString val);
     void setSwapColor(QString val);
     void setCpuUsageColor(QString val);
+    void setGpuUsageColor(QString val);
     void setCpuUsageWidth(double val);
     void setCpuFreqColor(QString val);
     void setCpuTempColor(QString val);
@@ -130,6 +133,7 @@ public:
 
     // [components_show]
     void setCpuTempShow(qint8 val);
+    void setGpuTempShow(qint8 val);
     void setCpuFreqShow(qint8 val);
     void setNetSpeedShow(qint8 val);
     void setDiskIoShow(qint8 val);
@@ -171,6 +175,7 @@ public:
     QString getMemColor();
     QString getSwapColor();
     QString getCpuUsageColor();
+    QString getGpuUsageColor();
     double  getCpuUsageWidth();
     QString getCpuFreqColor();
     QString getCpuTempColor();
@@ -188,6 +193,7 @@ public:
 
     // [components_show]
     qint8 getCpuTempShow();
+    qint8 getGpuTempShow();
     qint8 getCpuFreqShow();
     qint8 getNetSpeedShow();
     qint8 getDiskIoShow();
