@@ -17,6 +17,7 @@
 #include <QProcess>
 #include <QStandardPaths>
 #include <QtMath>
+#include <QFontMetrics>
 
 #if defined(POPBALL_HAVE_X11)
 #  include <QtGui/qguiapplication_platform.h>
@@ -256,45 +257,56 @@ void Widget::relayoutVisibleLcds()
         if (mask & (1 << i)) ++visible;
     if (visible <= 0) return;
 
-    // ---------------- 长条形：2 行横排 ----------------
+    // ---------------- 长条形：左列 CPU 曲线图 + 右侧数据竖排（文字全部由 paintEvent 绘制） ----------------
+    // 布局：
+    //   左列约 42% 宽度：CPU 使用率曲线图（全高，见 paintEvent 图表段——只画 CPU
+    //       一条曲线，空间小、多条曲线叠在一起会糊成一片）；
+    //   右列数据区自上而下：
+    //       行 1：温度 | 频率（两项并排，各占半宽）；
+    //       行 2：网速上行（独立一行）；
+    //       行 3：网速下行（独立一行，与上行分开不再挤同一格）；
+    //       行 4：磁盘总速度（独立一行）。
+    // 行高按可见行数自适应均分。这里的矩形只用于记录各行位置，标签/数字/单位
+    // 全部由 paintEvent 用 QPainter 文本直接绘制：QLCDNumber 7 段数码管画不出
+    // 字母和 ℃/MHz 等单位，塞进去渲染成乱码，是之前"难看"的主要来源。
+    // 因此长条形态下所有 LCD 控件保持隐藏。
     if (ballStyle == kBallBar) {
-        // 第 1 行：温度 / 频率；第 2 行：网速上 / 网速下 / 磁盘
-        const int rowOf[ROW_COUNT] = { 0, 0, 1, 1, 1 };
-        const int topH  = qRound(h * 0.40);   // 第一行（温度/频率，数值更宽）
-        const int botY  = qRound(h * 0.44);
-        const int botH  = h - botY;
-        const int pad   = 2;
-        int row0Cnt = 0, row1Cnt = 0;
-        for (int i = 0; i < ROW_COUNT; ++i)
-            if (mask & (1 << i)) { (rowOf[i] == 0 ? row0Cnt : row1Cnt)++; }
-        const int x0 = pad, w0 = (w - pad * 2) / qMax(1, row0Cnt);
-        const int x1 = pad, w1 = (w - pad * 2) / qMax(1, row1Cnt);
-        int c0 = 0, c1 = 0;
-        for (int i = 0; i < ROW_COUNT; ++i) {
-            if (!(mask & (1 << i))) continue;
-            if (rowOf[i] == 0) {
-                this->lcdRowRect[i] = QRect(x0 + c0 * w0, qMax(1, topH / 4), w0 - pad, topH - topH / 2);
-                ++c0;
-            } else {
-                this->lcdRowRect[i] = QRect(x1 + c1 * w1, botY, w1 - pad, botH);
-                ++c1;
-            }
+        const int pad    = 2;
+        const int chartW = qMax(1, qRound(w * 0.56));   // 左列图表区宽度（占比加大）
+        const int dataX  = chartW + pad;                // 数据区 x 起点
+        const int dataW  = w - dataX - pad;             // 数据区宽度
+        const int topY = 2, bottomY = 2;                // 数据区上下留边
+        const bool tVis = (mask & (1 << ROW_TEMP))     != 0;
+        const bool fVis = (mask & (1 << ROW_FREQ))     != 0;
+        const bool uVis = (mask & (1 << ROW_NET_UP))   != 0;
+        const bool dVis = (mask & (1 << ROW_NET_DOWN)) != 0;
+        const bool kVis = (mask & (1 << ROW_DISK))     != 0;
+        const int rowCount = (tVis || fVis ? 1 : 0) + (uVis ? 1 : 0)
+                           + (dVis ? 1 : 0) + (kVis ? 1 : 0);
+        const int rowH = qMax(10, (h - topY - bottomY) / qMax(1, rowCount));
+        int y = topY;
+        // 行 1：温度 | 频率（两项并排）
+        if (tVis || fVis) {
+            const int n  = (tVis ? 1 : 0) + (fVis ? 1 : 0);
+            const int cw = qMax(1, (dataW - pad) / n);
+            int cx = dataX;
+            if (tVis) { this->lcdRowRect[ROW_TEMP] = QRect(cx, y, cw - 1, rowH); cx += cw; }
+            if (fVis) { this->lcdRowRect[ROW_FREQ] = QRect(cx, y, dataW - (cx - dataX) - 1, rowH); }
+            y += rowH;
         }
-        const double netScale = 0.8;
+        // 行 2：磁盘；行 3/4：网速上、网速下——网速放最下（用户指定顺序），各自独立一行
+        if (kVis) { this->lcdRowRect[ROW_DISK]     = QRect(dataX, y, dataW - 1, rowH); y += rowH; }
+        if (uVis) { this->lcdRowRect[ROW_NET_UP]   = QRect(dataX, y, dataW - 1, rowH); y += rowH; }
+        if (dVis) { this->lcdRowRect[ROW_NET_DOWN] = QRect(dataX, y, dataW - 1, rowH); y += rowH; }
+
+        // 长条形态文字全部由 paintEvent 绘制，LCD 控件一律隐藏
         QLCDNumber *lcds[ROW_COUNT] = {
             this->cpuTempLCD, this->cpuFreqLCD,
             this->diskIoLCD,
             this->netUploadLCD, this->netDownloadLCD
         };
         for (int i = 0; i < ROW_COUNT; ++i) {
-            if (!(mask & (1 << i)) || lcds[i] == nullptr) continue;
-            QRect r = this->lcdRowRect[i];
-            if (i == ROW_DISK || i == ROW_NET_UP || i == ROW_NET_DOWN) {
-                const int hh = qMax(1, qRound(r.height() * netScale));
-                r.setTop(r.top() + (r.height() - hh) / 2);
-                r.setHeight(hh);
-            }
-            lcds[i]->setGeometry(r);
+            if (lcds[i] != nullptr && !lcds[i]->isHidden()) lcds[i]->hide();
         }
         return;
     }
@@ -1701,9 +1713,12 @@ void Widget::onSettingsApplied()
 {
     // 磁盘读写：设置里可能改了"统计哪块盘"
     this->sysInfo->setDiskSelection(config->getDiskIoMode(), config->getDiskIoName());
-    this->applyLcdLayout();   // 尺寸可能变了
+    // 先按新配置定窗口尺寸/定时器/蒙版（setFixedSize 在这里执行），
+    // 再按"新尺寸 + 新形态"重排 LCD：顺序不能反，否则 relayout 用的是切换前的旧尺寸，
+    // 形态（圆形↔长条形）切换后内容会停留在旧布局，看起来就像"没及时更新"。
+    this->setUiFrame();
+    this->applyLcdLayout();
     this->applyLcdStyle();
-    this->setUiFrame();       // 不透明度/阴影/定时器/形状蒙版在这里重套
     // 主题色可能改了 → 数据中转站里的激活/选中样式跟随刷新
     this->popDock->setAccentColor(QColor(this->config->getMainBorderColor()));
     // 弹窗尺寸 / 内容密度 / 背景不透明度可能改了 → 立即应用；若弹窗正开着就按新尺寸/位置重摆
@@ -1803,7 +1818,7 @@ void Widget::paintEvent(QPaintEvent *)
         switch (ballStyle) {
         case 1:  painter.drawRoundedRect(shapeRect, 18, 18); break;   // 圆角矩形
         case 2:  painter.drawRect(shapeRect); break;                  // 直角方形
-        case 3:  painter.drawRoundedRect(shapeRect, 12, 12); break;   // 长条形
+        case 3:  painter.drawRoundedRect(shapeRect, 4, 4); break;   // 长条形（小圆角）
         default: painter.drawEllipse(shapeRect); break;               // 球形（默认）
         }
 
@@ -1816,7 +1831,7 @@ void Widget::paintEvent(QPaintEvent *)
         switch (ballStyle) {
         case 1:  clipPath.addRoundedRect(clipRect, 16, 16); break;
         case 2:  clipPath.addRect(clipRect); break;
-        case 3:  clipPath.addRoundedRect(clipRect, 10, 10); break;
+        case 3:  clipPath.addRoundedRect(clipRect, 3, 3); break;
         default: clipPath.moveTo(clipRect.center().x(), clipRect.top());
                  clipPath.arcTo(clipRect, 90, 360);
                  clipPath.closeSubpath();
@@ -1830,9 +1845,11 @@ void Widget::paintEvent(QPaintEvent *)
         // cpu freq LCD（平台/发行版取不到频率时不显示）
         if (config->getCpuFreqShow() == SHOW && this->sysInfo->isCpuFreqAvailable())
         {
-            this->cpuFreqLCD->display(QString("CPU %1").arg(qRound(this->sysInfo->getCpuFreq())));
+            // 长条形：文字由 paintEvent 统一绘制，LCD 控件不参与显示
+            if (ballStyle != kBallBar)
+                this->cpuFreqLCD->display(QString("CPU %1").arg(qRound(this->sysInfo->getCpuFreq())));
             lcdMask |= (1 << ROW_FREQ);
-            if (this->cpuFreqLCD->isHidden())
+            if (ballStyle != kBallBar && this->cpuFreqLCD->isHidden())
             {
                 this->cpuFreqLCD->show();
             }
@@ -1848,9 +1865,10 @@ void Widget::paintEvent(QPaintEvent *)
         // temp LCD（当前平台无可用温度传感器时不显示，避免一直显示 0）
         if (config->getCpuTempShow() == SHOW && this->sysInfo->isCpuTemperatureAvailable())
         {
-            this->cpuTempLCD->display(QString("%1'c").arg(qRound(this->sysInfo->getCpuTemperature())));
+            if (ballStyle != kBallBar)   // 长条形态文字由 paintEvent 绘制，LCD 不参与
+                this->cpuTempLCD->display(QString("%1'c").arg(qRound(this->sysInfo->getCpuTemperature())));
             lcdMask |= (1 << ROW_TEMP);
-            if (this->cpuTempLCD->isHidden())
+            if (ballStyle != kBallBar && this->cpuTempLCD->isHidden())
             {
                 this->cpuTempLCD->show();
             }
@@ -1872,13 +1890,16 @@ void Widget::paintEvent(QPaintEvent *)
             // 原实现直接除以 450，数值小了 1000 倍（下载几 MB/s 只显示 0.00x）。
             const int intervalMs = this->config->getUpdateDataInterval();
             const double seconds = intervalMs > 0 ? intervalMs / 1000.0 : 1.0;
-            this->netUploadLCD->display(
-                QString("u %1").arg(formatNetSpeedField(this->sysInfo->getTransmit() / seconds)));
-            this->netDownloadLCD->display(
-                QString("d %1").arg(formatNetSpeedField(this->sysInfo->getReceive() / seconds)));
+            if (ballStyle != kBallBar) {
+                this->netUploadLCD->display(
+                    QString("u %1").arg(formatNetSpeedField(this->sysInfo->getTransmit() / seconds)));
+                this->netDownloadLCD->display(
+                    QString("d %1").arg(formatNetSpeedField(this->sysInfo->getReceive() / seconds)));
+            }
             lcdMask |= (1 << ROW_NET_UP) | (1 << ROW_NET_DOWN);
 
-            if (this->netUploadLCD->isHidden() || this->netDownloadLCD->isHidden())
+            if (ballStyle != kBallBar &&
+                (this->netUploadLCD->isHidden() || this->netDownloadLCD->isHidden()))
             {
                 this->netUploadLCD->show();
                 this->netDownloadLCD->show();
@@ -1899,78 +1920,204 @@ void Widget::paintEvent(QPaintEvent *)
             lcdMask |= (1 << ROW_DISK);
         }
 
-        // 可见行集合变了（开关了某个指标 / 某项可用性刚探测出来）→ 重排竖直布局
-        if (lcdMask != this->lcdRowMask)
+        // 可见行集合或形态变了（开关了某个指标 / 某项可用性刚探测出来 / 设置里切了形态）
+        // → 重排布局
+        if (lcdMask != this->lcdRowMask || ballStyle != this->lastLcdLayoutStyle)
         {
             this->lcdRowMask = lcdMask;
+            this->lastLcdLayoutStyle = ballStyle;
             this->relayoutVisibleLcds();
         }
 
-        // mem charts（内存不可用或总量为 0 时不绘制，避免除零）。
-        // 长条形（ballStyle==3）不画曲线图：横条太窄，画了也看不清。
-        if (ballStyle != 3)
-        {
+        // 图表区域（mem / swap / cpu 曲线）：
+        // 长条形 = 左侧约 42% 宽度的独立图表列（全高）。左列空间小，多条曲线叠在
+        //           一起会糊成一片，故长条只画 CPU 一条曲线（见下方 cpu charts）；
+        // 其它形态 = 原来的全窗口背景曲线（mem + swap + cpu）。
+        const bool   isBar     = (ballStyle == kBallBar);
+        const double chartW    = isBar ? qMax(1.0, double(main_width) * 0.56)
+                                       : double(main_width);
+        const double chartBase = double(main_height - edging_width);
+        const double chartH    = isBar ? double(main_height - edging_width * 2)
+                                       : double(main_height);
+        // 长条形：图表区垫一块比主背景略亮的圆角底色，曲线不再直接浮在黑底上（更有面板感）
+        if (isBar) {
+            const QRectF chartPanel(edging_width, edging_width,
+                                    chartW - edging_width * 2, main_height - edging_width * 2);
+            painter.fillRect(chartPanel, QColor(34, 44, 56, 240));
+            // 底部基线：曲线高度的视觉锚点
+            painter.setPen(QPen(QColor(255, 255, 255, 26), 1.0));
+            painter.drawLine(QPointF(chartPanel.left(), chartPanel.bottom()),
+                             QPointF(chartPanel.right(), chartPanel.bottom()));
+        }
         quint64 mem_total = this->sysInfo->getMemTotal();
-        if (this->sysInfo->isMemAvailable() && mem_total > 0)
+        if (!isBar && this->sysInfo->isMemAvailable() && mem_total > 0)
         {
             QPainterPath memPath;
-            memPath.moveTo(0, main_height - edging_width);
+            memPath.moveTo(0, chartBase);
             for (int i=0; i<this->mem_data_history.size(); i++)
             {
                 const double ratio = double(this->mem_data_history[i]) / double(mem_total);
-                memPath.lineTo(double(main_width) / charts_rows * i,
-                               main_height - ratio * main_height - edging_width);
+                memPath.lineTo(double(chartW) / charts_rows * i,
+                               chartBase - ratio * chartH);
             }
-            memPath.lineTo(main_width, main_height - edging_width);
-            memPath.lineTo(0, main_height - edging_width);
+            memPath.lineTo(chartW, chartBase);
+            memPath.lineTo(0, chartBase);
             painter.fillPath(memPath, QColor(this->config->getMemColor()));
         }
 
         // swap charts（没有交换分区时不绘制，避免除零）
         quint64 swap_total = this->sysInfo->getSwapTotal();
-        if (this->sysInfo->isSwapAvailable() && swap_total > 0)
+        if (!isBar && this->sysInfo->isSwapAvailable() && swap_total > 0)
         {
             QPainterPath swapPath;
-            swapPath.moveTo(0, main_height - edging_width);
+            swapPath.moveTo(0, chartBase);
             for (int i=0; i<this->swap_data_history.size(); i++)
             {
                 const double ratio = double(this->swap_data_history[i]) / double(swap_total);
-                swapPath.lineTo(double(main_width) / charts_rows * i,
-                               main_height - ratio * main_height - edging_width);
+                swapPath.lineTo(double(chartW) / charts_rows * i,
+                               chartBase - ratio * chartH);
             }
-            swapPath.lineTo(main_width, main_height - edging_width);
-            swapPath.lineTo(0, main_height - edging_width);
+            swapPath.lineTo(chartW, chartBase);
+            swapPath.lineTo(0, chartBase);
             painter.fillPath(swapPath, QColor(this->config->getSwapColor()));
         }
 
-        // cpu usage charts
+        // cpu usage charts（长条形画在左列图表区，其它形态画满全窗口）
         QPen cpuUsagePen;
         cpuUsagePen.setColor(config->getCpuUsageColor());
         cpuUsagePen.setStyle(Qt::SolidLine);
         cpuUsagePen.setWidthF(config->getCpuUsageWidth());
         painter.setPen(cpuUsagePen);
         QVector<double> cpuUsageData = this->cpuUsage_data_history;
-        // QPointF cpuUsagePoints[charts_rows];
-//        for (int i=0; i<charts_rows; i++)
-//        {
-//            cpuUsagePoints[i] = QPointF(main_width / charts_rows * i, main_height - (cpuUsageData[i]) - edging_width);
-//        }
-//        painter.drawPolyline(cpuUsagePoints, charts_rows);
-        QPainterPath cpuUsagePath;
+        QPainterPath cpuUsagePath;          // 闭合填充路径
+        QPainterPath cpuStrokePath;         // 开放折线路径（长条形描边用，避免描出底边）
+        bool firstPoint = true;
         for (int i=0; i<cpuUsageData.size(); i++)
         {
             double usage = cpuUsageData[i];
             if (!qIsFinite(usage)) { usage = 0.0; }   // 首次采样无基准，可能是 NaN
             if (usage < 0.0)   { usage = 0.0; }
             if (usage > 100.0) { usage = 100.0; }
-            cpuUsagePath.lineTo(double(main_width) / charts_rows * i,
-                                main_height - (usage / 100.0) * main_height - edging_width);
-
+            const QPointF pt(double(chartW) / charts_rows * i,
+                             chartBase - (usage / 100.0) * chartH);
+            if (firstPoint) { cpuStrokePath.moveTo(pt); firstPoint = false; }
+            else            { cpuStrokePath.lineTo(pt); }
+            cpuUsagePath.lineTo(pt);
         }
-        cpuUsagePath.lineTo(main_width, main_height - edging_width);
-        cpuUsagePath.lineTo(0, main_height - edging_width);
+        cpuUsagePath.lineTo(chartW, chartBase);
+        cpuUsagePath.lineTo(0, chartBase);
         painter.fillPath(cpuUsagePath, QColor(this->config->getCpuUsageColor()));
-        }   // end if (ballStyle != 3) —— 长条形不画曲线图
+        // 长条形：配置色偏淡（半透明浅蓝），深色底上看不清——填充提亮、描边加粗
+        if (isBar) {
+            QColor cpuFill = QColor(this->config->getCpuUsageColor());
+            cpuFill.setAlpha(200);
+            painter.fillPath(cpuUsagePath, cpuFill);
+            QColor cpuLine = QColor(this->config->getCpuUsageColor());
+            cpuLine.setAlpha(255);
+            painter.setPen(QPen(cpuLine, 2.0));
+            painter.setBrush(Qt::NoBrush);
+            painter.drawPath(cpuStrokePath);
+        }
+
+        // ---- 长条形：右侧数据区文字（QPainter 直接绘制，字体/颜色/单位完全可控） ----
+        if (isBar) {
+            // 标签语言：跟随「界面语言」配置（0=跟随系统 1=中文 2=English），
+            // 与 main.cpp 的 QTranslator 加载逻辑保持一致。
+            bool enLang = false;
+            const int langId = this->config->getLanguage();
+            if (langId == 2) enLang = true;
+            else if (langId == 0) {
+                bool zh = false;
+                const QStringList uiLangs = QLocale::system().uiLanguages();
+                for (const QString &l : uiLangs)
+                    if (l.startsWith(QLatin1String("zh"))) { zh = true; break; }
+                enLang = !zh;
+            }
+            const QString tagTemp = enLang ? QStringLiteral("Temp") : QStringLiteral("温");
+            const QString tagDisk = enLang ? QStringLiteral("Disk") : QStringLiteral("盘");
+
+            const QColor white(255, 255, 255);
+            const QColor labelC(255, 255, 255, 150);    // 标签/箭头
+            const QColor unitC(255, 255, 255, 110);     // 单位小字
+            QFont numFont(QStringLiteral("Consolas"));
+            numFont.setPixelSize(11);
+            QFont tagFont(QStringLiteral("Segoe UI"));
+            tagFont.setPixelSize(8);                    // 8px：英文标签 Temp/Disk 也放得进标签列
+            QFont unitFont(QStringLiteral("Segoe UI"));
+            unitFont.setPixelSize(7);
+            const QFontMetrics numFm(numFont);
+
+            // 行通用排版：标签右对齐于标签列 | 数字左对齐 | 单位紧跟数字（不留空隙，
+            // 右侧空出来的不填）。数字特别长时单位自动截断，数字不被挤。
+            const auto drawValue = [&](const QRect &row, const QString &tag,
+                                       const QString &num, const QString &unit) {
+                painter.setFont(tagFont);
+                painter.setPen(labelC);
+                painter.drawText(QRect(row.left(), row.top(), 20, row.height()),
+                                 Qt::AlignRight | Qt::AlignVCenter, tag);
+                painter.setFont(numFont);
+                painter.setPen(white);
+                const int nx   = row.left() + 24;
+                const int numW = numFm.horizontalAdvance(num);
+                painter.drawText(QRect(nx, row.top(), numW, row.height()),
+                                 Qt::AlignLeft | Qt::AlignVCenter, num);
+                painter.setFont(unitFont);
+                painter.setPen(unitC);
+                const int unitX = nx + numW + 4;
+                const int unitW = qMax(0, row.right() - unitX + 1);
+                if (unitW > 0)
+                    painter.drawText(QRect(unitX, row.top(), unitW, row.height()),
+                                     Qt::AlignLeft | Qt::AlignVCenter, unit);
+            };
+
+            // 行 1：温度。独占一行时带标签（让用户知道是什么参数）；
+            // 与频率并排时格子小，退化为"数字 + °C"（无标签）。
+            const bool tOnly = (lcdMask & (1 << ROW_TEMP)) && !(lcdMask & (1 << ROW_FREQ));
+            if (lcdMask & (1 << ROW_TEMP)) {
+                const QRect r = this->lcdRowRect[ROW_TEMP];
+                if (tOnly) {
+                    drawValue(r, tagTemp,
+                              QString::number(qRound(this->sysInfo->getCpuTemperature())),
+                              QStringLiteral("℃"));
+                } else {
+                    painter.setFont(numFont);
+                    painter.setPen(white);
+                    const int numW = numFm.horizontalAdvance(QString::number(qRound(this->sysInfo->getCpuTemperature())));
+                    painter.drawText(QRect(r.left(), r.top(), numW, r.height()),
+                                     Qt::AlignLeft | Qt::AlignVCenter,
+                                     QString::number(qRound(this->sysInfo->getCpuTemperature())));
+                    painter.setFont(unitFont);
+                    painter.setPen(unitC);
+                    painter.drawText(QRect(r.left() + numW + 2, r.top(), 60, r.height()),
+                                     Qt::AlignLeft | Qt::AlignVCenter, QStringLiteral("°C"));
+                }
+            }
+            if (lcdMask & (1 << ROW_FREQ)) {
+                // 与温度并排：格子小，只显示纯数字（MHz 单位省略）
+                const QRect r = this->lcdRowRect[ROW_FREQ];
+                painter.setFont(numFont);
+                painter.setPen(white);
+                painter.drawText(r, Qt::AlignLeft | Qt::AlignVCenter,
+                                 QString::number(qRound(this->sysInfo->getCpuFreq())));
+            }
+            // 行 2：磁盘；行 3/4：上行、下行（网速放最下，用户指定顺序）
+            const int intervalMs = this->config->getUpdateDataInterval();
+            const double seconds = intervalMs > 0 ? intervalMs / 1000.0 : 1.0;
+            if (lcdMask & (1 << ROW_DISK)) {
+                const double total = this->sysInfo->getDiskReadBytes() + this->sysInfo->getDiskWriteBytes();
+                const double mb = total / seconds / (1024.0 * 1024.0);
+                drawValue(this->lcdRowRect[ROW_DISK], tagDisk,
+                          QString::number(mb, 'f', 2), QStringLiteral("MB/s"));
+            }
+            if (lcdMask & (1 << ROW_NET_UP))
+                drawValue(this->lcdRowRect[ROW_NET_UP], QStringLiteral("↑"),
+                          formatNetSpeedField(this->sysInfo->getTransmit() / seconds),
+                          QStringLiteral("MB/s"));
+            if (lcdMask & (1 << ROW_NET_DOWN))
+                drawValue(this->lcdRowRect[ROW_NET_DOWN], QStringLiteral("↓"),
+                          formatNetSpeedField(this->sysInfo->getReceive() / seconds),
+                          QStringLiteral("MB/s"));
+        }
 
         // 磁盘总速度：读+写之和，用 LCD 数码字体显示 MB/s 数值（两位小数）。
         // QLCDNumber 画不出字母，单位"MB/s"省略，数值本身已是 MB/s。
@@ -1980,11 +2127,13 @@ void Widget::paintEvent(QPaintEvent *)
             const double seconds = intervalMs > 0 ? intervalMs / 1000.0 : 1.0;
             const double total = this->sysInfo->getDiskReadBytes() + this->sysInfo->getDiskWriteBytes();
             const double mb = total / seconds / (1024.0 * 1024.0);   // MB/s
-            const QString val = QString::number(mb, 'f', 2);          // 如 "12.34"
-            this->diskIoLCD->setDigitCount(val.length());
-            this->diskIoLCD->display(val);
-            if (this->diskIoLCD->isHidden())
-                this->diskIoLCD->show();
+            if (ballStyle != kBallBar) {                            // 长条形态由 paintEvent 绘制
+                const QString val = QString::number(mb, 'f', 2);     // 如 "12.34"
+                this->diskIoLCD->setDigitCount(val.length());
+                this->diskIoLCD->display(val);
+                if (this->diskIoLCD->isHidden())
+                    this->diskIoLCD->show();
+            }
         }
         else
         {

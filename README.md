@@ -40,7 +40,7 @@ ARM64、Apple Silicon、IBM POWER、IBM Z，以及高通骁龙 / 联发科天玑
 
 | 模块 | 特性 |
 |---|---|
-| 系统监控 | 内存 / 交换面积图、CPU 占用曲线、CPU 温度（AppleSMC / Linux hwmon / Windows WMI）、CPU 频率、上下行网速、磁盘读写速度（自动挑 IO 最高的盘或指定盘） |
+| 系统监控 | 内存 / 交换面积图、CPU 占用曲线、CPU 温度（AppleSMC / Linux hwmon / Windows：WinRing0 驱动 → LibreHardwareMonitor → OpenHardwareMonitor → ACPI 热区）、CPU 频率、上下行网速、磁盘读写速度（自动挑 IO 最高的盘或指定盘） |
 | 悬浮球形态 | 球形（默认）/ 圆角矩形 / 直角方形 / 长条形 四种形态，设置里切换；每种形态单独适配 LCD 文字尺寸与位置（长条形为两行横排） |
 | 贴边竖条 | 拖到屏幕左/右边缘吸附成圆角竖条，窄柱图显示 CPU / 内存 / 交换；悬停显示百分比；往屏幕里侧拖开或单击即变回小球；宽度/高度/圆角可调，设置里有「窄 20 / 标准 30 / 宽 36」一键档位 |
 | 数据中转站 | 悬浮球上停留 300ms 弹出；自动收录剪贴板（文本/图片/文件），支持拖文件入站、Ctrl/Cmd+V 粘贴、底栏「新增记事」 |
@@ -63,8 +63,29 @@ ARM64、Apple Silicon、IBM POWER、IBM Z，以及高通骁龙 / 联发科天玑
 ./run.sh --help       # 所有参数
 ```
 
-`run.sh` 会自动识别发行版（Debian/Ubuntu、Fedora/RHEL、openSUSE、Arch、Alpine、Void…）
-或 macOS（Homebrew），缺什么装什么；并会交互式询问构建目录、安装位置和 Qt 所在位置。
+`run.sh` 会自动识别发行版（Debian/Ubuntu、Fedora/RHEL、openSUSE、Arch、Alpine、Void…）、
+macOS（Homebrew）或 Windows（Git Bash / MSYS2），缺什么装什么；并会交互式询问构建目录、
+安装位置和 Qt 所在位置。
+
+Windows 上没有系统包管理器，脚本改用 **aqtinstall** 把 Qt6 的 MinGW 套件和 MinGW 编译器
+装到 `C:\Qt`，然后用 `mingw32-make` 构建：
+
+```bash
+# 在 Git Bash / MSYS2 里执行
+./run.sh --deps-only     # 只装 Qt6 + MinGW（首次约 1.5GB）
+./run.sh -y              # 装依赖 -> 构建 -> 运行
+```
+
+可用环境变量覆盖默认值：`POPBALL2_QT_ROOT`（安装根目录，默认 `/c/Qt`）、
+`POPBALL2_QT_VERSION`（默认 `6.8.3`）、`POPBALL2_MINGW_TOOL`（默认 `tools_mingw1310`）、
+`POPBALL2_QT_MIRROR`（下载镜像，默认官方源）、`POPBALL2_QT_TIMEOUT`（单次下载超时，默认 120 秒）、
+`POPBALL2_QT_ARCHIVES`（归档子集，默认跳过用不到的 QML）、`POPBALL2_SEVENZIP`（7z 可执行文件）、
+`POPBALL2_PYTHON`（Python 解释器路径）。
+
+> aqtinstall 有两个坑脚本已自动处理：默认 `concurrency=4` 会多进程同时往同一目录解压，
+> Windows 上容易互相踩踏、只解压一半（`Failed to write to base directory`）；默认用内置
+> py7zr 解压 qtbase 这种几千条目的归档会很慢。脚本会把并发改成 1，并在系统没有 7z 时自动
+> 下一个 `7zr.exe` 交给 aqt 用。
 
 手动构建：
 
@@ -72,7 +93,10 @@ ARM64、Apple Silicon、IBM POWER、IBM Z，以及高通骁龙 / 联发科天玑
 mkdir build && cd build
 qmake6 ../popball2.pro && make -j$(nproc)
 ./popball2.app/Contents/MacOS/popball2     # macOS
-./popball2                                 # Linux / Windows
+./popball2                                 # Linux
+./release/popball2.exe                     # Windows（要先 windeployqt 把 Qt 运行库放
+                                           # 到 exe 旁，否则报「找不到 Qt6Core.dll」；
+                                           # 直接跑 ./run.sh 会自动完成这一步）
 ```
 
 #### 打包
@@ -80,10 +104,11 @@ qmake6 ../popball2.pro && make -j$(nproc)
 一键打包发布（当前平台的全部格式，产物输出到 `dist/`）：
 
 ```bash
-./package.sh                 # Linux: deb+rpm+AppImage   macOS: dmg+zip
+./package.sh                 # Linux: deb+rpm+AppImage   macOS: dmg+zip   Windows: zip
+./package.sh win             # 只打 Windows zip（windeployqt 内置 Qt + 附带 WinRing0 驱动）
 ./package.sh appimage        # 通用 AppImage（macOS 上经 Docker 构建，目标架构=本机架构）
 ./package.sh deb rpm         # 只打指定格式
-./package.sh --version 1.2.0 # 指定版本号（默认读 .pro 里的 VERSION）
+./package.sh --version 1.2.0 # 指定版本号（默认读 package.json 的 version）
 ./package.sh --help
 ```
 
@@ -102,6 +127,22 @@ npm run all         # 当前平台全部格式
 （跨平台无法交叉编译；rpm 需要 `rpmbuild`；AppImage 用 `tools/` 里预置的
 linuxdeploy / appimagetool / runtime，缺失时才联网下载。注意 AppImage 只能在
 「目标架构 == 本机架构」下构建——linuxdeploy 不能跨架构。）
+
+Windows 上跑 `./package.sh win`（或 `npm run win`）得到
+`dist/popball2-<版本>-windows-x86_64.zip`，解压即用（无需装 Qt）：包内已用
+`windeployqt` 内置 Qt 运行库与 MinGW 运行库、附带 **WinRing0 驱动**（CPU 温度，
+见 `drivers/README.md`）和 `README-Windows.txt` 使用说明，exe 也带上了
+`resources/popball2.ico` 图标与版本号。脚本会自动探测 Qt / MinGW
+（PATH → `C:\Qt\<版本>\mingw_64` → `C:\Qt\Tools\mingw*`），无需手工配 PATH；
+可用 `POPBALL2_QT_ROOT` / `POPBALL2_MINGW_BIN` 覆盖。
+
+**构建目录同样自包含**：`./run.sh` 与 `./package.sh win` 在编译后都会调用 `windeployqt`，
+把 Qt6 运行库与 `WinRing0x64.sys` 直接放到 exe 旁，所以 `build/release/popball2.exe`
+双击就能运行，不再依赖开发机的 PATH。这一步不是锦上添花：程序读 CPU 温度要装内核驱动，
+非管理员时会经 **UAC 提权重新拉起自己**，而提权后的子进程是「干净环境」（拿不到脚本临时
+挂上去的 Qt bin）——exe 旁边没有 Qt DLL 就会以 `0xC0000135`(STATUS_DLL_NOT_FOUND) 秒退，
+驱动装不上、CPU 温度也就读不出来。实测对比：exe 旁无 Qt DLL 时进程 3.8MB/4 线程卡在加载
+失败态，有 DLL 时正常起球（约 38MB）。`run.sh --install` 安装到的目录同样会被部署。
 
 | 目标 | 产物 | 说明 |
 |---|---|---|

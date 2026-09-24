@@ -16,7 +16,22 @@ const SCRIPT = path.join(ROOT, 'package.sh');
 // 找一个能跑 package.sh 的 bash（macOS/Linux 自带；Windows 需 WSL / Git Bash）
 function findBash() {
   const candidates = ['bash', '/bin/bash', '/usr/bin/bash'];
+  // Windows：Git Bash 通常不把 bash.exe 放进 PATH（且 PATH 里的 bash 可能是 WSL 的存根，
+  // 用 WSL 跑会因路径/换行差异踩坑），这里直接按常见安装位置找 Git 自带的 bash.exe。
+  if (process.platform === 'win32') {
+    const pf = process.env['ProgramFiles'] || 'C:\\Program Files';
+    const pf86 = process.env['ProgramFiles(x86)'] || 'C:\\Program Files (x86)';
+    const local = process.env['LOCALAPPDATA'] || '';
+    candidates.push(
+      path.join(pf, 'Git', 'bin', 'bash.exe'),
+      path.join(pf86, 'Git', 'bin', 'bash.exe'),
+      local ? path.join(local, 'Programs', 'Git', 'bin', 'bash.exe') : ''
+    );
+    // MSYS2 也常被用来跑这个脚本
+    candidates.push('C:\\msys64\\usr\\bin\\bash.exe');
+  }
   for (const c of candidates) {
+    if (!c) continue;
     try {
       const r = spawnSync(c, ['--version'], { stdio: 'ignore' });
       if (r.status === 0) return c;

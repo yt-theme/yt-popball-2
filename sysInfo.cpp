@@ -3,7 +3,14 @@
 #include <QRegularExpression>
 #include <QHash>
 #include <QSysInfo>
+#include <QCoreApplication>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QJsonArray>
+#include <QJsonValue>
+#include <QStandardPaths>
 #include <cstring>
+#include <cwchar>
 
 #if defined(Q_OS_MACOS)
 #include <IOKit/IOKitLib.h>
@@ -575,9 +582,625 @@ bool probeWinCpuTempCelsius(double *outC)
     if (best > 0.0) { *outC = best; ok = true; }
     return ok;
 }
+
+// ---------------------------------------------------------------------------------------
+//  Windows 优先温度源：LibreHardwareMonitor（LHM）的本地 Web 服务
+//
+//  Windows 没有公开的「读 CPU 核心温度」API，ACPI 热区(MSAcpi_ThermalZoneTemperature)
+//  在多数台式机/虚拟机上不存在或只是主板温度。LHM 自带 ring-0 驱动，能读到 Intel/AMD
+//  的真实核心/封装温度，并以 JSON 形式通过内置 Web 服务器暴露。
+//  使用：运行 LibreHardwareMonitor.exe，勾选 Options → Web server（或命令行 /web），
+//  默认监听 8085 端口，本程序即能从 http://localhost:8085/data.json 读到温度。
+//  读不到时由下方 readWinCpuTempCelsius() 回退到原有 ACPI 热区温度。
+// ---------------------------------------------------------------------------------------
+
+// LHM Web 服务默认地址（如需改端口，改这里即可）
+static const char *kLhmUrl = "http://localhost:8085/data.json";
+
+// 同步 HTTP GET（仅 localhost，带超时）。成功返回 true 并把响应体写入 out。
+bool winHttpGet(const QString &url, int timeoutMs, QByteArray *out)
+{
+    wchar_t scheme[32]  = {0};
+    wchar_t host[256]   = {0};
+    wchar_t path[2048]  = {0};
+    URL_COMPONENTS uc   = {0};
+    uc.dwStructSize     = sizeof(uc);
+    uc.lpszScheme       = scheme; uc.dwSchemeLength   = sizeof(scheme) / sizeof(scheme[0]);
+    uc.lpszHostName     = host;   uc.dwHostNameLength = sizeof(host)   / sizeof(host[0]);
+    uc.lpszUrlPath      = path;   uc.dwUrlPathLength  = sizeof(path)   / sizeof(path[0]);
+    if (!WinHttpCrackUrl(reinterpret_cast<LPCWSTR>(url.utf16()),
+                         static_cast<DWORD>(url.length()), 0, &uc))
+        return false;
+
+    const DWORD port = uc.nPort ? uc.nPort
+                                : (uc.nScheme == INTERNET_SCHEME_HTTPS ? 443 : 80);
+
+    HINTERNET sess = WinHttpOpen(L"popball2/1.0", WINHTTP_ACCESS_TYPE_NO_PROXY,
+                                 WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
+    if (!sess)
+        return false;
+    // 解析/连接/发送/接收全部超时都设小一点：LHM 没跑时连接被拒会立刻失败，
+    // 跑着时 localhost 也很快；即使异常也不会长时间卡住主线程。
+    WinHttpSetTimeouts(sess, timeoutMs, timeoutMs, timeoutMs, timeoutMs);
+
+    HINTERNET conn = WinHttpConnect(sess, host, port, 0);
+    HINTERNET req  = nullptr;
+    bool      ok   = false;
+    if (conn) {
+        req = WinHttpOpenRequest(conn, L"GET", path[0] ? path : L"/",
+                                 nullptr, WINHTTP_NO_REFERER,
+                                 WINHTTP_DEFAULT_ACCEPT_TYPES,
+                                 (uc.nScheme == INTERNET_SCHEME_HTTPS)
+                                     ? WINHTTP_FLAG_SECURE : 0);
+    }
+    if (req) {
+        if (WinHttpSendRequest(req, WINHTTP_NO_ADDITIONAL_HEADERS, 0,
+                               WINHTTP_NO_REQUEST_DATA, 0, 0, 0)
+            && WinHttpReceiveResponse(req, nullptr)) {
+            DWORD avail = 0;
+            QByteArray body;
+            while (WinHttpQueryDataAvailable(req, &avail) && avail > 0) {
+                QByteArray buf(static_cast<int>(avail), 0);
+                DWORD read = 0;
+                if (!WinHttpReadData(req, buf.data(), avail, &read) || read == 0)
+                    break;
+                body.append(buf.constData(), static_cast<int>(read));
+            }
+            *out = body;
+            ok = !body.isEmpty();
+        }
+    }
+    if (req)  WinHttpCloseHandle(req);
+    if (conn) WinHttpCloseHandle(conn);
+    WinHttpCloseHandle(sess);
+    return ok;
+}
+
+// 从 LHM 的字符串读数里取出数值。LHM 的 Value 形如 "45.0 °C" / "12.5 %" / "3.60 GHz"，
+// 部分区域设置会用逗号当小数点（"45,0 °C"），这里一并兼容。
+bool parseLhmNumber(const QString &s, double *out)
+{
+    int i = 0;
+    while (i < s.size()) {
+        const QChar c = s.at(i);
+        if (c.isDigit() || c == QLatin1Char('-') || c == QLatin1Char('+') || c == QLatin1Char('.'))
+            break;
+        ++i;
+    }
+    int j = i;
+    while (j < s.size()) {
+        const QChar c = s.at(j);
+        if (c.isDigit() || c == QLatin1Char('.') || c == QLatin1Char(',')
+            || c == QLatin1Char('-') || c == QLatin1Char('+'))
+            ++j;
+        else
+            break;
+    }
+    if (i == j)
+        return false;
+    QString num = s.mid(i, j - i);
+    if (!num.contains(QLatin1Char('.')))
+        num.replace(QLatin1Char(','), QLatin1Char('.'));   // 逗号小数点兼容
+    bool ok = false;
+    const double v = num.toDouble(&ok);
+    if (!ok)
+        return false;
+    *out = v;
+    return true;
+}
+
+// 递归遍历 LHM 的 JSON 树，收集「CPU 相关」的温度传感器值。
+// 注意 LHM 的实际格式：没有 SensorType 字段，Value 是带单位的字符串（如 "45.0 °C"），
+// 类型要靠单位 °C 或 ImageURL 里的 temperature 判断；节点 Text 可能是 "/intelcpu/0"。
+void lhmCollectCpuTemps(const QJsonObject &node, const QStringList &ancestors,
+                        QList<double> *out)
+{
+    const QString text     = node.value(QLatin1String("Text")).toString();
+    const QJsonValue valV  = node.value(QLatin1String("Value"));
+    const QString valueStr = valV.isString() ? valV.toString()
+                                             : QString::number(valV.toDouble());
+    const QString imageUrl = node.value(QLatin1String("ImageURL")).toString();
+    const QString sensorType = node.value(QLatin1String("SensorType")).toString();
+
+    QStringList path = ancestors;
+    path.append(text);
+
+    // 判定是不是温度传感器：单位含 °C / 图标是温度计 / 老版本可能带 SensorType
+    const bool isTemperature =
+        valueStr.contains(QStringLiteral("°C"))
+        || imageUrl.contains(QLatin1String("temperature"), Qt::CaseInsensitive)
+        || sensorType.compare(QLatin1String("Temperature"), Qt::CaseInsensitive) == 0;
+
+    if (isTemperature) {
+        bool isCpu = false;
+        for (const QString &p : path) {
+            const QString l = p.toLower();
+            if (l.contains(QLatin1String("cpu")) || l.contains(QLatin1String("core"))
+                || l.contains(QLatin1String("package"))
+                || l.contains(QStringLiteral("中央处理器"))) {
+                isCpu = true;
+                break;
+            }
+        }
+        double v = 0.0;
+        if (isCpu && parseLhmNumber(valueStr, &v) && v > 0.0 && v < 150.0)
+            out->append(v);
+    }
+
+    const QJsonArray children = node.value(QLatin1String("Children")).toArray();
+    for (const QJsonValue &c : children)
+        if (c.isObject())
+            lhmCollectCpuTemps(c.toObject(), path, out);
+}
+
+// 从 LibreHardwareMonitor 的 Web 服务读 CPU 温度（取所有 CPU 相关传感器的最大值）。
+bool readLibreHardwareMonitorCpuTemp(double *outC)
+{
+    QByteArray body;
+    if (!winHttpGet(QLatin1String(kLhmUrl), 800, &body))
+        return false;
+
+    QJsonParseError err;
+    const QJsonDocument doc = QJsonDocument::fromJson(body, &err);
+    if (doc.isNull() || !doc.isObject())
+        return false;
+
+    QList<double> temps;
+    lhmCollectCpuTemps(doc.object(), QStringList(), &temps);
+    if (temps.isEmpty())
+        return false;
+
+    double best = 0.0;
+    for (double t : temps)
+        if (t > best)
+            best = t;
+    *outC = best;
+    return true;
+}
+
+// =======================================================================================
+//  内置驱动读取：WinRing0 + 直接读 CPU 的 MSR（与软媒魔方 / Open Hardware Monitor 同路数）
+//
+//  Windows 没有用户态的「读核心温度」API，必须借助内核驱动访问 CPU 的 MSR 寄存器。
+//  WinRing0 是最通用的方案：把 WinRing0x64.sys(64 位) 或 WinRing0.sys(32 位) 放在
+//  popball2.exe 同目录，程序会自动把驱动注册成内核服务并加载，然后读 MSR 取温度。
+//  驱动文件可从头里自带的监控软件目录里复制，例如 软媒魔方 / Open Hardware Monitor。
+//
+//  * Intel：MSR 0x1A2(IA32_TEMPERATURE_TARGET) 取 TjMax，
+//           MSR 0x19C(IA32_THERM_STATUS) 取 DTS，温度 = TjMax - DTS。
+//  * AMD  ：经 PCI 寄存器 0xB8/0xBC 访问 SMN 寄存器 0x00059800(THM_TCON_CUR_TMP) 取 Tctl。
+//
+//  需要管理员权限（加载驱动）；未附带驱动或加载失败时自动回退到 LHM/OHM/ACPI。
+// =======================================================================================
+
+#ifndef OLS_TYPE
+#define OLS_TYPE 40000
+#endif
+#define IOCTL_OLS_READ_MSR          CTL_CODE(OLS_TYPE, 0x821, METHOD_BUFFERED, FILE_ANY_ACCESS)
+#define IOCTL_OLS_WRITE_MSR         CTL_CODE(OLS_TYPE, 0x822, METHOD_BUFFERED, FILE_ANY_ACCESS)
+#define IOCTL_OLS_READ_PCI_CONFIG   CTL_CODE(OLS_TYPE, 0x851, METHOD_BUFFERED, FILE_READ_ACCESS)
+#define IOCTL_OLS_WRITE_PCI_CONFIG  CTL_CODE(OLS_TYPE, 0x852, METHOD_BUFFERED, FILE_WRITE_ACCESS)
+
+// 读取 CPU 厂商标识（注册表里就有，无需 cpuid）：GenuineIntel / AuthenticAMD
+QString cpuVendorIdentifier()
+{
+    HKEY key = nullptr;
+    if (RegOpenKeyExW(HKEY_LOCAL_MACHINE,
+                      L"HARDWARE\\DESCRIPTION\\System\\CentralProcessor\\0",
+                      0, KEY_READ, &key) != ERROR_SUCCESS)
+        return QString();
+    wchar_t buf[128] = {0};
+    DWORD sz = sizeof(buf), type = 0;
+    RegQueryValueExW(key, L"VendorIdentifier", nullptr, &type,
+                     reinterpret_cast<LPBYTE>(buf), &sz);
+    RegCloseKey(key);
+    return QString::fromWCharArray(buf);
+}
+
+// 当前是否 64 位 Windows（用于挑 x64 / x86 驱动文件）
+bool is64BitWindows()
+{
+    SYSTEM_INFO si;
+    GetNativeSystemInfo(&si);
+    return si.wProcessorArchitecture == PROCESSOR_ARCHITECTURE_AMD64;
+}
+
+// 当前进程是否以管理员(提权)身份运行
+bool isCurrentProcessElevated()
+{
+    HANDLE token = nullptr;
+    if (!OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &token))
+        return false;
+    DWORD elevation = 0, ret = 0;
+    const bool ok = GetTokenInformation(token, TokenElevation, &elevation,
+                                        sizeof(elevation), &ret)
+                    && elevation != 0;
+    CloseHandle(token);
+    return ok;
+}
+
+// 把指定 .sys 注册成内核服务并启动（需要管理员权限）。
+// 每一步失败都带 Win32 错误码打日志，便于在 Win11 上定位：
+//   5    = 没有管理员权限；1275 = 被微软易受攻击驱动黑名单拦截；
+//   1073 = 服务已存在；2/3   = 驱动文件路径不对。
+// 最近一次 SCM 操作的 Win32 错误码（供管理员子进程落盘排查用）
+static DWORD g_winRing0SvcErr = 0;
+
+bool winRing0InstallService(const QString &sysPath)
+{
+    const QString nativePath = QDir::toNativeSeparators(sysPath);
+    g_winRing0SvcErr = 0;
+    SC_HANDLE scm = OpenSCManagerW(nullptr, nullptr, SC_MANAGER_CREATE_SERVICE);
+    if (!scm) {
+        g_winRing0SvcErr = GetLastError();
+        qDebug() << "[WinRing0] OpenSCManager failed, err =" << g_winRing0SvcErr
+                 << (g_winRing0SvcErr == ERROR_ACCESS_DENIED ? QStringLiteral("(非管理员)")
+                                                           : QString());
+        return false;
+    }
+
+    const wchar_t *kService = L"WinRing0_1_2_0";
+    SC_HANDLE s = CreateServiceW(
+        scm, kService, kService, SERVICE_START | SERVICE_QUERY_STATUS,
+        SERVICE_KERNEL_DRIVER, SERVICE_DEMAND_START, SERVICE_ERROR_NORMAL,
+        reinterpret_cast<const wchar_t *>(nativePath.utf16()),
+        nullptr, nullptr, nullptr, nullptr, nullptr);
+    if (!s) {
+        const DWORD err = GetLastError();
+        g_winRing0SvcErr = err;
+        if (err == ERROR_SERVICE_EXISTS || err == ERROR_SERVICE_MARKED_FOR_DELETE) {
+            s = OpenServiceW(scm, kService, SERVICE_START | SERVICE_QUERY_STATUS);
+            qDebug() << "[WinRing0] 服务已存在，直接打开，err =" << err;
+        } else {
+            qDebug() << "[WinRing0] CreateService failed, err =" << err;
+        }
+    }
+
+    bool ok = false;
+    if (s) {
+        if (StartServiceW(s, 0, nullptr)) {
+            ok = true;
+        } else {
+            const DWORD err = GetLastError();
+            if (err == ERROR_SERVICE_ALREADY_RUNNING) {
+                ok = true;                 // 已在运行（软媒/OHM/LHM 装过）
+            } else {
+                g_winRing0SvcErr = err;
+                qDebug() << "[WinRing0] StartService failed, err =" << err
+                         << (err == 1275 ? QStringLiteral("(被 Windows 驱动黑名单拦截)")
+                                         : QString());
+            }
+        }
+        CloseServiceHandle(s);
+    }
+    CloseServiceHandle(scm);
+    return ok;
+}
+
+// 非管理员时：通过 UAC 自提权，用自身带 --install-winring0-driver 参数装驱动。
+// 用户取消 UAC / 提权失败都返回 false，主流程继续回退到 LHM / ACPI。
+bool triggerElevatedDriverInstall(const QString &sysPath)
+{
+    if (isCurrentProcessElevated())
+        return false;                      // 已是管理员却失败，说明不是权限问题
+
+    const QString exe = QCoreApplication::applicationFilePath();
+    const QString params =
+        QStringLiteral("--install-winring0-driver \"%1\"").arg(
+            QDir::toNativeSeparators(sysPath));
+
+    SHELLEXECUTEINFOW sei;
+    memset(&sei, 0, sizeof(sei));
+    sei.cbSize       = sizeof(sei);
+    sei.fMask        = SEE_MASK_NOCLOSEPROCESS | SEE_MASK_NOASYNC | SEE_MASK_UNICODE;
+    sei.lpVerb       = L"runas";           // 触发 UAC 提权
+    sei.lpFile       = reinterpret_cast<const wchar_t *>(exe.utf16());
+    sei.lpParameters = reinterpret_cast<const wchar_t *>(params.utf16());
+    sei.nShow        = SW_HIDE;
+
+    if (!ShellExecuteExW(&sei) || !sei.hProcess) {
+        qDebug() << "[WinRing0] UAC 自提权失败（用户取消或被策略禁止），err ="
+                 << GetLastError();
+        return false;
+    }
+    WaitForSingleObject(sei.hProcess, 15000);
+    DWORD code = 0;
+    GetExitCodeProcess(sei.hProcess, &code);
+    CloseHandle(sei.hProcess);
+    qDebug() << "[WinRing0] 提权安装驱动退出码 =" << code;
+    return code == 0;
+}
+
+// WinRing0 用户态封装：打开设备、按需安装/启动内核服务、读写 MSR / PCI 配置空间
+struct WinRing0 {
+    HANDLE dev = INVALID_HANDLE_VALUE;
+
+    ~WinRing0() { close(); }
+
+    bool open()
+    {
+        const wchar_t *kDevice = L"\\\\.\\WinRing0_1_2_0";
+        dev = CreateFileW(kDevice, GENERIC_READ | GENERIC_WRITE, 0, nullptr,
+                          OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (dev != INVALID_HANDLE_VALUE)
+            return true;                       // 驱动已被别的程序（OHM/软媒）加载
+        if (!installAndStart())
+            return false;
+        dev = CreateFileW(kDevice, GENERIC_READ | GENERIC_WRITE, 0, nullptr,
+                          OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
+        return dev != INVALID_HANDLE_VALUE;
+    }
+
+    void close()
+    {
+        if (dev != INVALID_HANDLE_VALUE) { CloseHandle(dev); dev = INVALID_HANDLE_VALUE; }
+    }
+
+    bool readMsr(DWORD reg, DWORD *eax, DWORD *edx)
+    {
+        if (dev == INVALID_HANDLE_VALUE) return false;
+        struct { DWORD eax; DWORD edx; } out = {0, 0};
+        DWORD ret = 0;
+        if (!DeviceIoControl(dev, IOCTL_OLS_READ_MSR, &reg, sizeof(reg),
+                             &out, sizeof(out), &ret, nullptr))
+            return false;
+        *eax = out.eax; *edx = out.edx;
+        return true;
+    }
+
+    bool readPci(DWORD busDevFunc, DWORD reg, DWORD *value)
+    {
+        if (dev == INVALID_HANDLE_VALUE) return false;
+        struct { DWORD addr; DWORD reg; } in = { busDevFunc, reg };
+        DWORD out = 0, ret = 0;
+        if (!DeviceIoControl(dev, IOCTL_OLS_READ_PCI_CONFIG, &in, sizeof(in),
+                             &out, sizeof(out), &ret, nullptr))
+            return false;
+        *value = out;
+        return true;
+    }
+
+    bool writePci(DWORD busDevFunc, DWORD reg, DWORD value)
+    {
+        if (dev == INVALID_HANDLE_VALUE) return false;
+        struct { DWORD addr; DWORD reg; DWORD value; } in = { busDevFunc, reg, value };
+        DWORD ret = 0;
+        return DeviceIoControl(dev, IOCTL_OLS_WRITE_PCI_CONFIG, &in, sizeof(in),
+                               nullptr, 0, &ret, nullptr) != FALSE;
+    }
+
+private:
+    // 把同目录下的 WinRing0x64.sys / WinRing0.sys 注册成内核服务并启动。
+    // 非管理员时自动走一次 UAC 自提权（装成功后服务常驻，之后无需再提权）。
+    bool installAndStart()
+    {
+        const QString dir = QCoreApplication::applicationDirPath();
+        QStringList candidates;
+        if (is64BitWindows())
+            candidates << QStringLiteral("WinRing0x64.sys") << QStringLiteral("WinRing0.sys");
+        else
+            candidates << QStringLiteral("WinRing0.sys") << QStringLiteral("WinRing0x64.sys");
+
+        for (const QString &name : candidates) {
+            const QString p = dir + QLatin1Char('/') + name;
+            if (QFile::exists(p)) {
+                if (winRing0InstallService(p))
+                    return true;
+                // 典型失败原因：非管理员装不了服务 → UAC 提权再试一次
+                if (triggerElevatedDriverInstall(p) && winRing0InstallService(p))
+                    return true;
+                return false;              // 该驱动文件在，但加载被拦（黑名单等）
+            }
+        }
+        qDebug() << "[WinRing0] 程序目录未找到 WinRing0x64.sys / WinRing0.sys，"
+                    "无法读取 CPU 核心温度，回退其它温度来源";
+        return false;   // 没附带驱动：交给上层回退
+    }
+};
+
+// Intel：MSR 0x1A2 取 TjMax，0x19C 取 DTS，温度 = TjMax - DTS
+bool winRing0IntelTemp(WinRing0 &wr, double *outC)
+{
+    DWORD eax = 0, edx = 0;
+    int tjMax = 100;
+    if (wr.readMsr(0x1A2, &eax, &edx)) {
+        const int t = static_cast<int>((eax >> 16) & 0xFF);
+        if (t > 0 && t < 150) tjMax = t;
+    }
+    if (!wr.readMsr(0x19C, &eax, &edx))
+        return false;
+    if (!(eax & 0x80000000u))              // bit31：读数有效位
+        return false;
+    const int dts = static_cast<int>((eax >> 16) & 0x7F);
+    const double t = static_cast<double>(tjMax - dts);
+    if (t > 0.0 && t < 150.0) { *outC = t; return true; }
+    return false;
+}
+
+// AMD(Zen)：SMN 寄存器 0x00059800 -> Tctl（0.125°C 分辨率）
+bool winRing0AmdTemp(WinRing0 &wr, double *outC)
+{
+    const DWORD bdf = 0;                     // bus0 / dev0 / func0
+    if (!wr.writePci(bdf, 0xB8, 0x00059800))
+        return false;
+    DWORD v = 0;
+    if (!wr.readPci(bdf, 0xBC, &v))
+        return false;
+    const int raw = static_cast<int>((v >> 21) & 0x7FF);
+    const double t = raw / 8.0;
+    if (t > 0.0 && t < 150.0) { *outC = t; return true; }
+    return false;
+}
+
+bool probeWinRing0CpuTempCelsius(double *outC)
+{
+    static WinRing0 s_wr;
+    static int  s_state = 0;                 // 0=未尝试 1=可用 -1=不可用
+    static qint64 s_lastFailMs = 0;          // 上次失败时间：失败后每 30s 重试一次
+    static QString s_vendor;
+    if (s_state == 0
+        || (s_state == -1
+            && QDateTime::currentMSecsSinceEpoch() - s_lastFailMs > 30000)) {
+        // 先试已打开的设备；失败再重新走一遍 open（装驱动是异步的：
+        // UAC 提权 / LHM 稍后拉起驱动都可能让设备在几秒后才可用）
+        s_wr.close();
+        s_state = s_wr.open() ? 1 : -1;
+        if (s_state == -1)
+            s_lastFailMs = QDateTime::currentMSecsSinceEpoch();
+        s_vendor = cpuVendorIdentifier().toLower();
+    }
+    if (s_state != 1)
+        return false;
+
+    if (s_vendor.contains(QLatin1String("intel")))
+        return winRing0IntelTemp(s_wr, outC);
+    if (s_vendor.contains(QLatin1String("amd")))
+        return winRing0AmdTemp(s_wr, outC);
+    // 未知厂商：Intel 读法优先，再试 AMD
+    return winRing0IntelTemp(s_wr, outC) || winRing0AmdTemp(s_wr, outC);
+}
+
+// 组合 Windows 温度来源：按「内置驱动(WinRing0) → LibreHardwareMonitor(Web) →
+// OpenHardwareMonitor(WMI) → ACPI 热区」依次尝试，全都读不到才标记不可用。
+bool probeOpenHardwareMonitorCpuTempCelsius(double *outC);   // 前向声明（定义见下方）
+bool readWinCpuTempCelsius(double *outC)
+{
+    double v = 0.0;
+    if (probeWinRing0CpuTempCelsius(&v))             { *outC = v; return true; }
+    if (readLibreHardwareMonitorCpuTemp(&v))         { *outC = v; return true; }
+    if (probeOpenHardwareMonitorCpuTempCelsius(&v))  { *outC = v; return true; }
+    if (probeWinCpuTempCelsius(&v))                  { *outC = v; return true; }
+    return false;
+}
+
+// ---------------------------------------------------------------------------------------
+//  OpenHardwareMonitor 的 WMI 提供器（root\OpenHardwareMonitor → Sensor 类）。
+//  OHM 运行时会在 WMI 注册传感器；覆盖「装了 OHM 但没装 LHM」的场景。
+//  传感器示例：Name="CPU Package" / "CPU Core #1"，SensorType="Temperature"，Value=摄氏度。
+// ---------------------------------------------------------------------------------------
+bool probeOpenHardwareMonitorCpuTempCelsius(double *outC)
+{
+    *outC = -1.0;
+    HRESULT hr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+    if (hr == RPC_E_CHANGED_MODE)
+        hr = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+    const bool needUninit = (hr == S_OK || hr == S_FALSE);
+    if (FAILED(hr))
+        return false;
+
+    // 本地查询无需严格安全上下文；失败也不影响后续回退。
+    CoInitializeSecurity(nullptr, -1, nullptr, nullptr,
+                         RPC_C_AUTHN_LEVEL_DEFAULT, RPC_C_IMP_LEVEL_IMPERSONATE,
+                         nullptr, EOAC_NONE, nullptr);
+
+    IWbemLocator *loc = nullptr;
+    const HRESULT hrCo = CoCreateInstance(CLSID_WbemLocator, nullptr,
+                                         CLSCTX_INPROC_SERVER, IID_IWbemLocator,
+                                         reinterpret_cast<void **>(&loc));
+    bool    ok   = false;
+    double  best = -1.0;
+    if (SUCCEEDED(hrCo) && loc) {
+        BSTR ns = SysAllocString(L"root\\OpenHardwareMonitor");
+        IWbemServices *svc = nullptr;
+        if (ns && loc->ConnectServer(ns, nullptr, nullptr, nullptr, 0, nullptr, nullptr, &svc)
+                    == WBEM_S_NO_ERROR) {
+            BSTR lang  = SysAllocString(L"WQL");
+            BSTR query = SysAllocString(
+                L"SELECT Name, Value FROM Sensor WHERE SensorType='Temperature'");
+            IEnumWbemClassObject *e = nullptr;
+            if (lang && query
+                && svc->ExecQuery(lang, query, WBEM_FLAG_FORWARD_ONLY, nullptr, &e)
+                       == WBEM_S_NO_ERROR) {
+                IWbemClassObject *obj = nullptr;
+                ULONG got = 0;
+                while (e->Next(WBEM_INFINITE, 1, &obj, &got) == WBEM_S_NO_ERROR && got) {
+                    VARIANT vn, vv;
+                    VariantInit(&vn); VariantInit(&vv);
+                    QString name;
+                    double  val = -1.0;
+                    if (obj->Get(L"Name", 0, &vn, nullptr, nullptr) == WBEM_S_NO_ERROR
+                        && vn.vt == VT_BSTR)
+                        name = QString::fromWCharArray(vn.bstrVal);
+                    if (obj->Get(L"Value", 0, &vv, nullptr, nullptr) == WBEM_S_NO_ERROR) {
+                        if (vv.vt == VT_R8)      val = vv.dblVal;
+                        else if (vv.vt == VT_R4) val = static_cast<double>(vv.fltVal);
+                    }
+                    const QString l = name.toLower();
+                    if ((l.contains(QLatin1String("cpu")) || l.contains(QLatin1String("core"))
+                         || l.contains(QLatin1String("package")))
+                        && val > 0.0 && val < 150.0 && val > best)
+                        best = val;
+                    VariantClear(&vn); VariantClear(&vv);
+                    obj->Release(); obj = nullptr; got = 0;
+                }
+                e->Release();
+            }
+            if (lang)  SysFreeString(lang);
+            if (query) SysFreeString(query);
+            svc->Release();
+        }
+        if (ns) SysFreeString(ns);
+        loc->Release();
+    }
+    if (needUninit) CoUninitialize();
+    if (best > 0.0) { *outC = best; ok = true; }
+    return ok;
+}
+
+// ---------------------------------------------------------------------------------------
+//  随附进程：若 popball2 同目录下带了 LibreHardwareMonitor.exe，就把它以隐藏窗口方式
+//  拉起（LHM 已在跑则跳过）。这样用户无需每次手动启动，放一份在旁边即可。
+//  注意：LHM 的 ring-0 驱动需要管理员权限才能加载（否则读不到 CPU 温度），
+//  因此请以管理员身份运行 popball2；LHM 会继承父进程的权限。
+//  读不到温度时不影响主程序，会自动回退到其它来源 / ACPI，绝不显示假数据。
+// ---------------------------------------------------------------------------------------
+void ensureLibreHardwareMonitor()
+{
+    // 端口已在服务（LHM 已经跑着）→ 不必再拉起
+    QByteArray probe;
+    if (winHttpGet(QLatin1String(kLhmUrl), 300, &probe))
+        return;
+
+    const QString exe = QCoreApplication::applicationDirPath()
+                        + QLatin1Char('/') + QLatin1String("LibreHardwareMonitor.exe");
+    if (!QFile::exists(exe))
+        return;   // 没附带 LHM：保持原有 ACPI 行为
+
+    STARTUPINFOA si; memset(&si, 0, sizeof(si)); si.cb = sizeof(si);
+    si.dwFlags      = STARTF_USESHOWWINDOW;
+    si.wShowWindow  = SW_HIDE;          // 尽量不让 LHM 主窗口闪出来
+    PROCESS_INFORMATION pi; memset(&pi, 0, sizeof(pi));
+
+    // CreateProcessA 会改写命令行缓冲区，必须用可写副本
+    const QString cmdLine = QLatin1Char('"') + exe + QLatin1String("\" /web");
+    QByteArray buf = cmdLine.toLocal8Bit();
+    if (CreateProcessA(nullptr, buf.data(), nullptr, nullptr, FALSE, 0,
+                       nullptr, nullptr, &si, &pi)) {
+        CloseHandle(pi.hThread);
+        CloseHandle(pi.hProcess);
+    }
+}
 #endif // Q_OS_WIN
 
 } // namespace
+
+#if defined(Q_OS_WIN)
+// 供 main.cpp 的 "--install-winring0-driver <sys>" 管理员子进程调用：
+// 只装驱动服务，装完立刻退出，不进 GUI。
+// 子进程没有控制台，qDebug 不可见，因此把结果写到 %TEMP% 下的日志文件。
+bool installWinRing0DriverService(const QString &sysPath)
+{
+    const bool ok = winRing0InstallService(sysPath);
+    QFile log(QStandardPaths::writableLocation(QStandardPaths::TempLocation)
+              + QStringLiteral("/popball2_winring0_install.log"));
+    if (log.open(QIODevice::WriteOnly | QIODevice::Text)) {
+        log.write(QString(QStringLiteral("ok=%1 serviceErr=%2 driver=%3\n"))
+                      .arg(ok).arg(g_winRing0SvcErr)
+                      .arg(QDir::toNativeSeparators(sysPath)).toUtf8());
+    }
+    return ok;
+}
+#endif
 
 /* =====================================================================================
  *                                  构造 / 析构
@@ -590,6 +1213,12 @@ SysInfo::SysInfo()
 
 SysInfo::~SysInfo()
 {
+#if defined(Q_OS_WIN)
+    if (this->pdhQuery != nullptr) {
+        PdhCloseQuery(this->pdhQuery);
+        this->pdhQuery = nullptr;
+    }
+#endif
 #if defined(Q_OS_MACOS)
     if (this->_smcOpen && this->_smcConn) {
         IOServiceClose(static_cast<io_connect_t>(this->_smcConn));
@@ -1069,18 +1698,22 @@ void SysInfo::updateSysinfo()
 
 void SysInfo::checkTemperatorFilePath()
 {
-    this->cpuTemperatureOk = false;
+    // 若同目录附带了 LibreHardwareMonitor.exe，先把它拉起（隐藏窗口），
+    // 之后每轮的 Web 读取才能取到真实 CPU 温度。
+    ensureLibreHardwareMonitor();
+
     double c = 0.0;
-    if (probeWinCpuTempCelsius(&c)) {
+    if (readWinCpuTempCelsius(&c)) {
         this->cpuTemperature   = c;
         this->cpuTemperatureOk = true;
     } else {
         this->cpuTemperature   = 0.0;
+        this->cpuTemperatureOk = false;
     }
     qDebug() << "[SysInfo] arch=" << QSysInfo::currentCpuArchitecture()
              << (this->cpuTemperatureOk
-                     ? QString("ACPI 热区温度: %1 度").arg(this->cpuTemperature)
-                     : QString("未读到 ACPI 热区温度（常发生于虚拟机），将不显示温度"));
+                     ? QString("CPU 温度: %1 度（来源：WinRing0 驱动 / LibreHardwareMonitor / ACPI 热区）").arg(this->cpuTemperature)
+                     : QString("未读到 CPU 温度（需管理员运行；可把 WinRing0x64.sys 放到程序同目录，或运行 LibreHardwareMonitor 并开启 Web 服务），将不显示温度"));
 }
 
 void SysInfo::updateSysinfo()
@@ -1139,6 +1772,18 @@ void SysInfo::updateSysinfo()
         this->cpuFreqOk = false;
     }
 
+    // ---------------------------------------------------------------------- CPU 温度
+    // 每轮都重新读取（优先 LibreHardwareMonitor，回退 ACPI 热区），
+    // 这样温度会实时刷新，而不是像以前只在启动时读一次。
+    double t = 0.0;
+    if (readWinCpuTempCelsius(&t)) {
+        this->cpuTemperature   = t;
+        this->cpuTemperatureOk = true;
+    } else {
+        this->cpuTemperature   = 0.0;
+        this->cpuTemperatureOk = false;
+    }
+
     // ---------------------------------------------------------------------- 网速
     MIB_IF_TABLE2 *table = nullptr;
     if (GetIfTable2(&table) == NO_ERROR && table != nullptr) {
@@ -1160,108 +1805,114 @@ void SysInfo::updateSysinfo()
         }
         FreeMibTable(table);
 
-        this->receive  = (rx >= this->receive_last)  ? (rx - this->receive_last)  : 0;
-        this->transmit = (tx >= this->transmit_last) ? (tx - this->transmit_last) : 0;
-        this->receive_last  = rx;
-        this->transmit_last = tx;
+        if (!this->netInited) {
+            // 首帧只记基准不产出速率：receive_last 初值 0，若直接相减会把网卡累计字节
+            // 当成"本间隔增量"，除以 450ms 后显示成几千 MB/s（9999 封顶），持续约 10 秒
+            this->receive = 0;
+            this->transmit = 0;
+            this->receive_last = rx;
+            this->transmit_last = tx;
+            this->netInited = true;
+        } else {
+            this->receive  = (rx >= this->receive_last)  ? (rx - this->receive_last)  : 0;
+            this->transmit = (tx >= this->transmit_last) ? (tx - this->transmit_last) : 0;
+            this->receive_last  = rx;
+            this->transmit_last = tx;
+        }
     }
 
-    // ---------------------------------------------------------------------- 磁盘 IO（Windows：WMI 查物理磁盘的每秒速率，逐盘统计）
-    // Win32_PerfFormattedData_PerfDisk_PhysicalDisk 给的是"每秒"速率（非累计），
-    // 所以按采样间隔秒数换算成本间隔字节数（rate × seconds），与 Linux/macOS 口径一致。
+    // ---------------------------------------------------------------------- 磁盘 IO（Windows：PDH 性能计数器读每秒速率，逐盘统计）
+    // 之前用 WMI Win32_PerfFormattedData_PerfDisk_PhysicalDisk：首次查询 2~3 秒、
+    // 之后每次也要 300ms+，会卡住 450ms 周期的采样线程；而且初始化一旦失败就
+    // 永久跳过（wmiTried），磁盘速度从此恒为 0。改用 PDH：每次查询 <10ms，
+    // 实例名（如 "0 C:"）与 WMI 完全一致，磁盘选择（disk_io_mode / disk_io_name）不用改。
     {
-        static bool wmiTried = false;
-        static bool wmiOk = false;
-        if (!wmiTried) {
-            wmiTried = true;
-            HRESULT hrInit = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
-            if (hrInit == RPC_E_CHANGED_MODE)
-                hrInit = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
-            const bool needUninit = (hrInit == S_OK || hrInit == S_FALSE);
-            CoInitializeSecurity(nullptr, -1, nullptr, nullptr,
-                RPC_C_AUTHN_LEVEL_DEFAULT, RPC_C_IMP_LEVEL_IMPERSONATE, nullptr, EOAC_NONE, nullptr);
-
-            IWbemLocator *wmiLoc = nullptr;
-            const HRESULT hrCo = CoCreateInstance(CLSID_WbemLocator, nullptr, CLSCTX_INPROC_SERVER,
-                IID_IWbemLocator, reinterpret_cast<void **>(&wmiLoc));
-            if (SUCCEEDED(hrCo) && wmiLoc) {
-                BSTR ns = SysAllocString(L"root\\cimv2");
-                IWbemServices *svc = nullptr;
-                if (ns && wmiLoc->ConnectServer(ns, nullptr, nullptr, nullptr, 0, nullptr, nullptr, &svc) == WBEM_S_NO_ERROR) {
-                    BSTR lang = SysAllocString(L"WQL");
-                    BSTR query = SysAllocString(
-                        L"SELECT Name, DiskReadBytesPersec, DiskWriteBytesPersec FROM Win32_PerfFormattedData_PerfDisk_PhysicalDisk");
-                    IEnumWbemClassObject *enumObj = nullptr;
-                    if (lang && query && svc->ExecQuery(lang, query, WBEM_FLAG_FORWARD_ONLY, nullptr, &enumObj) == WBEM_S_NO_ERROR) {
-                        wmiOk = true;
-                        enumObj->Release();
-                    }
-                    if (lang) SysFreeString(lang);
-                    if (query) SysFreeString(query);
-                    svc->Release();
-                }
-                if (ns) SysFreeString(ns);
-                wmiLoc->Release();
-            }
-            if (needUninit) CoUninitialize();
-        }
-
         const qint64 nowMs = QDateTime::currentMSecsSinceEpoch();
         double sec = (this->diskLastSampleMs > 0) ? (nowMs - this->diskLastSampleMs) / 1000.0 : 1.0;
         if (sec <= 0.0) sec = 1.0;
         this->diskLastSampleMs = nowMs;
 
-        QHash<QString, QPair<quint64, quint64>> diskDelta;   // 设备名 -> (本间隔读字节, 写字节)
-        if (wmiOk) {
-            HRESULT hrInit = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
-            if (hrInit == RPC_E_CHANGED_MODE)
-                hrInit = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
-            const bool needUninit2 = (hrInit == S_OK || hrInit == S_FALSE);
-            CoInitializeSecurity(nullptr, -1, nullptr, nullptr,
-                RPC_C_AUTHN_LEVEL_DEFAULT, RPC_C_IMP_LEVEL_IMPERSONATE, nullptr, EOAC_NONE, nullptr);
-
-            IWbemLocator *wmiLoc = nullptr;
-            const HRESULT hrCo = CoCreateInstance(CLSID_WbemLocator, nullptr, CLSCTX_INPROC_SERVER,
-                IID_IWbemLocator, reinterpret_cast<void **>(&wmiLoc));
-            if (SUCCEEDED(hrCo) && wmiLoc) {
-                BSTR ns = SysAllocString(L"root\\cimv2");
-                IWbemServices *svc = nullptr;
-                if (ns && wmiLoc->ConnectServer(ns, nullptr, nullptr, nullptr, 0, nullptr, nullptr, &svc) == WBEM_S_NO_ERROR) {
-                    BSTR lang = SysAllocString(L"WQL");
-                    BSTR query = SysAllocString(
-                        L"SELECT Name, DiskReadBytesPersec, DiskWriteBytesPersec FROM Win32_PerfFormattedData_PerfDisk_PhysicalDisk");
-                    IEnumWbemClassObject *enumObj = nullptr;
-                    if (lang && query && svc->ExecQuery(lang, query, WBEM_FLAG_FORWARD_ONLY, nullptr, &enumObj) == WBEM_S_NO_ERROR) {
-                        IWbemClassObject *obj = nullptr;
-                        ULONG gotCnt = 0;
-                        while (enumObj->Next(WBEM_INFINITE, 1, &obj, &gotCnt) == WBEM_S_NO_ERROR && gotCnt) {
-                            VARIANT vn, vr, vw;
-                            VariantInit(&vn); VariantInit(&vr); VariantInit(&vw);
-                            QString diskName;
-                            if (obj->Get(L"Name", 0, &vn, nullptr, nullptr) == WBEM_S_NO_ERROR && vn.vt == VT_BSTR)
-                                diskName = QString::fromWCharArray(vn.bstrVal);
-                            quint64 rdRate = 0, wrRate = 0;
-                            if (obj->Get(L"DiskReadBytesPersec", 0, &vr, nullptr, nullptr) == WBEM_S_NO_ERROR && vr.vt == VT_UI8)
-                                rdRate = vr.ullVal;
-                            if (obj->Get(L"DiskWriteBytesPersec", 0, &vw, nullptr, nullptr) == WBEM_S_NO_ERROR && vw.vt == VT_UI8)
-                                wrRate = vw.ullVal;
-                            VariantClear(&vn); VariantClear(&vr); VariantClear(&vw);
-                            obj->Release();
-                            // WMI 会返回 "_Total" 这个汇总伪实例，跳过，否则它会和真实盘一起进列表
-                            if (diskName.isEmpty() || diskName == QLatin1String("_Total")) continue;
-                            // 速率(B/s) × 间隔秒数 = 本间隔字节数
-                            diskDelta.insert(diskName, qMakePair(quint64(rdRate * sec), quint64(wrRate * sec)));
-                        }
-                        enumObj->Release();
-                    }
-                    if (lang) SysFreeString(lang);
-                    if (query) SysFreeString(query);
-                    svc->Release();
-                }
-                if (ns) SysFreeString(ns);
-                wmiLoc->Release();
+        // 初始化：打开查询 + 枚举 PhysicalDisk 实例 + 逐盘加读/写计数器。
+        // 失败不忙循环：至少隔 2 秒再重试一次（PDH 是系统内置 API，几乎不会失败，仅兜底）。
+        if (!this->pdhReady) {
+            if (this->pdhTried && (nowMs - this->pdhTryMs) < 2000) {
+                this->finalizeDiskIo(QHash<QString, QPair<quint64, quint64>>());
+                return;
             }
-            if (needUninit2) CoUninitialize();
+            this->pdhTried = true;
+            this->pdhTryMs  = nowMs;
+            this->pdhDisks.clear();
+            if (this->pdhQuery != nullptr) { PdhCloseQuery(this->pdhQuery); this->pdhQuery = nullptr; }
+
+            PDH_HQUERY query = nullptr;
+            if (PdhOpenQueryW(nullptr, 0, &query) != ERROR_SUCCESS || query == nullptr) {
+                this->finalizeDiskIo(QHash<QString, QPair<quint64, quint64>>());
+                return;
+            }
+
+            // 用通配符展开枚举实例。实测本机 PdhEnumObjectItemsW 的缓冲语义不稳定
+            // （第二次调用返回 0xC0000BBD=PDH_CSTATUS_INVALID_DATA 且实例列表为空），
+            // 而 PdhExpandCounterPathW 稳定返回 "\\MACHINE\PhysicalDisk(0 C:)\..." 路径，
+            // 解析路径即可拿到与 WMI 一致的实例名。
+            DWORD pathSize = 0;
+            PDH_STATUS st = PdhExpandCounterPathW(L"\\PhysicalDisk(*)\\Disk Read Bytes/sec",
+                                                  nullptr, &pathSize);
+            if (st == 0x800007D2L && pathSize > 0) {
+                QVector<wchar_t> pbuf(pathSize);
+                st = PdhExpandCounterPathW(L"\\PhysicalDisk(*)\\Disk Read Bytes/sec",
+                                           pbuf.data(), &pathSize);
+                if (st == ERROR_SUCCESS) {
+                    for (const wchar_t *p = pbuf.constData(); *p != L'\0'; p += wcslen(p) + 1) {
+                        // 路径形如 \\MACHINE\PhysicalDisk(0 C:)\Disk Read Bytes/sec
+                        const QString path = QString::fromWCharArray(p);
+                        const int lp = path.indexOf(QLatin1String("PhysicalDisk("));
+                        const int rp = path.indexOf(QLatin1Char(')'), lp + 13);
+                        if (lp < 0 || rp < 0) continue;
+                        const QString inst = path.mid(lp + 13, rp - lp - 13);
+                        if (inst == QLatin1String("_Total")) continue;   // 汇总伪实例，跳过
+                        const QString rPath = QStringLiteral("\\PhysicalDisk(") + inst
+                                              + QStringLiteral(")\\Disk Read Bytes/sec");
+                        const QString wPath = QStringLiteral("\\PhysicalDisk(") + inst
+                                              + QStringLiteral(")\\Disk Write Bytes/sec");
+                        PDH_HCOUNTER hR = nullptr, hW = nullptr;
+                        PdhAddEnglishCounterW(query, reinterpret_cast<LPCWSTR>(rPath.utf16()), 0, &hR);
+                        PdhAddEnglishCounterW(query, reinterpret_cast<LPCWSTR>(wPath.utf16()), 0, &hW);
+                        if (hR != nullptr || hW != nullptr)
+                            this->pdhDisks.push_back({ inst, hR, hW });
+                    }
+                }
+            }
+            if (!this->pdhDisks.isEmpty()) {
+                this->pdhQuery = query;
+                this->pdhReady = true;
+                PdhCollectQueryData(query);   // 首次调用只是建立基线（返回 PDH_NO_DATA 属正常）
+            } else {
+                PdhCloseQuery(query);
+            }
+        }
+
+        if (!this->pdhReady) {
+            this->finalizeDiskIo(QHash<QString, QPair<quint64, quint64>>());
+            return;
+        }
+
+        // 每次采样：收集一轮数据，逐盘取"每秒速率"，乘间隔秒数换算成本间隔字节数
+        // （与 Linux/macOS 的差值口径一致，UI 侧再除以秒数还原成 MB/s）。
+        PdhCollectQueryData(this->pdhQuery);
+        QHash<QString, QPair<quint64, quint64>> diskDelta;   // 设备名 -> (本间隔读字节, 写字节)
+        for (const PdhDiskCounter &d : this->pdhDisks) {
+            quint64 rdRate = 0, wrRate = 0;
+            PDH_FMT_COUNTERVALUE v;
+            DWORD fmtType = 0;
+            if (d.hRead != nullptr
+                && PdhGetFormattedCounterValue(d.hRead, PDH_FMT_LARGE | PDH_FMT_NOCAP100, &fmtType, &v) == ERROR_SUCCESS
+                && v.CStatus == ERROR_SUCCESS)
+                rdRate = static_cast<quint64>(v.largeValue);
+            if (d.hWrite != nullptr
+                && PdhGetFormattedCounterValue(d.hWrite, PDH_FMT_LARGE | PDH_FMT_NOCAP100, &fmtType, &v) == ERROR_SUCCESS
+                && v.CStatus == ERROR_SUCCESS)
+                wrRate = static_cast<quint64>(v.largeValue);
+            diskDelta.insert(d.name, qMakePair(quint64(rdRate * sec), quint64(wrRate * sec)));
         }
         this->finalizeDiskIo(diskDelta);
     }

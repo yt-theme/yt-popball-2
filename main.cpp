@@ -7,12 +7,27 @@
 #include <QSettings>
 #include <QDir>
 
+#if defined(Q_OS_WIN)
+#include "sysInfo.h"
+#endif
+
 #if defined(Q_OS_MACOS)
 #  include "macwindow.h"
 #endif
 
 int main(int argc, char *argv[])
 {
+#if defined(Q_OS_WIN)
+    // 隐藏的驱动安装子进程：主进程非管理员时经 UAC 以管理员身份拉起自己、
+    // 只把 WinRing0 驱动注册成服务就退出，不创建 QApplication / GUI。
+    for (int i = 1; i < argc; ++i) {
+        if (QByteArray(argv[i]) == "--install-winring0-driver" && i + 1 < argc) {
+            const QString sysPath = QString::fromLocal8Bit(argv[i + 1]);
+            return installWinRing0DriverService(sysPath) ? 0 : 1;
+        }
+    }
+#endif
+
     QApplication a(argc, argv);
 
     // 悬浮挂件没有"可以关闭的窗口"，不应该因为窗口被隐藏/关闭就退出程序。

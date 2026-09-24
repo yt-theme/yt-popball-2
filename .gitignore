@@ -59,6 +59,9 @@ compile_commands.json
 /dist/
 /tools/
 
+# aqtinstall 会把日志写到当前工作目录
+aqtinstall.log
+
 # macOS
 .DS_Store
 

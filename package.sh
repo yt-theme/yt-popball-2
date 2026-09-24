@@ -14,6 +14,10 @@
 #                                 （仅单架构，无法跨架构）。
 #   • Windows 宿主（Git Bash / MSYS2 / Cygwin）：
 #       - Windows 包（zip）     ：本机编译 + windeployqt 内置 Qt 运行库，真实可分发。
+#                                 Qt/MinGW 自动探测（PATH → C:\Qt\<版本>\mingw_64 →
+#                                 C:\Qt\Tools\mingw*），无需手工改 PATH；
+#                                 zip 内附带 WinRing0 驱动（CPU 温度）与使用说明。
+#                                 可用 POPBALL2_QT_ROOT 指定 Qt 安装根目录（默认 C:\Qt）。
 #
 # 容错：每个打包目标（mac / linux-amd64-deb / linux-arm64-deb / 其它）都在独立子 shell 中
 #       执行；任一目标失败都会被记录并跳过，不会中断其它目标；最后统一汇总并给出退出码。
@@ -115,7 +119,8 @@ ${C_B}popball2 打包脚本（平台感知 + Docker 多架构 + 容错）${C_R}
   appimage:x64 x86_64 AppImage（须在 x86_64 机器上构建；linuxdeploy 不能跨架构）
   appimage:arm arm64 AppImage（须在 arm64 机器上构建；linuxdeploy 不能跨架构）
   mac         macOS 的 .dmg 与 .zip（仅 macOS 宿主）
-  win         Windows 的 .zip（仅 Windows 宿主，windeployqt 内置 Qt 运行库）
+  win         Windows 的 .zip（仅 Windows 宿主；windeployqt 内置 Qt 运行库，
+              并附带 WinRing0 驱动与 README-Windows.txt 使用说明）
   all         当前平台支持的全部
   all:x64     全部 x86_64 变体（deb:x64 + rpm:x64 + appimage:x64 + mac）
   all:arm     全部 arm64 变体  （deb:arm + rpm:arm + appimage:arm + mac）
@@ -126,7 +131,7 @@ ${C_B}popball2 打包脚本（平台感知 + Docker 多架构 + 容错）${C_R}
   Windows 宿主: win                  （本机 zip，windeployqt 内置 Qt 运行库）
 
 选项:
-      --version V    版本号           (默认: 读取 .pro 里的 VERSION)
+      --version V    版本号           (默认: 读 package.json 的 version，经 POPBALL2_VERSION 传给 .pro)
       --arch ARCH    目标架构         (默认: 本机架构；仅影响原生构建)
       --linux-arch L 用 Docker 打的 Linux 架构，逗号分隔
                       (默认: amd64,arm64；可选 amd64/arm64；
@@ -142,6 +147,12 @@ ${C_B}popball2 打包脚本（平台感知 + Docker 多架构 + 容错）${C_R}
       --skip-platform-check
                      跳过平台校验（仅兼容旧调用，建议用 --no-docker）
   -h, --help         显示帮助
+
+环境变量（Windows 宿主）:
+  POPBALL2_QT_ROOT     Qt 安装根目录（默认 C:\\Qt），用于自动寻找 qmake.exe
+  POPBALL2_MINGW_BIN   直接指定 MinGW 的 bin 目录（含 g++.exe / mingw32-make.exe）
+  POPBALL2_WINRING0_SYS
+                       指定要打进包内的 WinRing0 驱动文件（默认从 drivers/ 取）
 
 容错说明:
   任一目标（mac / linux-amd64-deb / linux-arm64-deb / linux-amd64-rpm / linux-arm64-rpm / appimage）失败都不会中断脚本，
@@ -161,6 +172,8 @@ ${C_B}popball2 打包脚本（平台感知 + Docker 多架构 + 容错）${C_R}
   ./package.sh all:x64                    # 全套 x64（deb/rpm/appimage:x64 + mac）
   ./package.sh all:arm                    # 全套 arm（deb/rpm/appimage:arm + mac）
   ./package.sh all --out ~/pkgs
+  ./package.sh win                        # Windows: 本机编译 + 内置 Qt + 附带驱动，输出 zip
+  ./package.sh win --no-build             # 复用已有构建产物，只重新打 zip
 EOF
 }
 
@@ -361,11 +374,85 @@ find_qmake() {
             if [ -n "$p" ] && [ -x "$p/bin/qmake6" ]; then QMAKE="$p/bin/qmake6"; return 0; fi
         done
     fi
+    # Windows：PATH 里可能压根没有 Qt（run.sh 装的 Qt 在 C:\Qt 下但未改系统 PATH），
+    # 因此主动扫描 Qt 安装根目录 <root>/<版本>/<套件>/bin/qmake.exe。
+    # 优先 MinGW 套件（本脚本用 mingw32-make 构建），其次才是 MSVC 等套件。
+    if [ "$OS_KIND" = windows ]; then
+        if command -v qmake.exe >/dev/null 2>&1 || command -v qmake >/dev/null 2>&1; then
+            local q
+            q="$(command -v qmake.exe 2>/dev/null || command -v qmake)"
+            if "$q" -query QT_VERSION 2>/dev/null | grep -q '^6\.'; then QMAKE="$q"; return 0; fi
+        fi
+        local root d
+        for root in "${POPBALL2_QT_ROOT:-/c/Qt}" "$HOME/Qt"; do
+            [ -d "$root" ] || continue
+            for d in $(ls -1d "$root"/*/mingw*/bin 2>/dev/null | sort -Vr); do
+                if [ -x "$d/qmake.exe" ]; then QMAKE="$d/qmake.exe"; return 0; fi
+            done
+            for d in $(ls -1d "$root"/*/*/bin 2>/dev/null | sort -Vr); do
+                if [ -x "$d/qmake.exe" ]; then QMAKE="$d/qmake.exe"; return 0; fi
+            done
+        done
+    fi
     if command -v qmake >/dev/null 2>&1 \
        && qmake -query QT_VERSION 2>/dev/null | grep -q '^6\.'; then
         QMAKE="$(command -v qmake)"; return 0
     fi
     return 1
+}
+
+# ---------------------------------------------------------------- Windows 工具链
+# Windows 上没有裸的 make / g++：构建要用随 Qt 一起装下来的 MinGW（g++ + mingw32-make）。
+# 找到后必须把这两个 bin 目录挂进 PATH —— 否则 make 找不到 g++，
+# 运行期也找不到 Qt DLL（windeployqt 与 exe 都依赖 PATH）。
+MINGW_BIN=""
+MAKE_TOOL="make"
+find_mingw() {
+    MINGW_BIN=""
+    [ "$OS_KIND" = windows ] || return 0
+    local d root
+    # 1) 已找到的 Qt 套件旁边通常带着 Tools/mingwXXX_64
+    if [ -n "$QMAKE" ]; then
+        for d in "$(dirname "$QMAKE")"/../../Tools/mingw*/bin \
+                 "$(dirname "$QMAKE")"/../../mingw*/bin; do
+            if [ -x "$d/mingw32-make.exe" ] && [ -x "$d/g++.exe" ]; then MINGW_BIN="$d"; return 0; fi
+        done
+    fi
+    # 2) 用户显式指定（POPBALL2_MINGW_BIN=...）
+    if [ -n "${POPBALL2_MINGW_BIN:-}" ] && [ -x "${POPBALL2_MINGW_BIN}/mingw32-make.exe" ]; then
+        MINGW_BIN="$POPBALL2_MINGW_BIN"; return 0
+    fi
+    # 3) PATH 里已经齐了
+    if command -v mingw32-make >/dev/null 2>&1 && command -v g++ >/dev/null 2>&1; then
+        MINGW_BIN="$(dirname "$(command -v g++)")"; return 0
+    fi
+    # 4) Qt 安装根目录自带的 MinGW（aqt install-tool tools_mingwXXXX 装在这里）
+    for root in "${POPBALL2_QT_ROOT:-/c/Qt}" "$HOME/Qt"; do
+        [ -d "$root/Tools" ] || continue
+        for d in $(ls -1d "$root/Tools"/mingw*/bin 2>/dev/null | sort -Vr); do
+            if [ -x "$d/mingw32-make.exe" ] && [ -x "$d/g++.exe" ]; then MINGW_BIN="$d"; return 0; fi
+        done
+    done
+    return 1
+}
+
+# 把 Qt 与 MinGW 的 bin 挂到 PATH 最前面（构建找工具、运行找 DLL 都要它）
+prepend_windows_path() {
+    [ "$OS_KIND" = windows ] || return 0
+    if [ -n "$MINGW_BIN" ]; then PATH="$MINGW_BIN:$PATH"; fi
+    if [ -n "$QMAKE" ]; then PATH="$(dirname "$QMAKE"):$PATH"; fi
+    export PATH
+}
+
+# Windows 下 qmake / mingw32-make 是原生程序，参数必须是 Windows 风格路径：
+# Git Bash 不会把 "/c/Users/..." 自动转成 "C:\Users\..."，
+# 直接传过去 qmake 会报 Cannot find file: \c\Users\...。
+to_win_path() {
+    if [ "$OS_KIND" = windows ] && command -v cygpath >/dev/null 2>&1; then
+        cygpath -w "$1"
+    else
+        printf '%s' "$1"
+    fi
 }
 
 # ---------------------------------------------------------------- 产物完整性自检
@@ -407,17 +494,25 @@ APP_BIN=""
 APP_BUNDLE=""
 
 build_app() {
-    # Windows 的 MinGW 用 mingw32-make；其它平台用 make
-    local make_tool="${MAKE:-make}"
-    if [ "$OS_KIND" = windows ] && command -v mingw32-make >/dev/null 2>&1; then
-        make_tool=mingw32-make
-    fi
+    # Windows/MinGW 的 make 叫 mingw32-make（find_mingw 已设好 MAKE_TOOL）；其它平台用 make
+    local make_tool="${MAKE:-$MAKE_TOOL}"
+    local pro_arg pfx_arg
+    pro_arg="$(to_win_path "$PRO_FILE")"
+    pfx_arg="$(to_win_path "$PREFIX")"
 
     step "构建 $APP_NAME ${VERSION}（release）"
     mkdir -p "$BUILD_DIR"
-    ( cd "$BUILD_DIR" && "$QMAKE" "$PRO_FILE" PREFIX="$PREFIX" >/dev/null )
     local log="$BUILD_DIR/pkg-build.log"
-    if ! ( cd "$BUILD_DIR" && "$make_tool" -j"$JOBS" ) >"$log" 2>&1; then
+    # 版本号经环境变量交给 .pro（Windows 上 .pro 里的 grep/sed 管道会被 cmd 执行，必然为空，
+    # 版本号会落成 0.0.0，Windows exe 的资源版本号也就成了 0.0.0.0）。同时仍传 VERSION= 兜底。
+    export POPBALL2_VERSION="$VERSION"
+    # qmake 的输出也收进日志：Windows 上 .pro 里的 $$system(grep …) 会由 cmd 执行，
+    # 必然吐出 "The system cannot find the path specified."，属于预期噪音，不该糊到用户终端上。
+    if ! ( cd "$BUILD_DIR" && "$QMAKE" "$pro_arg" PREFIX="$pfx_arg" VERSION="$VERSION" ) >"$log" 2>&1; then
+        tail -40 "$log" >&2
+        die "qmake 失败，完整日志: $log"
+    fi
+    if ! ( cd "$BUILD_DIR" && "$make_tool" -j"$JOBS" ) >>"$log" 2>&1; then
         tail -40 "$log" >&2
         die "编译失败，完整日志: $log"
     fi
@@ -795,37 +890,184 @@ pkg_mac() {
 }
 
 # ================================================================== Windows
+# 打 Windows 发行包（zip）：
+#   1) exe 改名为 popball2.exe 放进 popball2/ 子目录
+#   2) windeployqt 内置 Qt 运行库 / 平台插件 / 编译器运行库（脱离开发机也能跑）
+#   3) 附带 WinRing0 驱动（CPU 温度必需，见 drivers/README.md）+ 使用说明
+#   4) 用 PowerShell Compress-Archive 打包（Git Bash 常没有 zip 命令）
+WIN_DRIVER_X64="WinRing0x64.sys"
+WIN_DRIVER_X86="WinRing0.sys"
+
+# 找 windeployqt：优先 PATH，其次 qmake 同目录（Qt 装好后两者在一起）
+find_windeployqt() {
+    local c
+    if command -v windeployqt >/dev/null 2>&1; then command -v windeployqt; return 0; fi
+    if command -v windeployqt.exe >/dev/null 2>&1; then command -v windeployqt.exe; return 0; fi
+    if [ -n "$QMAKE" ] && [ -x "$(dirname "$QMAKE")/windeployqt.exe" ]; then
+        printf '%s' "$(dirname "$QMAKE")/windeployqt.exe"; return 0
+    fi
+    if [ -n "$QMAKE" ] && [ -x "$(dirname "$QMAKE")/windeployqt" ]; then
+        printf '%s' "$(dirname "$QMAKE")/windeployqt"; return 0
+    fi
+    return 1
+}
+
+# 把 Qt6 运行库（DLL + 平台插件 + 编译器运行库）部署到 exe 所在目录，让「程序目录」自包含。
+# 为什么构建目录也要部署（不只是发行包）：程序读 CPU 温度要装内核驱动，非管理员时会经 UAC
+# 重新拉起自己（--install-winring0-driver）；提权后的子进程是**干净环境**（拿不到 run.sh 临时
+# 挂进 PATH 的 Qt bin），exe 旁边没有 Qt DLL 就会以 0xC0000135(STATUS_DLL_NOT_FOUND) 秒退，
+# 驱动装不上、CPU 温度也就永远读不出来。顺带好处：构建目录双击即可运行，不再依赖开发机 PATH。
+deploy_win_runtime() {   # <exe 路径> [日志文件]
+    local exe="$1" log="${2:-$WORK_DIR/windeployqt.log}" dir
+    dir="$(dirname "$exe")"
+    if [ ! -f "$exe" ]; then
+        warn "找不到 $exe，跳过 Qt6 运行库部署"
+        return 1
+    fi
+    local wdq=""
+    if ! wdq="$(find_windeployqt)"; then
+        warn "找不到 windeployqt（应有 Qt 的 bin 目录在 PATH，或与 qmake 同目录）"
+        warn "  → $dir 不自包含，双击 exe 会报「找不到 Qt6Core.dll」"
+        return 1
+    fi
+    # windeployqt 是原生 Windows 程序，参数必须是 Windows 路径：
+    # 传 /tmp/... 会被它当成 "\tmp\..."，报 "... does not exist."，一个库都拷不进去。
+    local exe_win
+    exe_win="$(to_win_path "$exe")"
+    # --no-opengl-sw：本程序是纯 QWidget/QPainter 绘制，不用 OpenGL/Quick，
+    # 不需要 Qt 自带的软件 OpenGL 回退（opengl32sw.dll 约 18MB，纯属体积浪费）。
+    "$wdq" --release --no-translations --no-opengl-sw "$exe_win" >"$log" 2>&1 \
+        || warn "windeployqt 有警告（日志: $log）"
+    # 有没有 Qt6Core.dll 是「能不能跑」的唯一判据，缺了就是白部署
+    if [ -f "$dir/Qt6Core.dll" ]; then
+        return 0
+    fi
+    warn "$dir 里没有 Qt6Core.dll —— Qt6 运行库未部署成功（日志: $log）"
+    tail -20 "$log" >&2 2>/dev/null || true
+    return 1
+}
+
+# 把 WinRing0 驱动拷到指定目录（程序按 applicationDirPath() 找它，见 sysInfo.cpp）。
+# 架构必须匹配：x64 → WinRing0x64.sys、x86 → WinRing0.sys；
+# Windows on ARM 的内核不能加载 x64 驱动，故 arm64 不拷（交给程序回退其它温度来源）。
+copy_winring0_next_to() {   # <目标目录>
+    local dest="$1" arch drv name
+    [ "$OS_KIND" = windows ] || return 0
+    case "$MACH" in
+        i386|i686) arch=x86 ;;
+        aarch64|arm64)
+            warn "Windows on ARM 无法加载 WinRing0（x64 内核驱动），不在程序目录放驱动"
+            return 0 ;;
+        *) arch=x64 ;;
+    esac
+    if [ "$arch" = x64 ]; then name="$WIN_DRIVER_X64"; else name="$WIN_DRIVER_X86"; fi
+    if [ -f "$dest/$name" ]; then return 0; fi          # 已经在位，避免自我拷贝
+    drv="$(find_winring0_driver "$arch" || true)"
+    [ -n "$drv" ] || drv="$(find_winring0_driver x64 || true)"
+    if [ -n "$drv" ]; then
+        if cp -f "$drv" "$dest/$name"; then
+            ok "已附带驱动 $name（$arch，CPU 温度）"
+            return 0
+        fi
+        warn "拷贝 WinRing0 驱动失败: $drv -> $dest"
+        return 1
+    fi
+    warn "没找到 WinRing0 驱动（$name）—— $dest 里将没有 CPU 温度驱动"
+    info "  把 $name 放到仓库 drivers/ 目录，或用 POPBALL2_WINRING0_SYS=/path/to/$name 指定"
+    return 1
+}
+
+# 找 WinRing0 驱动：可在构建目录（跑过一次程序时会被放在 exe 旁）或仓库 drivers/ 里；
+# 也可用 POPBALL2_WINRING0_SYS 显式指定单个文件。
+find_winring0_driver() {   # <x64|x86> -> 输出路径
+    local arch="$1" name
+    if [ "$arch" = x64 ]; then name="$WIN_DRIVER_X64"; else name="$WIN_DRIVER_X86"; fi
+    local d
+    for d in "${POPBALL2_WINRING0_SYS:-}" \
+             "$PROJECT_DIR/drivers/$name" \
+             "$BUILD_DIR/release/$name" \
+             "$BUILD_DIR/$name" \
+             "$PROJECT_DIR/build/release/$name" \
+             "$PROJECT_DIR/$name" \
+             "$PROJECT_DIR/.workbuddy/drivers/$name"; do
+        [ -n "$d" ] && [ -f "$d" ] && { printf '%s' "$d"; return 0; }
+    done
+    return 1
+}
+
+# zip 内附带的运行说明（用户解压后第一眼要看到的东西）
+write_win_readme() {
+    local dest="$1"
+    cat > "$dest" <<EOF
+$APP_NAME $VERSION —— Windows 使用说明
+================================================================
+
+运行
+----
+双击 $APP_NAME.exe 即可（绿色免安装，Qt 运行库已内置在本目录）。
+如果放到 C:\\Program Files 之类需要管理员权限的目录，请先解压到普通目录再运行。
+
+CPU 温度（首次会弹一次 UAC）
+---------------------------
+Windows 不允许普通程序直接读 CPU 核心温度，需要内核驱动（本目录的
+$WIN_DRIVER_X64 / $WIN_DRIVER_X86，来自 WinRing0，GPLv2）。
+首次运行读取温度时，程序会弹出 UAC 提权窗口，点「是」完成驱动安装；
+装好后服务常驻，之后不再提示。
+
+如果温度显示不出来：
+  • 检查是否点了 UAC 的「是」；安装日志：%TEMP%\\popball2_winring0_install.log
+  • 系统开启了「内核隔离 → 内存完整性」(HVCI) 时，该驱动会被微软驱动黑名单拦截，
+    此时 CPU 温度无法读取（程序会自动隐藏温度，不会显示假数据）。
+  • 备选方案：把 LibreHardwareMonitor.exe 放到本目录，并开启其
+    Options → Web server（默认端口 8085），程序会自动从它读取温度。
+
+退出程序
+--------
+右键悬浮球 → 退出；或托盘图标右键退出。
+
+其它
+----
+配置文件：%USERPROFILE%\\.popball2_config.ini
+EOF
+}
+
 pkg_windows() {
     step "打包 Windows（windeployqt + zip）"
     [ -n "$APP_BIN" ] && [ -f "$APP_BIN" ] || { die "找不到构建产物（先构建）"; }
 
     local bundle="$WORK_DIR/$APP_NAME"
     rm -rf "$bundle"; mkdir -p "$bundle"
-    cp -f "$APP_BIN" "$bundle/$(basename "$APP_BIN")"
-    if [ -f "$ICON_PNG" ]; then
-        cp -f "$ICON_PNG" "$bundle/$APP_NAME.png"
-    fi
+    # 统一命名成 popball2.exe：lnk / 说明文档 / 后续脚本都按这个名引用
+    cp -f "$APP_BIN" "$bundle/$APP_NAME.exe"
+    [ -f "$ICON_PNG" ] && cp -f "$ICON_PNG" "$bundle/$APP_NAME.png"
 
-    # windeployqt：把 Qt 运行库/DLL/插件打进目录，产物脱离开发机也能跑
-    local wdq=""
-    if wdq="$(command -v windeployqt)"; then
-        info "内置 Qt 运行库（windeployqt）..."
-        "$wdq" --no-translations --release "$bundle/$(basename "$APP_BIN")" \
-                >"$WORK_DIR/windeployqt.log" 2>&1 \
-            && ok "Qt 依赖已内置" \
-            || warn "windeployqt 有警告（日志: $WORK_DIR/windeployqt.log）"
+    # 内置 Qt6 运行库（DLL + 平台插件 + 编译器运行库）
+    # 打包能不能跑起来全看这一步：没有 Qt6Core.dll 就是白打，直接判失败更早暴露问题
+    info "内置 Qt6 运行库（windeployqt）..."
+    if deploy_win_runtime "$bundle/$APP_NAME.exe" "$WORK_DIR/windeployqt.log"; then
+        ok "Qt6 依赖已内置（含 platforms/qwindows.dll）"
     else
-        warn "缺少 windeployqt（请把 Qt 的 bin 目录加入 PATH），产物将依赖系统已装的 Qt"
+        die "Qt6 运行库未内置成功，产物跑不起来（日志: $WORK_DIR/windeployqt.log）"
     fi
 
-    # 附带简体中文翻译（应用已内嵌 Qt 翻译，这里再补一份 qtbase 的翻译给 Qt 控件用）
+    # 附带 qtbase 的简体中文翻译（Qt 自身控件的中文；应用自己的翻译已内嵌在 exe 里）
     if [ -n "$QMAKE" ]; then
-        local qtdir="$(dirname "$QMAKE")/../translations"
+        local qtdir
+        qtdir="$(dirname "$QMAKE")/../translations"
         if [ -d "$qtdir" ]; then
             mkdir -p "$bundle/translations"
             cp -f "$qtdir"/qtbase_zh_CN.qm "$bundle/translations/" 2>/dev/null || true
         fi
     fi
+
+    # 附带 WinRing0 驱动（CPU 温度必需；缺了就只能读到「无温度」）。
+    # 架构匹配与「找不到」的提示都在 helper 里（arm64 不附，见其注释）
+    copy_winring0_next_to "$bundle"
+
+    # 顺带带上 README（有就带）与中文使用说明
+    [ -f "$PROJECT_DIR/README.md" ] && cp -f "$PROJECT_DIR/README.md" "$bundle/README.md"
+    write_win_readme "$bundle/README-Windows.txt"
+    ok "已写入 README-Windows.txt"
 
     local winarch="$MACH"
     case "$MACH" in
@@ -833,16 +1075,18 @@ pkg_windows() {
         aarch64|arm64) winarch=arm64 ;;
     esac
     local zname="${APP_NAME}-${VERSION}-windows-${winarch}.zip"
-
-    # 打包 zip：优先用真实 zip；Windows 上用 PowerShell Compress-Archive（Git Bash 常无 zip）
-    local w_out="$OUT_DIR"
-    command -v cygpath >/dev/null 2>&1 \
-        && w_out="$(cygpath -w "$OUT_DIR" 2>/dev/null || echo "$OUT_DIR")"
     rm -f "$OUT_DIR/$zname"
+
+    # 打包 zip：优先真实 zip；Windows 上多用 PowerShell Compress-Archive（Git Bash 常无 zip）。
+    # 注意路径里可能有单引号（如 C:\Users\o'brien\...），不能直接拼进 PowerShell 单引号字符串
+    # （会截断命令），所以经环境变量传参 + 双引号取值，彻底绕开引号转义问题。
     if [ "$OS_KIND" = windows ] && command -v powershell >/dev/null 2>&1; then
-        ( cd "$WORK_DIR" \
-            && powershell -NoProfile -Command \
-                "Compress-Archive -Path '$APP_NAME' -DestinationPath '$w_out\\$zname' -Force" )
+        local w_src w_dst
+        w_src="$(to_win_path "$bundle")"
+        w_dst="$(to_win_path "$OUT_DIR/$zname")"
+        POPBALL2_ZIP_SRC="$w_src" POPBALL2_ZIP_DST="$w_dst" \
+        powershell -NoProfile -NonInteractive -Command \
+            '$ProgressPreference="SilentlyContinue"; Compress-Archive -Path "$env:POPBALL2_ZIP_SRC" -DestinationPath "$env:POPBALL2_ZIP_DST" -Force'
     elif command -v zip >/dev/null 2>&1; then
         ( cd "$WORK_DIR" && zip -r -q "$OUT_DIR/$zname" "$APP_NAME" )
     else
@@ -872,14 +1116,36 @@ stage_mac() {
 }
 
 stage_win() {
-    find_qmake || { err "找不到 qmake6，请先安装 Qt 并把其 bin 目录加入 PATH（MinGW 或 MSVC 均可）"; return 1; }
+    # Windows 上 Qt/MinGW 常常不在系统 PATH 里（run.sh 装到 C:\Qt），这里自动探测；
+    # 找到后挂进 PATH —— make 找 g++、windeployqt 与打包后的 exe 找 Qt DLL 都要用。
+    find_qmake || { err "找不到 Qt6 的 qmake.exe。请先运行 ./run.sh 安装依赖，"
+                        "或用 POPBALL2_QT_ROOT 指定 Qt 安装根目录（默认 C:\\Qt）"; return 1; }
+    find_mingw  || { err "找不到 MinGW 工具链（g++ / mingw32-make）。请先运行 ./run.sh 安装依赖，"
+                        "或用 POPBALL2_MINGW_BIN 指定其 bin 目录"; return 1; }
+    prepend_windows_path
+    MAKE_TOOL=mingw32-make
+    info "Qt        : $QMAKE"
+    info "MinGW     : $MINGW_BIN"
     if [ -z "$JOBS" ]; then
-        if command -v nproc >/dev/null 2>&1; then JOBS="$(nproc)"; else JOBS=4; fi
+        if command -v nproc >/dev/null 2>&1; then JOBS="$(nproc)"
+        elif [ -n "${NUMBER_OF_PROCESSORS:-}" ]; then JOBS="$NUMBER_OF_PROCESSORS"
+        else JOBS=4; fi
     fi
     BUILD_DIR="${POPBALL2_BUILD_DIR:-$PROJECT_DIR/build-pkg}"
     if [ "$DO_BUILD" -eq 1 ]; then build_app; fi
     locate_app
     info "可执行文件: $APP_BIN"
+
+    # 构建目录也要自包含：Qt6 运行库 + WinRing0 驱动都放到 exe 旁。
+    # 程序经 UAC 提权安装驱动时会重新拉起自己，提权进程是干净环境（拿不到这里临时挂的
+    # Qt bin），exe 旁缺 Qt6 DLL 就直接 0xC0000135 退出 → 驱动装不上、温度读不出来。
+    step "部署运行库到程序目录（exe 旁）"
+    if deploy_win_runtime "$APP_BIN" "$BUILD_DIR/qt-deploy.log"; then
+        ok "Qt6 运行库已部署: $(dirname "$APP_BIN")"
+    else
+        warn "Qt6 运行库未部署到 $(dirname "$APP_BIN")（双击 exe 会报「找不到 Qt6 的 DLL」）"
+    fi
+    copy_winring0_next_to "$(dirname "$APP_BIN")"
     pkg_windows
 }
 
