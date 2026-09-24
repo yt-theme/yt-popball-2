@@ -28,8 +28,14 @@ qtHaveModule(svg) {
 
 CONFIG += c++17
 
-# 版本号：自动从 package.json 读取（单一来源，改 package.json 即全局生效）
-VERSION = $$system(grep version $$PWD/package.json 2>/dev/null | head -1 | sed 's/[^0-9.]//g')
+# 版本号：自动从 package.json 读取（单一来源，改 package.json 即全局生效）。
+# 优先取环境变量 POPBALL2_VERSION —— run.sh / package.sh 会用 bash 侧解析好的版本号导出它。
+# 原因：下面的 grep/sed 管道在 Windows 上是由 cmd 执行的，cmd 没有 grep/sed，
+# 求值必然为空、版本号会落成 0.0.0（Windows 的 exe 资源版本号因此变成 0.0.0.0）。
+VERSION = $$(POPBALL2_VERSION)
+isEmpty(VERSION) {
+    VERSION = $$system(grep version $$PWD/package.json 2>/dev/null | head -1 | sed 's/[^0-9.]//g')
+}
 isEmpty(VERSION): VERSION = 0.0.0
 
 # You can make your code fail to compile if it uses deprecated APIs.
@@ -95,11 +101,12 @@ unix:!macx {
 # Windows：
 #   * iphlpapi —— 网速 GetIfTable2；advapi32 —— 注册表读 CPU 频率
 #   * ole32 / oleaut32 / wbemuuid —— CPU 温度经 WMI(MSAcpi_ThermalZoneTemperature)
+#   * pdh —— 磁盘 IO 性能计数器（PhysicalDisk 每秒读/写字节数，替代慢速 WMI 查询）
 #   * _WIN32_WINNT=0x0601(Win7+) 启用 GetIfTable2 等较新 API
 win32 {
     DEFINES += WINVER=0x0601
     DEFINES += _WIN32_WINNT=0x0601
-    LIBS += -liphlpapi -ladvapi32 -lole32 -loleaut32 -lwbemuuid
+    LIBS += -liphlpapi -ladvapi32 -lole32 -loleaut32 -lwbemuuid -lwinhttp -lpdh
 
     # Windows 应用图标（可选，存在才生效）
     exists(resources/popball2.ico) {

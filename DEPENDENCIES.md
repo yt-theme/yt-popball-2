@@ -4,7 +4,7 @@
 本章说明每种包**是否已经内置全部依赖**、**运行时还差什么**、以及**正确的安装命令**。
 
 > 一句话结论：
-> - **macOS dmg / zip** 和 **Linux AppImage** —— **自包含**，Qt 已经打进包里，拷过去直接跑。
+> - **macOS dmg / zip**、**Windows zip** 和 **Linux AppImage** —— **自包含**，Qt 已经打进包里，拷过去直接跑。
 > - **Linux deb / rpm** —— **不内置 Qt**（行业标准做法），但用包管理器安装时会**自动补装**系统 Qt6，所以也是「装上就能用」。
 
 ---
@@ -14,6 +14,7 @@
 | 格式 | 产物 | 是否自包含 | 运行时还依赖什么 | 推荐安装方式 |
 |---|---|---|---|---|
 | `mac` | `popball2-<ver>-macos-<arch>.dmg` / `.zip` | ✅ 是（Qt 已内置） | macOS 11+；首次打开需绕过 Gatekeeper | 拖进 `/Applications` |
+| `win` | `popball2-<ver>-windows-<arch>.zip` | ✅ 是（Qt + MinGW 运行库已内置） | Windows 7+；**读 CPU 温度首次需点一次 UAC** | 解压到任意目录，双击 `popball2.exe` |
 | `appimage` | `popball2-<ver>-<arch>.AppImage` | ✅ 是（Qt 已内置） | 需要 **FUSE**（无 FUSE 可用 `--appimage-extract`）；glibc ≥ 2.35 | `chmod +x` 后直接运行 |
 | `deb` | `popball2_<ver>_<arch>.deb` | ❌ 否（用系统 Qt6） | Debian/Ubuntu 仓库里的 `qt6-base`（A→自动装） | `sudo apt install ./xxx.deb` |
 | `rpm` | `popball2-<ver>-1.<arch>.rpm` | ❌ 否（用系统 Qt6） | Fedora/RHEL 里的 `qt6-qtbase`（DNF 自动装） | `sudo dnf install ./xxx.rpm` |
@@ -54,7 +55,44 @@ xcrun notarytool submit PopBall.app ...   # 如需公证
 
 ---
 
-## 3. Linux AppImage（自包含，推荐）
+## 3. Windows（zip）
+
+### 依赖情况
+- 打包时已用 `windeployqt` 把 **Qt6 Core / Gui / Widgets / Sql / Svg / Network**、
+  **`platforms/qwindows.dll` 平台插件**、图标/图片格式插件、SQL 驱动，以及
+  **MinGW 运行库**（`libgcc_s_seh-1.dll` / `libstdc++-6.dll` / `libwinpthread-1.dll`）
+  全部复制进包内 —— 目标机器**不需要装 Qt**。
+- 另附 **`WinRing0x64.sys`**（32 位系统为 `WinRing0.sys`）：Windows 没有用户态读 CPU
+  核心温度的 API，必须靠这个内核驱动读 MSR。**读温度首次运行会弹一次 UAC 提权**完成驱动
+  安装，装好后服务常驻、不再提示。
+- 包内还有 `README-Windows.txt`（运行/排错说明）与 `README.md`。
+- **构建目录同样是自包含的**：`./run.sh` 与 `./package.sh win` 编译后都会调用 `windeployqt`，
+  把上面这些 Qt 运行库 + `WinRing0x64.sys` 直接放到 exe 旁，所以 `build/release/popball2.exe`
+  双击就能跑，不依赖开发机的 PATH。这一步是刚需而不是锦上添花：程序装温度驱动时要经
+  **UAC 提权重新拉起自己**，提权后的子进程是「干净环境」（拿不到脚本临时挂上去的 Qt bin），
+  exe 旁边没有 Qt DLL 就会以 `0xC0000135`(STATUS_DLL_NOT_FOUND) 秒退 —— 驱动装不上、
+  CPU 温度永远读不出来。实测对比：exe 旁无 Qt DLL 时进程 3.8MB / 4 线程卡在加载失败态，
+  有 DLL 时正常起球（约 38MB）。`run.sh --install` 安装到的目录同样会被部署。
+
+### 安装 / 使用
+```powershell
+# 解压到任意可写目录（不要直接放在 C:\Program Files 下再双击）
+Expand-Archive .\popball2-1.1.3-windows-x86_64.zip -DestinationPath .
+.\popball2\popball2.exe
+```
+
+### 排错
+- **没有温度显示**：确认 UAC 那次提权点了「是」；安装日志在
+  `%TEMP%\popball2_winring0_install.log`（`ok=1` 表示装成功）。
+- 系统开了「内核隔离 → 内存完整性」(HVCI) 时，未签名的 WinRing0 会被微软驱动黑名单拦截
+  （服务启动返回 **1275**），此时 CPU 温度读不到 —— 程序会自动回退其它来源，读不到就不显示，
+  不会造假数据。备选：把 `LibreHardwareMonitor.exe` 放到程序同目录并开启 Web server（8085）。
+- **exe 启动报缺少 DLL**：说明 `windeployqt` 那步没成功（打包日志里会有提示），
+  重新执行 `./package.sh win` 即可。
+
+---
+
+## 4. Linux AppImage（自包含，推荐）
 
 ### 依赖情况
 - 打包时用 `linuxdeploy --plugin qt` 把 **Qt6 运行库 + 平台/风格插件** 全部塞进
@@ -80,7 +118,7 @@ chmod +x popball2-1.0.0-x86_64.AppImage
 
 ---
 
-## 4. Linux deb（Debian / Ubuntu）
+## 5. Linux deb（Debian / Ubuntu）
 
 ### 依赖情况
 - **不内置 Qt**（所有 Qt 桌面应用的 deb 都这样，避免重复打包、保持与系统一致）。
@@ -130,7 +168,7 @@ sudo apt -f install          # 如果误用了 dpkg -i，再补这一句即可
 
 ---
 
-## 5. Linux rpm（Fedora / RHEL / openSUSE）
+## 6. Linux rpm（Fedora / RHEL / openSUSE）
 
 ### 依赖情况
 - 同样**不内置 Qt**。`Requires: qt6-qtbase` 由 DNF/YUM 自动解析并安装
@@ -152,17 +190,21 @@ sudo dnf -y install qt6-qtbase   # 若误用 rpm -ivh，手动补这一句
 
 ---
 
-## 6. 架构说明
+## 7. 架构说明
 
 - **x86_64（x64）**：Intel / AMD 64 位。
 - **aarch64（arm64）**：Apple Silicon、树莓派 4/5（64 位系统）、飞腾、鲲鹏、骁龙 X 等。
-- 包名里的架构字段：deb 用 `amd64`/`arm64`，rpm 用 `x86_64`/`aarch64`，AppImage 用 `x86_64`/`aarch64`。
+- 包名里的架构字段：deb 用 `amd64`/`arm64`，rpm 用 `x86_64`/`aarch64`，
+  AppImage 用 `x86_64`/`aarch64`，Windows 用 `x86_64`/`arm64`。
 - 在 macOS 上用 `./build.sh` 时，Linux 包通过 Docker 分别打出 **x64 与 arm** 两种架构，
   都是该架构**真实可运行**的二进制（不是模拟）。
+- Windows 的 zip 只能打出**本机架构**（Windows 无法交叉编译）。
+  注意 **Windows on ARM 不支持包内的 WinRing0 驱动**（x64 内核驱动无法加载），
+  该架构下 CPU 温度需依赖 LibreHardwareMonitor 方案。
 
 ---
 
-## 7. 从源码构建时的依赖（开发者用）
+## 8. 从源码构建时的依赖（开发者用）
 
 `./build.sh` / `./package.sh` 自己会装齐构建依赖；这里仅作记录：
 
@@ -171,19 +213,23 @@ sudo dnf -y install qt6-qtbase   # 若误用 rpm -ivh，手动补这一句
 | Debian/Ubuntu | `build-essential qt6-base-dev qt6-base-dev-tools qmake6 dpkg-dev rpm curl patchelf` |
 | Fedora/RHEL | `gcc-c++ qt6-qtbase-devel rpm-build curl patchelf` |
 | macOS | Homebrew `qt` + Xcode Command Line Tools（`macdeployqt` 随 Qt 提供） |
+| Windows | Git Bash / MSYS2 + Qt6 的 MinGW 套件 + MinGW 工具链（`windeployqt` 随 Qt 提供）；`./run.sh` 会用 aqtinstall 装到 `C:\Qt`，也可以直接装 Qt Online Installer |
 | Docker 镜像 | `docker/linux-build/Dockerfile` 已固化上述 Debian 依赖 |
 
 打包额外工具（缺失时脚本会**黄色警告并跳过对应格式**，不致命）：
 - `rpm` / `rpmbuild`：deb 与 AppImage 不受影响。
 - `linuxdeploy` + `appimagetool`：AppImage 首次会自动联网下载到 `tools/`，之后复用。
+- Windows 的 `windeployqt`：找不到会警告（产物依赖系统已装的 Qt）；它与 `qmake.exe` 同在 Qt 的 `bin/`。
 
 ---
 
-## 8. 打包后自检（脚本已做）
+## 9. 打包后自检（脚本已做）
 
 `./package.sh`（被 `build.sh` 调用）在打包前会：
 - **Linux**：跑 `ldd` 确认二进制所有动态库都能解析，避免打出「缺库」的残包；
 - **macOS**：跑 `otool -L` 确认 Qt 框架已被 `macdeployqt` 打进 `.app`，
-  若发现 Qt 仍指向系统/Homebrew 路径会**警告**（说明 macdeployqt 可能没生效）。
+  若发现 Qt 仍指向系统/Homebrew 路径会**警告**（说明 macdeployqt 可能没生效）；
+- **Windows**：检查包内是否真的拷进了 `Qt6Core.dll`（`windeployqt` 失败时产物无法独立运行），
+  缺失即判该目标失败并打印 `windeployqt` 日志，避免打出「在没有 Qt 的机器上跑不起来」的包。
 
 若出现上述告警，多半是构建环境缺 Qt 或 `macdeployqt` 版本不匹配，先跑 `./run.sh` 修环境再打包。

@@ -1154,12 +1154,11 @@ void SettingsDialog::applyChanges()
     cfg->setDockOpacity(sliderDockOpacity->value());
     cfg->setRememberScroll(checkRememberScroll->isChecked());
 
-    // 界面语言切换需重启生效（QTranslator 在应用启动时加载）；只提示一次
-    if (cfg->getLanguage() != m_langApplied) {
+    // 界面语言切换需重启生效（QTranslator 在应用启动时加载）。
+    // 不弹"重启生效"提示框：切换形态/语言后界面按新配置即时刷新，
+    // 语言本身在下次启动时完整切换，避免每次保存都被模态框打断。
+    if (cfg->getLanguage() != m_langApplied)
         m_langApplied = cfg->getLanguage();
-        QMessageBox::information(this, tr("界面语言"),
-            tr("界面语言已保存，重启应用后生效。"));
-    }
 
     emit settingsApplied();
 }

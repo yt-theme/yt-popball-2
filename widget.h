@@ -102,6 +102,7 @@ private:
     };
     quint8 lcdRowMask = 0;                    // 各行的"应显示"位图
     QRect  lcdRowRect[ROW_COUNT];             // 各行在球内的矩形（LCD 摆放用）
+    qint32 lastLcdLayoutStyle = -1;           // 上次排布用的 ball_style（形态切换后强制重排）
 
     // 依据 lcdRowMask 重新排布各行几何（宽高变化、显隐变化后调用）
     void relayoutVisibleLcds();

@@ -12,6 +12,8 @@
 #   • macOS 宿主：macOS 包本机构建；Linux 的 x86_64(amd64) 与 aarch64(arm64) .deb 用 Docker 构建。
 #   • Linux 宿主：不打包 macOS；Linux 的 x86_64 与 aarch64 .deb 默认用 Docker 构建
 #                 （无 Docker 或 --no-docker 时退回本机架构原生构建）。
+#   • Windows 宿主（Git Bash / MSYS2）：打出 zip（windeployqt 内置 Qt 运行库，
+#                 并附带 WinRing0 驱动与 README-Windows.txt）。Qt / MinGW 会自动探测。
 #
 # 容错（由 package.sh 保证）：任一目标失败都只记录并跳过，其余目标继续执行。
 #

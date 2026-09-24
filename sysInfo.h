@@ -9,6 +9,7 @@
 #include <QDir>
 #include <QStringList>
 #include <QList>
+#include <QVector>
 #include <QHash>
 #include <QPair>
 
@@ -46,12 +47,26 @@
 #define NOMINMAX                 // 避免 min/max 宏与 qMax 冲突
 #endif
 #include <windows.h>
+// 必须先包含 Winsock 的 IP 定义头：
+// MinGW-w64 的 netioapi.h 把 MIB_IF_ROW2 / MIB_IF_TABLE2 / GetIfTable2 / FreeMibTable
+// 全包在 `#ifdef _WS2IPDEF_` 里，而它只有在「自己是被首次包含 + iphlpapi.h 的 include
+// guard 还没定义」时才会去 include <ws2ipdef.h>。若像下面这样先 iphlpapi.h 再 netioapi.h，
+// 就会走 netioapi.h 里 `#ifdef __IPHLPAPI_H__` 那条分支，ws2ipdef.h 从未被包含，
+// _WS2IPDEF_ 未定义 → 新 API 全部消失（报 MIB_IF_TABLE2 / GetIfTable2 未声明）。
+// MSVC 的 SDK 头内部已处理这层依赖，所以原先在 MSVC 上不会暴露。
+#include <winsock2.h>
+#include <ws2ipdef.h>
 #include <iphlpapi.h>            // 网速：GetIfTable2 / FreeMibTable
 #include <netioapi.h>            // MIB_IF_ROW2 / IF 类型与状态常量
 #include <rpcdce.h>              // CoInitializeSecurity 的 RPC_C_AUTHN/IMP 常量
 #include <wbemidl.h>             // CPU 温度：WMI MSAcpi_ThermalZoneTemperature
 #include <oaidl.h>               // VARIANT
 #include <oleauto.h>
+#include <winhttp.h>             // LibreHardwareMonitor 的 Web 服务（读真实 CPU 核心温度）
+#include <winioctl.h>            // CTL_CODE / METHOD_BUFFERED（WinRing0 的 IOCTL）
+#include <winsvc.h>              // 安装/启动 WinRing0 内核驱动服务
+#include <shellapi.h>            // ShellExecuteExW：非管理员时的 UAC 自提权装驱动
+#include <pdh.h>                 // 磁盘 IO：PDH 性能计数器（比 WMI 快两个数量级）
 #endif
 
 #include "struct_def.h"
@@ -87,6 +102,7 @@ private:
     quint64 receive_last        = 0;
     quint64 transmit            = 0;
     quint64 transmit_last       = 0;
+    bool    netInited           = false;   // 首帧网速保护：第一帧只记基准，不当作速率
 
     // disk I/O（读写字节数，与网速一样用差值算速度）
     // 每个磁盘单独记累计值，再按"指定盘 / IO 最高的盘"选出生效盘。
@@ -108,6 +124,20 @@ private:
     bool     diskIoOk = false;                // 当前平台能否取到磁盘 IO
 #if defined(Q_OS_WIN)
     qlonglong diskLastSampleMs = 0;           // 上次采样时间戳（Windows 用：把速率换算成字节数）
+    // PDH 磁盘性能计数器（读 PhysicalDisk 各实例的每秒读/写字节数）。
+    // 之前用 WMI Win32_PerfFormattedData_PerfDisk_PhysicalDisk：首次查询 2~3 秒、
+    // 之后每次仍要 300ms+，会卡住 450ms 周期的采样线程，而且初始化一旦失败就
+    // 永久跳过（wmiTried），磁盘速度从此恒为 0。PDH 每次查询 <10ms，不阻塞 UI。
+    struct PdhDiskCounter {
+        QString      name;      // PDH 实例名（如 "0 C:"，与 WMI 一致，可直接用于 disk_io_name）
+        PDH_HCOUNTER hRead  = nullptr;
+        PDH_HCOUNTER hWrite = nullptr;
+    };
+    QVector<PdhDiskCounter> pdhDisks;         // 各物理盘对应的读/写计数器
+    PDH_HQUERY              pdhQuery  = nullptr;
+    bool                    pdhReady  = false;   // PDH 查询已初始化成功
+    bool                    pdhTried  = false;   // 是否已尝试过初始化（失败后隔段时间重试）
+    qlonglong               pdhTryMs  = 0;       // 上次初始化尝试时间（重试退避用）
 #endif
 
 #if defined(Q_OS_MACOS)
@@ -156,5 +186,12 @@ public:
     bool isCpuTemperatureAvailable();
     bool isDiskIoAvailable();
 };
+
+#if defined(Q_OS_WIN)
+// 以当前(管理员)进程身份把 WinRing0 驱动注册成内核服务并启动。
+// 供 main.cpp 处理 "--install-winring0-driver <sys路径>" 参数使用：
+// 正常进程是非管理员时，通过 UAC 自提权调用自身带此参数，完成一次性驱动安装。
+bool installWinRing0DriverService(const QString &sysPath);
+#endif
 
 #endif // SYSINFO_H
