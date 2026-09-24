@@ -19,6 +19,8 @@
 #include <QFileDialog>
 #include <QStandardPaths>
 #include <QRadioButton>
+#include <QListWidget>
+#include <QStackedWidget>
 #include "sysInfo.h"
 
 // ---------------------------------------------------------------- 配置项定义
@@ -157,6 +159,16 @@ QComboBox QAbstractItemView {
     background-color:#FFFFFF; border:1px solid #DDE2E8;
     selection-background-color:#E0EEFC; selection-color:#1B1F24;
 }
+/* 左侧分类导航 */
+QListWidget#nav {
+    background-color:#F5F7FA; border:none; border-right:1px solid #E8EBF0;
+    outline:none; font-size:13px;
+}
+QListWidget#nav::item {
+    color:#5A616B; padding:8px 12px; margin:2px 6px; border-radius:6px;
+}
+QListWidget#nav::item:hover  { background-color:#E9EDF2; color:#1B1F24; }
+QListWidget#nav::item:selected { background-color:#E0EEFC; color:#2E7DD8; }
 )";
 
 // ---------------------------------------------------------------- 构造
@@ -218,41 +230,61 @@ void SettingsDialog::buildUi()
     outer->setContentsMargins(0, 0, 0, 0);
     outer->setSpacing(0);
 
-    // ---- 可滚动的内容区 ----
-    auto *scroll = new QScrollArea(this);
-    scroll->setWidgetResizable(true);
-    scroll->setFrameShape(QFrame::NoFrame);
-    scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);   // 内容自适应换行，不需要横向滚动
-    auto *content = new QWidget(scroll);
-    content->setObjectName(QStringLiteral("content"));
+    // ---- 主体：左侧分类导航 + 右侧分页 ----
+    auto *body = new QWidget(this);
+    auto *bodyL = new QHBoxLayout(body);
+    bodyL->setContentsMargins(0, 0, 0, 0);
+    bodyL->setSpacing(0);
 
-    auto *root = new QVBoxLayout(content);
-    root->setContentsMargins(22, 18, 22, 18);
-    root->setSpacing(10);
+    auto *nav = new QListWidget(body);
+    nav->setObjectName(QStringLiteral("nav"));
+    nav->setFixedWidth(148);
+    nav->setFocusPolicy(Qt::NoFocus);
 
-    auto *line = new QFrame(content);
-    line->setProperty("role", "line");
-    line->setFrameShape(QFrame::StyledPanel);
-    root->addWidget(line);
+    auto *stack = new QStackedWidget(body);
 
-    root->addWidget(buildColorSection());
-    root->addWidget(buildShowSection());
-    root->addWidget(buildWindowSection());
-    root->addWidget(buildAsideSection());
-    root->addWidget(buildChartSection());
-    root->addWidget(buildDockSection());
-    root->addWidget(buildAdvancedSection());
-    root->addWidget(buildMonitorSection());
-    root->addStretch(1);
+    // 一个分类页 = 可滚动区域，里面纵向排列各分区
+    auto makePage = [](const QList<QWidget*> &sections) {
+        auto *sa = new QScrollArea();
+        sa->setWidgetResizable(true);
+        sa->setFrameShape(QFrame::NoFrame);
+        sa->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+        auto *content = new QWidget(sa);
+        content->setObjectName(QStringLiteral("content"));
+        auto *l = new QVBoxLayout(content);
+        l->setContentsMargins(20, 18, 20, 18);
+        l->setSpacing(16);
+        for (QWidget *w : sections) l->addWidget(w);
+        l->addStretch(1);
+        sa->setWidget(content);
+        return sa;
+    };
 
-    scroll->setWidget(content);
-    outer->addWidget(scroll, 1);
+    // 1 外观：配色主题 + 颜色 + 窗口外观（不透明度/边框/阴影）
+    stack->addWidget(makePage({ buildColorSection(), buildAppearanceSection() }));
+    // 2 悬浮球：形态大小 + 贴边竖条 + 图表
+    stack->addWidget(makePage({ buildBallSection(), buildAsideSection(), buildChartSection() }));
+    // 3 监控项：显示开关 + 磁盘选择
+    stack->addWidget(makePage({ buildShowSection() }));
+    // 4 数据中转站
+    stack->addWidget(makePage({ buildDockSection() }));
+    // 5 通用：语言 + 高级 + 系统监视器
+    stack->addWidget(makePage({ buildGeneralSection() }));
+
+    const QStringList cats = {
+        tr("外观"), tr("悬浮球"), tr("监控项"), tr("数据中转站"), tr("通用") };
+    for (const QString &t : cats)
+        nav->addItem(new QListWidgetItem(t, nav));
+    nav->setCurrentRow(0);
+
+    connect(nav, &QListWidget::currentRowChanged, stack, &QStackedWidget::setCurrentIndex);
+
+    bodyL->addWidget(nav);
+    bodyL->addWidget(stack, 1);
+    outer->addWidget(body, 1);
 
     // ---- 底部按钮（固定不滚动）----
     auto *btnBox = new QWidget(this);
-    // 注意必须用 ID 选择器：写成 QWidget{...} 会匹配所有后代（包括按钮），
-    // 且祖先样式表比对话框级样式表优先级更高，会把「确定」按钮的蓝色背景
-    // 覆盖成容器色 —— 白底白字，看起来就像按钮不存在一样。
     btnBox->setObjectName(QStringLiteral("btnBar"));
     btnBox->setStyleSheet(QStringLiteral(
         "#btnBar { background-color:#FAFBFC; border-top:1px solid #EEF1F4; }"));
@@ -392,41 +424,16 @@ QWidget *SettingsDialog::buildShowSection()
     return box;
 }
 
-QWidget *SettingsDialog::buildWindowSection()
+QWidget *SettingsDialog::buildAppearanceSection()
 {
     auto *box = new QWidget(this);
     auto *v = new QVBoxLayout(box);
     v->setContentsMargins(0, 0, 0, 0);
     v->setSpacing(8);
 
-    auto *g = new QLabel(tr("窗  口"), box);
+    auto *g = new QLabel(tr("窗口外观"), box);
     g->setProperty("section", "group");
     v->addWidget(g);
-
-    // 界面语言（0=跟随系统 1=简体中文 2=English；语言名用自身语言显示，业界惯例）
-    auto *lg = new QHBoxLayout();
-    lg->setSpacing(10);
-    lg->addWidget(new QLabel(tr("界面语言"), box));
-    comboLanguage = new QComboBox(box);
-    comboLanguage->setObjectName("language");
-    comboLanguage->addItem(tr("跟随系统（自动）"), 0);
-    comboLanguage->addItem(QStringLiteral("简体中文"), 1);
-    comboLanguage->addItem(QStringLiteral("English"), 2);
-    lg->addWidget(comboLanguage, 1);
-    v->addLayout(lg);
-
-    // 悬浮球形态（球形 / 圆角矩形 / 直角方形 / 长条形）
-    auto *bs = new QHBoxLayout();
-    bs->setSpacing(10);
-    bs->addWidget(new QLabel(tr("悬浮球形态"), box));
-    comboBallStyle = new QComboBox(box);
-    comboBallStyle->setObjectName("ballStyle");
-    comboBallStyle->addItem(tr("球形"), 0);
-    comboBallStyle->addItem(tr("圆角矩形"), 1);
-    comboBallStyle->addItem(tr("直角方形"), 2);
-    comboBallStyle->addItem(tr("长条形"), 3);
-    bs->addWidget(comboBallStyle, 1);
-    v->addLayout(bs);
 
     // 不透明度
     auto *op = new QHBoxLayout();
@@ -442,19 +449,9 @@ QWidget *SettingsDialog::buildWindowSection()
     op->addWidget(opacitySlider, 1);
     op->addWidget(opacityLabel);
     v->addLayout(op);
-    connect(opacitySlider, &QSlider::valueChanged, this, [this](int v) {
-        opacityLabel->setText(QString::number(v) + QStringLiteral("%"));
+    connect(opacitySlider, &QSlider::valueChanged, this, [this](int vv) {
+        opacityLabel->setText(QString::number(vv) + QStringLiteral("%"));
     });
-
-    // 大小
-    auto *sz = new QHBoxLayout();
-    sz->setSpacing(10);
-    sz->addWidget(new QLabel(tr("大小(宽×高)"), box));
-    spinWidth  = new QSpinBox(box);  spinWidth->setObjectName("width");  spinWidth->setRange(40, 600);  spinWidth->setSuffix(tr(" px"));
-    spinHeight = new QSpinBox(box);  spinHeight->setObjectName("height"); spinHeight->setRange(40, 600); spinHeight->setSuffix(tr(" px"));
-    sz->addWidget(spinWidth, 1);
-    sz->addWidget(spinHeight, 1);
-    v->addLayout(sz);
 
     // 边框宽度
     auto *bw = new QHBoxLayout();
@@ -484,7 +481,80 @@ QWidget *SettingsDialog::buildWindowSection()
     return box;
 }
 
-// 贴边竖条：拖到屏幕左右边缘后吸附成的圆角竖条，用窄柱图显示各指标
+QWidget *SettingsDialog::buildBallSection()
+{
+    auto *box = new QWidget(this);
+    auto *v = new QVBoxLayout(box);
+    v->setContentsMargins(0, 0, 0, 0);
+    v->setSpacing(8);
+
+    auto *g = new QLabel(tr("形态与大小"), box);
+    g->setProperty("section", "group");
+    v->addWidget(g);
+
+    // 悬浮球形态（球形 / 圆角矩形 / 直角方形 / 长条形）
+    auto *bs = new QHBoxLayout();
+    bs->setSpacing(10);
+    bs->addWidget(new QLabel(tr("悬浮球形态"), box));
+    comboBallStyle = new QComboBox(box);
+    comboBallStyle->setObjectName("ballStyle");
+    comboBallStyle->addItem(tr("球形"), 0);
+    comboBallStyle->addItem(tr("圆角矩形"), 1);
+    comboBallStyle->addItem(tr("直角方形"), 2);
+    comboBallStyle->addItem(tr("长条形"), 3);
+    bs->addWidget(comboBallStyle, 1);
+    v->addLayout(bs);
+
+    // 大小（宽×高）
+    auto *sz = new QHBoxLayout();
+    sz->setSpacing(10);
+    sz->addWidget(new QLabel(tr("大小(宽×高)"), box));
+    spinWidth  = new QSpinBox(box); spinWidth->setObjectName("width");
+    spinWidth->setRange(40, 600);  spinWidth->setSuffix(tr(" px"));
+    spinHeight = new QSpinBox(box); spinHeight->setObjectName("height");
+    spinHeight->setRange(40, 600); spinHeight->setSuffix(tr(" px"));
+    sz->addWidget(spinWidth, 1);
+    sz->addWidget(spinHeight, 1);
+    v->addLayout(sz);
+
+    return box;
+}
+
+QWidget *SettingsDialog::buildGeneralSection()
+{
+    auto *box = new QWidget(this);
+    auto *v = new QVBoxLayout(box);
+    v->setContentsMargins(0, 0, 0, 0);
+    v->setSpacing(16);
+
+    // 界面语言
+    auto *iface = new QWidget(box);
+    auto *iv = new QVBoxLayout(iface);
+    iv->setContentsMargins(0, 0, 0, 0);
+    iv->setSpacing(8);
+    auto *g = new QLabel(tr("界  面"), iface);
+    g->setProperty("section", "group");
+    iv->addWidget(g);
+
+    auto *lg = new QHBoxLayout();
+    lg->setSpacing(10);
+    lg->addWidget(new QLabel(tr("界面语言"), iface));
+    comboLanguage = new QComboBox(iface);
+    comboLanguage->setObjectName("language");
+    comboLanguage->addItem(tr("跟随系统（自动）"), 0);
+    comboLanguage->addItem(QStringLiteral("简体中文"), 1);
+    comboLanguage->addItem(QStringLiteral("English"), 2);
+    lg->addWidget(comboLanguage, 1);
+    iv->addLayout(lg);
+    v->addWidget(iface);
+
+    // 高级（刷新间隔 / 形状蒙版）与系统监视器命令
+    v->addWidget(buildAdvancedSection());
+    v->addWidget(buildMonitorSection());
+
+    return box;
+}
+
 QWidget *SettingsDialog::buildAsideSection()
 {
     auto *box = new QWidget(this);

@@ -69,6 +69,20 @@ QString formatNetSpeedField(double bytesPerSec)
     return s;
 }
 
+// 长条形文字用：网速按数值自适应单位（B/s、KB/s、MB/s、GB/s），返回 (数字, 单位)。
+// 数字 1~2 位小数，数值大时整数位为主，保证小流量也读得出。
+static QPair<QString,QString> formatNetSpeedDynamic(double bytesPerSec)
+{
+    double v = bytesPerSec;
+    if (v < 1024.0)              return qMakePair(QString::number(v, 'f', 0), QStringLiteral("B/s"));
+    v /= 1024.0;
+    if (v < 1024.0)              return qMakePair(QString::number(v, 'f', (v < 10 ? 1 : 0)), QStringLiteral("KB/s"));
+    v /= 1024.0;
+    if (v < 1024.0)              return qMakePair(QString::number(v, 'f', (v < 10 ? 2 : (v < 100 ? 1 : 0))), QStringLiteral("MB/s"));
+    v /= 1024.0;
+    return qMakePair(QString::number(v, 'f', 2), QStringLiteral("GB/s"));
+}
+
 // 磁盘 IO 速度格式化：MB/s、保留两位小数、居中文本（UI 不显示单位，纯数值）。
 //   返回如 "12.34" / "123.45" 的字符串；超过 999999 时钳住，避免数字过宽被圆边切掉。
 // update_ui_interval 默认 450ms，N=10 ≈ 每 4.5s 查一次 —— 不额外占一个定时器、
@@ -215,7 +229,7 @@ Widget::Widget(QWidget *parent)
     // 弹窗是否记住上次滚动位置（默认不记住 → 每次打开从顶部开始）
     this->popDock->setRememberScroll(this->config->getRememberScroll());
     // 面板内"激活/选中"样式跟随主题强调色（main_border_color）
-    this->popDock->setAccentColor(QColor(this->config->getMainBorderColor()));
+    this->popDock->setAccentColor(QColor(this->config->getCpuUsageColor()));
     // 面板右上角"操作"菜单（设置 / 系统监视器 / 退出）→ 原悬浮球右键菜单的动作
     connect(this->popDock, &PopDock::settingsRequested, this, &Widget::onMenuSettings);
     connect(this->popDock, &PopDock::systemMonitorRequested, this, &Widget::onMenuSystemMonitor);
@@ -271,11 +285,12 @@ void Widget::relayoutVisibleLcds()
     // 字母和 ℃/MHz 等单位，塞进去渲染成乱码，是之前"难看"的主要来源。
     // 因此长条形态下所有 LCD 控件保持隐藏。
     if (ballStyle == kBallBar) {
-        const int pad    = 2;
-        const int chartW = qMax(1, qRound(w * 0.56));   // 左列图表区宽度（占比加大）
-        const int dataX  = chartW + pad;                // 数据区 x 起点
-        const int dataW  = w - dataX - pad;             // 数据区宽度
-        const int topY = 2, bottomY = 2;                // 数据区上下留边
+        const int chartW = qMax(1, qRound(w * 0.62));   // 左列图表区宽度
+        const int gapX  = 8;                 // 图表分隔线与数据文字的水平间距
+        const int padR  = 6;                 // 数据区右侧内边距
+        const int dataX = chartW + gapX;     // 数据区 x 起点
+        const int dataW = w - dataX - padR;  // 数据区宽度
+        const int topY = 5, bottomY = 5;     // 数据区上下内边距
         const bool tVis = (mask & (1 << ROW_TEMP))     != 0;
         const bool fVis = (mask & (1 << ROW_FREQ))     != 0;
         const bool uVis = (mask & (1 << ROW_NET_UP))   != 0;
@@ -288,7 +303,7 @@ void Widget::relayoutVisibleLcds()
         // 行 1：温度 | 频率（两项并排）
         if (tVis || fVis) {
             const int n  = (tVis ? 1 : 0) + (fVis ? 1 : 0);
-            const int cw = qMax(1, (dataW - pad) / n);
+            const int cw = qMax(1, (dataW - gapX) / n);
             int cx = dataX;
             if (tVis) { this->lcdRowRect[ROW_TEMP] = QRect(cx, y, cw - 1, rowH); cx += cw; }
             if (fVis) { this->lcdRowRect[ROW_FREQ] = QRect(cx, y, dataW - (cx - dataX) - 1, rowH); }
@@ -741,6 +756,8 @@ void Widget::setUiFrame()
 #if defined(Q_OS_MACOS)
         // macOS：不接收键盘焦点，点小球不会把当前正在用的应用切走
         flags |= Qt::WindowDoesNotAcceptFocus;
+        // 去掉系统窗口投影（边缘虚化阴影）；需要阴影时可用配置里的 shadow_radius
+        flags |= Qt::NoDropShadowWindowHint;
 #endif
         this->setWindowFlags(flags);
 
@@ -1720,7 +1737,7 @@ void Widget::onSettingsApplied()
     this->applyLcdLayout();
     this->applyLcdStyle();
     // 主题色可能改了 → 数据中转站里的激活/选中样式跟随刷新
-    this->popDock->setAccentColor(QColor(this->config->getMainBorderColor()));
+    this->popDock->setAccentColor(QColor(this->config->getCpuUsageColor()));
     // 弹窗尺寸 / 内容密度 / 背景不透明度可能改了 → 立即应用；若弹窗正开着就按新尺寸/位置重摆
     this->popDock->applyDockSettings(this->config->getDockWidth(),
                                      this->config->getDockHeight(),
@@ -1930,59 +1947,101 @@ void Widget::paintEvent(QPaintEvent *)
         }
 
         // 图表区域（mem / swap / cpu 曲线）：
-        // 长条形 = 左侧约 42% 宽度的独立图表列（全高）。左列空间小，多条曲线叠在
-        //           一起会糊成一片，故长条只画 CPU 一条曲线（见下方 cpu charts）；
-        // 其它形态 = 原来的全窗口背景曲线（mem + swap + cpu）。
-        const bool   isBar     = (ballStyle == kBallBar);
-        const double chartW    = isBar ? qMax(1.0, double(main_width) * 0.56)
-                                       : double(main_width);
-        const double chartBase = double(main_height - edging_width);
-        const double chartH    = isBar ? double(main_height - edging_width * 2)
-                                       : double(main_height);
-        // 长条形：图表区垫一块比主背景略亮的圆角底色，曲线不再直接浮在黑底上（更有面板感）
+        // 长条形 = 左侧图表列（全高），三条曲线（CPU / 内存 / swap）叠画在 chartPanel 内；
+        // 其它形态 = 全窗口背景曲线（mem + swap + cpu）。
+        const bool isBar = (ballStyle == kBallBar);
+
+        // 图表内部几何坐标：长条模式严格对齐 chartPanel 边界（曲线不再溢出面板），
+        // 其它模式铺满整个窗口。
+        double gLeft, gRight, gBase, gW, gH;
         if (isBar) {
-            const QRectF chartPanel(edging_width, edging_width,
-                                    chartW - edging_width * 2, main_height - edging_width * 2);
-            painter.fillRect(chartPanel, QColor(34, 44, 56, 240));
+            // 左/上/下与外边框保留约 1px 间距；右缘贴紧数字区起点（无间距）
+            gLeft  = clipRect.left();
+            const int chartW_layout = qMax(1, qRound(double(main_width) * 0.62));
+            gRight = double(chartW_layout);   // 分隔线在图表右缘；与数据文字间距由 relayout 的 gapX 控制
+            gBase  = clipRect.bottom();
+            gW     = gRight - gLeft;
+            gH     = clipRect.height();
+        } else {
+            gLeft  = 0.0;
+            gRight = double(main_width);
+            gBase  = double(main_height - edging_width);
+            gW     = double(main_width);
+            gH     = double(main_height);
+        }
+
+        // 长条形：图表区垫一块比主背景略亮的底色
+        QRectF chartPanel;
+        if (isBar) {
+            chartPanel = QRectF(gLeft, clipRect.top(), gW + 1.0, gH);
+            // 面板底色从主色自动提亮（不再写死蓝灰），保证任何主题都协调
+            QColor panelBase(config->getMainColor());
+            panelBase = panelBase.lighter(150);
+            panelBase.setAlpha(235);
+            painter.fillRect(chartPanel, panelBase);
             // 底部基线：曲线高度的视觉锚点
-            painter.setPen(QPen(QColor(255, 255, 255, 26), 1.0));
+            painter.setPen(QPen(QColor(255, 255, 255, 22), 1.0));
             painter.drawLine(QPointF(chartPanel.left(), chartPanel.bottom()),
                              QPointF(chartPanel.right(), chartPanel.bottom()));
+            // 右侧垂直分隔线：低对比、严格垂直
+            painter.setPen(QPen(QColor(255, 255, 255, 26), 1.0));
+            painter.drawLine(QPointF(chartPanel.right(), chartPanel.top()),
+                             QPointF(chartPanel.right(), chartPanel.bottom()));
         }
+
+        // 曲线严格裁剪在图表面板内（右缘=分隔线），填充/描边都不溢出到数据区
+        const bool chartClipped = isBar;
+        if (chartClipped) {
+            painter.save();
+            painter.setClipRect(QRectF(gLeft, clipRect.top(), gW, gH));
+        }
+
+        // mem 曲线（长条模式下半透明叠加，避免盖住 swap / cpu）
         quint64 mem_total = this->sysInfo->getMemTotal();
-        if (!isBar && this->sysInfo->isMemAvailable() && mem_total > 0)
+        if (this->sysInfo->isMemAvailable() && mem_total > 0)
         {
             QPainterPath memPath;
-            memPath.moveTo(0, chartBase);
-            for (int i=0; i<this->mem_data_history.size(); i++)
+            memPath.moveTo(gLeft, gBase);
+            const int memN = this->mem_data_history.size();
+            // 长条模式按实际点数横向拉伸占满（最后点在右缘）；其它形态按总容量排布
+            const double memStep = isBar ? double(gW) / qMax(1, memN - 1)
+                                         : double(gW) / charts_rows;
+            for (int i=0; i<memN; i++)
             {
                 const double ratio = double(this->mem_data_history[i]) / double(mem_total);
-                memPath.lineTo(double(chartW) / charts_rows * i,
-                               chartBase - ratio * chartH);
+                memPath.lineTo(gLeft + memStep * i,
+                               gBase - ratio * gH);
             }
-            memPath.lineTo(chartW, chartBase);
-            memPath.lineTo(0, chartBase);
-            painter.fillPath(memPath, QColor(this->config->getMemColor()));
+            memPath.lineTo(gRight, gBase);   // 长条模式最后点已在右缘，垂直下落
+            memPath.lineTo(gLeft, gBase);
+            QColor memFill(this->config->getMemColor());
+            if (isBar) memFill.setAlpha(150);
+            painter.fillPath(memPath, memFill);
         }
 
-        // swap charts（没有交换分区时不绘制，避免除零）
+        // swap 曲线（没有交换分区时不绘制，避免除零）
         quint64 swap_total = this->sysInfo->getSwapTotal();
-        if (!isBar && this->sysInfo->isSwapAvailable() && swap_total > 0)
+        if (this->sysInfo->isSwapAvailable() && swap_total > 0)
         {
             QPainterPath swapPath;
-            swapPath.moveTo(0, chartBase);
-            for (int i=0; i<this->swap_data_history.size(); i++)
+            swapPath.moveTo(gLeft, gBase);
+            const int swapN = this->swap_data_history.size();
+            const double swapStep = isBar ? double(gW) / qMax(1, swapN - 1)
+                                          : double(gW) / charts_rows;
+            for (int i=0; i<swapN; i++)
             {
                 const double ratio = double(this->swap_data_history[i]) / double(swap_total);
-                swapPath.lineTo(double(chartW) / charts_rows * i,
-                               chartBase - ratio * chartH);
+                swapPath.lineTo(gLeft + swapStep * i,
+                                gBase - ratio * gH);
             }
-            swapPath.lineTo(chartW, chartBase);
-            swapPath.lineTo(0, chartBase);
-            painter.fillPath(swapPath, QColor(this->config->getSwapColor()));
+            swapPath.lineTo(gRight, gBase);
+            swapPath.lineTo(gLeft, gBase);
+            QColor swapFill(this->config->getSwapColor());
+            if (isBar) swapFill.setAlpha(150);
+            painter.fillPath(swapPath, swapFill);
         }
 
-        // cpu usage charts（长条形画在左列图表区，其它形态画满全窗口）
+        // cpu 使用率曲线
         QPen cpuUsagePen;
         cpuUsagePen.setColor(config->getCpuUsageColor());
         cpuUsagePen.setStyle(Qt::SolidLine);
@@ -1990,27 +2049,33 @@ void Widget::paintEvent(QPaintEvent *)
         painter.setPen(cpuUsagePen);
         QVector<double> cpuUsageData = this->cpuUsage_data_history;
         QPainterPath cpuUsagePath;          // 闭合填充路径
-        QPainterPath cpuStrokePath;         // 开放折线路径（长条形描边用，避免描出底边）
+        QPainterPath cpuStrokePath;         // 开放折线路径（长条模式描边用）
         bool firstPoint = true;
-        for (int i=0; i<cpuUsageData.size(); i++)
+        cpuUsagePath.moveTo(gLeft, gBase);
+        const int cpuN = cpuUsageData.size();
+        const double cpuStep = isBar ? double(gW) / qMax(1, cpuN - 1)
+                                     : double(gW) / charts_rows;
+        for (int i=0; i<cpuN; i++)
         {
             double usage = cpuUsageData[i];
             if (!qIsFinite(usage)) { usage = 0.0; }   // 首次采样无基准，可能是 NaN
             if (usage < 0.0)   { usage = 0.0; }
             if (usage > 100.0) { usage = 100.0; }
-            const QPointF pt(double(chartW) / charts_rows * i,
-                             chartBase - (usage / 100.0) * chartH);
+            const QPointF pt(gLeft + cpuStep * i,
+                             gBase - (usage / 100.0) * gH);
             if (firstPoint) { cpuStrokePath.moveTo(pt); firstPoint = false; }
             else            { cpuStrokePath.lineTo(pt); }
             cpuUsagePath.lineTo(pt);
         }
-        cpuUsagePath.lineTo(chartW, chartBase);
-        cpuUsagePath.lineTo(0, chartBase);
-        painter.fillPath(cpuUsagePath, QColor(this->config->getCpuUsageColor()));
-        // 长条形：配置色偏淡（半透明浅蓝），深色底上看不清——填充提亮、描边加粗
+        cpuUsagePath.lineTo(gRight, gBase);
+        cpuUsagePath.lineTo(gLeft, gBase);
+        if (!isBar) {
+            painter.fillPath(cpuUsagePath, QColor(this->config->getCpuUsageColor()));
+        }
+        // 长条形：半透明填充叠加在 mem/swap 之上，再描边加粗使曲线清晰
         if (isBar) {
             QColor cpuFill = QColor(this->config->getCpuUsageColor());
-            cpuFill.setAlpha(200);
+            cpuFill.setAlpha(180);
             painter.fillPath(cpuUsagePath, cpuFill);
             QColor cpuLine = QColor(this->config->getCpuUsageColor());
             cpuLine.setAlpha(255);
@@ -2018,6 +2083,7 @@ void Widget::paintEvent(QPaintEvent *)
             painter.setBrush(Qt::NoBrush);
             painter.drawPath(cpuStrokePath);
         }
+        if (chartClipped) painter.restore();
 
         // ---- 长条形：右侧数据区文字（QPainter 直接绘制，字体/颜色/单位完全可控） ----
         if (isBar) {
@@ -2047,27 +2113,44 @@ void Widget::paintEvent(QPaintEvent *)
             unitFont.setPixelSize(7);
             const QFontMetrics numFm(numFont);
 
-            // 行通用排版：标签右对齐于标签列 | 数字左对齐 | 单位紧跟数字（不留空隙，
-            // 右侧空出来的不填）。数字特别长时单位自动截断，数字不被挤。
+            // 行通用排版：标签+数字+单位整体在右侧区域内水平居中，左右不留大空隙；
+            // 内容过宽自动缩字号。
             const auto drawValue = [&](const QRect &row, const QString &tag,
                                        const QString &num, const QString &unit) {
-                painter.setFont(tagFont);
+                const int tagW = 12, gap = 3;
+                // 先确定字号
+                QFont nf = numFont, uf = unitFont, tf = tagFont;
+                int nw = 0, uw = 0, tw = 0;
+                for (int k = 0; k < 4; ++k) {
+                    QFontMetrics nfm(nf), ufm(uf), tfm(tf);
+                    nw = nfm.horizontalAdvance(num);
+                    uw = ufm.horizontalAdvance(unit);
+                    tw = tfm.horizontalAdvance(tag);
+                    int total = qMax(tw, tagW) + gap + nw + gap + uw;
+                    if (total <= row.width() - 4) break;
+                    nf.setPixelSize(qMax(8, nf.pixelSize() - 1));
+                    uf.setPixelSize(qMax(6, uf.pixelSize() - 1));
+                }
+                QFontMetrics nfm(nf), ufm(uf), tfm(tf);
+                nw = nfm.horizontalAdvance(num);
+                uw = ufm.horizontalAdvance(unit);
+                tw = tfm.horizontalAdvance(tag);
+                int x = row.left();  // 左对齐，紧贴分隔线
+                // 标签左对齐紧贴分隔线
+                painter.setFont(tf);
                 painter.setPen(labelC);
-                painter.drawText(QRect(row.left(), row.top(), 20, row.height()),
-                                 Qt::AlignRight | Qt::AlignVCenter, tag);
-                painter.setFont(numFont);
+                painter.drawText(QRect(x, row.top(), tagW, row.height()),
+                                 Qt::AlignLeft | Qt::AlignVCenter, tag);
+                x += tagW + gap;
+                painter.setFont(nf);
                 painter.setPen(white);
-                const int nx   = row.left() + 24;
-                const int numW = numFm.horizontalAdvance(num);
-                painter.drawText(QRect(nx, row.top(), numW, row.height()),
+                painter.drawText(QRect(x, row.top(), nw, row.height()),
                                  Qt::AlignLeft | Qt::AlignVCenter, num);
-                painter.setFont(unitFont);
+                x += nw + gap;
+                painter.setFont(uf);
                 painter.setPen(unitC);
-                const int unitX = nx + numW + 4;
-                const int unitW = qMax(0, row.right() - unitX + 1);
-                if (unitW > 0)
-                    painter.drawText(QRect(unitX, row.top(), unitW, row.height()),
-                                     Qt::AlignLeft | Qt::AlignVCenter, unit);
+                painter.drawText(QRect(x, row.top(), uw, row.height()),
+                                 Qt::AlignLeft | Qt::AlignVCenter, unit);
             };
 
             // 行 1：温度。独占一行时带标签（让用户知道是什么参数）；
@@ -2105,18 +2188,17 @@ void Widget::paintEvent(QPaintEvent *)
             const double seconds = intervalMs > 0 ? intervalMs / 1000.0 : 1.0;
             if (lcdMask & (1 << ROW_DISK)) {
                 const double total = this->sysInfo->getDiskReadBytes() + this->sysInfo->getDiskWriteBytes();
-                const double mb = total / seconds / (1024.0 * 1024.0);
-                drawValue(this->lcdRowRect[ROW_DISK], tagDisk,
-                          QString::number(mb, 'f', 2), QStringLiteral("MB/s"));
+                auto dk = formatNetSpeedDynamic(total / seconds);
+                drawValue(this->lcdRowRect[ROW_DISK], tagDisk, dk.first, dk.second);
             }
-            if (lcdMask & (1 << ROW_NET_UP))
-                drawValue(this->lcdRowRect[ROW_NET_UP], QStringLiteral("↑"),
-                          formatNetSpeedField(this->sysInfo->getTransmit() / seconds),
-                          QStringLiteral("MB/s"));
-            if (lcdMask & (1 << ROW_NET_DOWN))
-                drawValue(this->lcdRowRect[ROW_NET_DOWN], QStringLiteral("↓"),
-                          formatNetSpeedField(this->sysInfo->getReceive() / seconds),
-                          QStringLiteral("MB/s"));
+            if (lcdMask & (1 << ROW_NET_UP)) {
+                auto up = formatNetSpeedDynamic(this->sysInfo->getTransmit() / seconds);
+                drawValue(this->lcdRowRect[ROW_NET_UP], QStringLiteral("↑"), up.first, up.second);
+            }
+            if (lcdMask & (1 << ROW_NET_DOWN)) {
+                auto dn = formatNetSpeedDynamic(this->sysInfo->getReceive() / seconds);
+                drawValue(this->lcdRowRect[ROW_NET_DOWN], QStringLiteral("↓"), dn.first, dn.second);
+            }
         }
 
         // 磁盘总速度：读+写之和，用 LCD 数码字体显示 MB/s 数值（两位小数）。

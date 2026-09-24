@@ -79,12 +79,14 @@ private:
     void buildPresetRow(QVBoxLayout *parentLayout);
     QWidget *buildColorSection();
     QWidget *buildShowSection();
-    QWidget *buildWindowSection();
+    QWidget *buildAppearanceSection();
+    QWidget *buildBallSection();
     QWidget *buildAsideSection();
     QWidget *buildChartSection();
     QWidget *buildAdvancedSection();
     QWidget *buildMonitorSection();
     QWidget *buildDockSection();
+    QWidget *buildGeneralSection();
 
     void loadDefaults();
     void applyPreset(int index);

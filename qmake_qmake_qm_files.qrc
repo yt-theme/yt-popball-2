@@ -1,5 +1,6 @@
 <!DOCTYPE RCC><RCC version="1.0">
 <qresource prefix="i18n">
 <file alias="popball2_zh_CN.qm">/Volumes/DISK_USB/my/yt-popball-2/.qm/popball2_zh_CN.qm</file>
+<file alias="popball2_en.qm">/Volumes/DISK_USB/my/yt-popball-2/.qm/popball2_en.qm</file>
 </qresource>
 </RCC>
