@@ -147,8 +147,8 @@ void x11MakeSticky(WId win)
     if (dpy == nullptr)
         return;
 
-    const Atom wmState = XInternAtom(dpy, "_NET_WM_STATE", False);
-    const Atom sticky = XInternAtom(dpy, "_NET_WM_STATE_STICKY", False);
+    const Atom wmState = XInternAtom(dpy, "_NET_WM_STATE", 0);
+    const Atom sticky = XInternAtom(dpy, "_NET_WM_STATE_STICKY", 0);
     if (wmState == 0 || sticky == 0)
         return;
 
@@ -162,7 +162,7 @@ void x11MakeSticky(WId win)
     ev.xclient.data.l[1] = static_cast<long>(sticky);
     ev.xclient.data.l[2] = 0;
     ev.xclient.data.l[3] = 1;   // normal application
-    XSendEvent(dpy, DefaultRootWindow(dpy), False,
+    XSendEvent(dpy, DefaultRootWindow(dpy), 0,
                SubstructureRedirectMask | SubstructureNotifyMask, &ev);
     XFlush(dpy);
 }
