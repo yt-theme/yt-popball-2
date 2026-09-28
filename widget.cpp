@@ -2146,14 +2146,16 @@ void Widget::paintEvent(QPaintEvent *)
             painter.drawPath(cpuStrokePath);
         }
 
-        // gpu 占用率曲线（仅在该平台可用时绘制）
-        if (isBar && this->sysInfo->isGpuUsageAvailable()) {
+        // gpu 占用率曲线（所有形态都画；仅在该平台可用时绘制）
+        if (this->sysInfo->isGpuUsageAvailable()) {
             const QVector<double> gpuData = this->gpuUsage_data_history;
             QPainterPath gpuPath, gpuStroke;
             gpuPath.moveTo(gLeft, gBase);
             bool gFirst = true;
             const int gN = gpuData.size();
-            const double gStep = double(gW) / qMax(1, gN - 1);
+            // 与 mem/swap/cpu 一致：长条按实际点数拉伸占满，其它形态按 charts_rows 排布
+            const double gStep = isBar ? double(gW) / qMax(1, gN - 1)
+                                       : double(gW) / charts_rows;
             for (int i = 0; i < gN; ++i) {
                 double u = gpuData[i];
                 if (!qIsFinite(u)) u = 0.0;
@@ -2165,10 +2167,14 @@ void Widget::paintEvent(QPaintEvent *)
             }
             gpuPath.lineTo(gRight, gBase);
             gpuPath.lineTo(gLeft, gBase);
-            QColor gf = QColor(config->getGpuUsageColor()); gf.setAlpha(150);
+            // 非长条形态实心填充（与 mem/cpu 一致）；长条半透明叠加避免盖住下层
+            QColor gf = QColor(config->getGpuUsageColor());
+            if (isBar) gf.setAlpha(150);
             painter.fillPath(gpuPath, gf);
-            QColor gl = QColor(config->getGpuUsageColor()); gl.setAlpha(235);
-            painter.setPen(QPen(gl, 1.8));
+            // 长条形态加粗描边让曲线清晰；其它形态用细描边
+            QColor gl = QColor(config->getGpuUsageColor());
+            gl.setAlpha(isBar ? 235 : 255);
+            painter.setPen(QPen(gl, isBar ? 1.8 : 1.2));
             painter.setBrush(Qt::NoBrush);
             painter.drawPath(gpuStroke);
         }
