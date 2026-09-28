@@ -911,14 +911,18 @@ void SettingsDialog::applyPreset(int index)
         return;
     const PresetDef &p = kPresets[index];
     // 顺序与 kColors 一致（含阴影）；「悬浮球文字」与文字四色统一取 p.text
+    // kColors 顺序: 0 main 1 border 2 mem 3 swap 4 cpu 5 gpu 6 shadow 7 text 8 temp 9 freq 10 net 11 disk
     const char *values[kColorCount] = {
-        p.main, p.border, p.mem, p.swap, p.cpu, p.shadow,
+        p.main, p.border, p.mem, p.swap, p.cpu,
+        nullptr,        // [5] gpu_usage：不随预制主题变，保留用户自定色
+        p.shadow,
         p.text, p.text, p.text, p.text, p.text
     };
     if (rows.size() != kColorCount)
         return;
     textColorTouched = false;   // 预设：总项与四个分项同色，无需总项联动
     for (int i = 0; i < kColorCount; ++i) {
+        if (i == 5) continue;   // GPU 占用颜色不被预制主题覆盖
         rows[i].color = QColor(values[i]);
         refreshRowStyle(rows[i]);
     }
@@ -1196,7 +1200,7 @@ void SettingsDialog::applyChanges()
     cfg->setHeight(spinHeight->value());
     cfg->setMainBorderWidth(spinBorderWidth->value());
     cfg->setShadowRadius(spinShadowLen->value());
-    cfg->setShadowColor(rows.at(5).color.name(QColor::HexArgb));   // kColors[5] = shadow_color
+    cfg->setShadowColor(rows.at(6).color.name(QColor::HexArgb));   // kColors[6] = shadow_color（[5]=gpu_usage）
     cfg->setCpuUsageWidth(spinCpuLine->value());
     cfg->setChartsRows(spinChartsRows->value());
     cfg->setUpdateDataInterval(spinDataInterval->value());
