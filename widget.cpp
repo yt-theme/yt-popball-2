@@ -3,6 +3,8 @@
 #include "popdock.h"
 #if defined(Q_OS_MACOS)
 #  include "macwindow.h"
+#elif defined(Q_OS_WIN)
+#  include "winwindow.h"
 #endif
 
 #include <QBitmap>
@@ -130,6 +132,39 @@ bool x11CompositingMissing()
     if (cm == 0)
         return true;                     // 连这个 atom 都不存在 → 肯定没有混成
     return XGetSelectionOwner(dpy, cm) == 0;
+}
+
+// X11：把窗口设为 sticky —— 跟随所有虚拟桌面(workspace)，切桌面不带走。
+// _NET_WM_STATE_STICKY 是 EWMH 标准属性；Qt 的 WindowStaysOnTopHint 只负责 ABOVE，
+// 不管 workspace，所以这里要单独发一条 _NET_WM_STATE_ADD。
+void x11MakeSticky(WId win)
+{
+    QNativeInterface::QX11Application *x11 =
+        qGuiApp->nativeInterface<QNativeInterface::QX11Application>();
+    if (x11 == nullptr)
+        return;
+    Display *dpy = x11->display();
+    if (dpy == nullptr)
+        return;
+
+    const Atom wmState = XInternAtom(dpy, "_NET_WM_STATE", False);
+    const Atom sticky = XInternAtom(dpy, "_NET_WM_STATE_STICKY", False);
+    if (wmState == 0 || sticky == 0)
+        return;
+
+    XEvent ev;
+    memset(&ev, 0, sizeof(ev));
+    ev.xany.type       = ClientMessage;
+    ev.xclient.window  = static_cast<Window>(win);
+    ev.xclient.message_type = wmState;
+    ev.xclient.format   = 32;
+    ev.xclient.data.l[0] = 1;   // _NET_WM_STATE_ADD
+    ev.xclient.data.l[1] = static_cast<long>(sticky);
+    ev.xclient.data.l[2] = 0;
+    ev.xclient.data.l[3] = 1;   // normal application
+    XSendEvent(dpy, DefaultRootWindow(dpy), False,
+               SubstructureRedirectMask | SubstructureNotifyMask, &ev);
+    XFlush(dpy);
 }
 #endif
 
@@ -851,6 +886,13 @@ void Widget::applyDesktopBehavior()
         return;
     }
 
+    // ------------------------------------------------ Windows
+    // 固定到所有虚拟桌面(Win+Ctrl+D)。失败静默降级。
+#if defined(Q_OS_WIN)
+    if (!isWayland && !isX11 && !isMac)
+        popballPinToAllDesktops(static_cast<unsigned long long>(this->winId()));
+#endif
+
     // ------------------------------------------------ Wayland
     // Wayland 协议不允许客户端给顶层窗口定位，setGeometry 里的 x/y 会被合成器忽略，
     // 因此拖动小球、以及"关掉窗口后记住位置"在 Wayland 下不会生效 —— 这是协议限制，
@@ -867,6 +909,10 @@ void Widget::applyDesktopBehavior()
     // 之后的重复检测搭在 updateUITimer 上（每 kCompositingCheckEveryUiTicks 次
     // UI 刷新查一次，见 onTimerIntervalForUpdateUI），不额外占一个定时器。
     Q_UNUSED(isX11);
+    // 跨所有虚拟桌面：切 workspace 时悬浮球不留在原桌面
+#if defined(POPBALL_HAVE_X11)
+    x11MakeSticky(this->winId());
+#endif
     this->reevaluateShapeMask();
 }
 

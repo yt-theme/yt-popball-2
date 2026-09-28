@@ -108,6 +108,10 @@ win32 {
     DEFINES += _WIN32_WINNT=0x0601
     LIBS += -liphlpapi -ladvapi32 -lole32 -loleaut32 -lwbemuuid -lwinhttp -lpdh
 
+    # 虚拟桌面 pin 到所有桌面
+    SOURCES += winwindow.cpp
+    HEADERS += winwindow.h
+
     # Windows 应用图标（可选，存在才生效）
     exists(resources/popball2.ico) {
         RC_ICONS = resources/popball2.ico

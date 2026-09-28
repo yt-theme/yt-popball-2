@@ -178,12 +178,12 @@ SettingsDialog::SettingsDialog(Config *cfg, SysInfo *sysInfo, QWidget *parent)
 {
     setWindowTitle(tr("设置"));
     setModal(false);
-    setMinimumWidth(440);
+    setMinimumWidth(540);
     setStyleSheet(QString::fromLatin1(kDialogStyle));
 
     buildUi();
     loadFromConfig();
-    resize(460, 720);   // 默认尺寸：窄窗布局，避免内容被长提示撑宽
+    resize(580, 720);   // 默认尺寸：两列颜色布局需要更宽，避免右列颜色块被截断
 }
 
 // 防止窗口跑出屏幕：父窗口是屏幕边缘上的悬浮球，

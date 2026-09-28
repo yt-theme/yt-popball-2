@@ -2877,10 +2877,11 @@ PopDock::PopDock(QWidget *parent)
             btn->setFixedSize(30, 30);         // 按钮放大 1.5 倍：20px → 30px
             btn->setCursor(Qt::PointingHandCursor);
             btn->setToolTip(tip);
+            // hover 背景在深色 header 上要足够明显：Linux 深色主题下 0.12 几乎不可见。
             btn->setStyleSheet(QStringLiteral(
                 "QToolButton{background:transparent;border:none;border-radius:6px;}"
-                "QToolButton:hover{background:rgba(255,255,255,0.12);}"
-                "QToolButton:pressed{background:rgba(255,255,255,0.20);}"));
+                "QToolButton:hover{background:rgba(255,255,255,0.18);}"
+                "QToolButton:pressed{background:rgba(255,255,255,0.30);}"));
             connect(btn, &QToolButton::clicked, this, sig);
         };
         addHeaderBtn(m_settingsBtn, QStringLiteral("popDockSettingsBtn"),
