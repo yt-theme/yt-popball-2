@@ -19,8 +19,9 @@ qtHaveModule(multimedia) {
     DEFINES += POPBALL2_HAVE_QT_MULTIMEDIA
 }
 
-# 中转站面板右上角按钮用 SVG 图标（用户提供的线性图标），需 QtSvg 渲染。
-# qtHaveModule 守卫：缺模块时退化为自绘图标（见 PopDock::svgThemeIcon 的回退分支）。
+# 中转站面板右上角按钮用 SVG 图标（用户提供的线性图标）。
+# qtHaveModule 守卫：装了 QtSvg 开发包就用 QSvgRenderer 渲染；
+# 没装时退到 Qt 的 SVG 图片插件（不需要链接 QtSvg，见 PopDock::svgThemeIcon 的 #else 分支）。
 qtHaveModule(svg) {
     QT += svg
     DEFINES += POPBALL2_HAVE_QT_SVG

@@ -2629,27 +2629,35 @@ QIcon PopDock::noteOkIcon(const QColor &accent)
 
 // 用用户提供的 SVG 渲染右上角按钮图标：读取资源 SVG 文本，
 // 把原图固定的 #515151 灰 fill 替换成当前主题强调色（形状用用户的，颜色跟随主题），
-// 再经 QSvgRenderer 渲染成 40×40 图标。缺 QtSvg 模块时返回空 QIcon。
+// 再渲染成 40×40 图标。
+// 渲染有两条路：构建时链了 QtSvg 就用 QSvgRenderer；没链（qtHaveModule(svg) 未通过）
+// 就退到 Qt 的 SVG 图片插件（QPixmap::loadFromData(..., "svg")）——这条路不需要链接
+// QtSvg，只要求运行环境装了 libqsvg 插件（Debian/Ubuntu: libqt6svg6）。
+// 少了这条路，SVG 会被原样加载成灰色、不跟随主题色（深色面板上几乎看不见）。
 QIcon PopDock::svgThemeIcon(const QString &resPath, const QColor &accent)
 {
-#ifdef POPBALL2_HAVE_QT_SVG
     QFile f(resPath);
-    if (f.open(QIODevice::ReadOnly)) {
-        QByteArray svg = f.readAll();
-        if (accent.isValid())
-            svg.replace("#515151", accent.name().toUpper().toUtf8());   // 原图统一灰 → 主题色
-        QSvgRenderer r(svg);
-        QPixmap pm(40, 40);
-        pm.fill(Qt::transparent);
-        QPainter p(&pm);
-        r.render(&p);
-        return QIcon(pm);
-    }
+    if (!f.open(QIODevice::ReadOnly))
+        return QIcon();
+    QByteArray svg = f.readAll();
+    if (accent.isValid())
+        svg.replace("#515151", accent.name().toUpper().toUtf8());   // 原图统一灰 → 主题色
+
+    const QSize box(40, 40);
+#ifdef POPBALL2_HAVE_QT_SVG
+    QPixmap pm(box);
+    pm.fill(Qt::transparent);
+    QPainter p(&pm);
+    QSvgRenderer r(svg);
+    r.render(&p);
+    return QIcon(pm);
 #else
-    Q_UNUSED(resPath);
-    Q_UNUSED(accent);
+    // 没链 QtSvg：把改过色的 SVG 文本当内存图片交给 SVG 图片插件渲染。
+    QPixmap raw;
+    if (!raw.loadFromData(svg, "svg"))
+        return QIcon();
+    return QIcon(raw.scaled(box, Qt::KeepAspectRatio, Qt::SmoothTransformation));
 #endif
-    return QIcon();
 }
 
 // 右上角"系统监视器"按钮图标：用户提供的 SVG（性能统计折线图）形状 + 主题色。
