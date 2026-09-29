@@ -1956,8 +1956,14 @@ void Widget::paintEvent(QPaintEvent *)
             }
         }
 
-        // GPU 温度（长条 paintEvent 以指标值显示；平台支持且开关打开时才占布局）
-        if (config->getGpuTempShow() == SHOW && this->sysInfo->isGpuTemperatureAvailable())
+        // GPU 温度：只有长条形形态才真正绘制（球/方/圆角矩形形态没有对应的 LCD，
+        // paintEvent 也不会画它）。所以非长条形态下不要占布局 —— 否则「本平台支持
+        // GPU 温度」时会多出一行看不见的空行，把温度/网速几行挤小。
+        // macOS 的 SMC 通常能枚举到 GPU 温度键、而 Linux 多半取不到，两平台就因此
+        // 出现不同的行数与字号；这里统一只在长条形态下占位。
+        if (config->getGpuTempShow() == SHOW
+            && this->sysInfo->isGpuTemperatureAvailable()
+            && ballStyle == kBallBar)
             lcdMask |= (1 << ROW_GPU_TEMP);
 
         if (config->getNetSpeedShow() == SHOW)

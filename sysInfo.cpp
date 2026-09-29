@@ -601,6 +601,30 @@ QList<quint32> smcDiscoverGpuTempKeys(io_connect_t conn)
     return keys;
 }
 
+// ---------------------------------------------------------------------------------------
+//  macOS：虚拟 / 桥接 / 隧道接口 —— 统计网速时排除，避免与物理网卡重复计数。
+//  与 Linux 侧的 isVirtualNetInterface() 保持同一口径：只统计真实物理网卡。
+//    utun*   : VPN 隧道（系统 VPN / WireGuard / Tailscale 等）
+//    ipsec*  : IPsec 隧道
+//    awdl*   : AirDrop / AirPlay 无线直连（流量可能很大）
+//    llw*    : 低延迟 WLAN
+//    bridge* : 桥接（通常把 en0 也桥进去 → 与 en0 重复计数）
+//    ap*     : 网络共享热点；anpi*：内部接口
+//    vmenet* : 虚拟机网络；gif*/stf*：隧道
+//  旧实现只排除 lo，会把上面这些一并累加，使 macOS 的网速明显大于 Linux。
+// ---------------------------------------------------------------------------------------
+bool isVirtualNetInterfaceMac(const QString &name)
+{
+    static const char *kPrefixes[] = {
+        "utun", "ipsec", "awdl", "llw", "bridge", "ap", "anpi",
+        "vmenet", "gif", "stf", "p2p", nullptr
+    };
+    for (int i = 0; kPrefixes[i]; ++i)
+        if (name.startsWith(QLatin1String(kPrefixes[i])))
+            return true;
+    return false;
+}
+
 #endif // Q_OS_MACOS
 
 #if defined(Q_OS_WIN)
@@ -1410,9 +1434,22 @@ void SysInfo::updateSysinfo()
     memoryInfo.swap_total    = swap_total;
     memoryInfo.swap_free     = swap_free;
 
-    // 与 free 命令口径一致：used = total - free - buffers - cached
+    // 与 macOS 版口径对齐：macOS 的「内存已用」= active + wired + compressed，
+    // 等价于 total - (free + inactive)（inactive 即文件缓存里可回收的那部分）。
+    // Linux 上对称的等价量就是 total - free - Inactive(file)。
+    // 旧实现用 free 命令的 used = total - free - buffers - cached，会把文件缓存几乎
+    // 全部扣掉，同一负载下的内存占用明显低于 macOS，导致球体面积图（内存曲线）与
+    // 竖条里的内存柱都比 macOS 矮一截，两平台看起来不一致。
+    qulonglong inactive_file = kv.value(QStringLiteral("Inactive(file)"), 0);
+    if (inactive_file == 0)   // 老内核没有细分字段，退回总的 Inactive
+        inactive_file = kv.value(QStringLiteral("Inactive"), 0);
+
     qulonglong used = 0;
-    if (mem_total > mem_free + buffers + cached)
+    if (inactive_file > 0 && mem_total > mem_free + inactive_file)
+        used = mem_total - mem_free - inactive_file;
+    else if (mem_avail > 0 && mem_total > mem_avail)               // 没有 Inactive 字段时兜底
+        used = mem_total - mem_avail;
+    else if (mem_total > mem_free + buffers + cached)
         used = mem_total - mem_free - buffers - cached;
     memoryInfo.mem_used  = used;
     memoryInfo.swap_used = (swap_total > swap_free) ? (swap_total - swap_free) : 0;
@@ -1835,6 +1872,10 @@ void SysInfo::updateSysinfo()
             if (ifa->ifa_addr == nullptr || ifa->ifa_addr->sa_family != AF_LINK)
                 continue;
             if ((ifa->ifa_flags & IFF_LOOPBACK) != 0 || (ifa->ifa_flags & IFF_UP) == 0)
+                continue;
+            // 只统计物理网卡：utun / awdl / bridge 等虚拟口若一并累加，会和 en0 重复
+            // 计数，使 macOS 的网速明显大于 Linux（Linux 侧已排除虚拟口）。
+            if (isVirtualNetInterfaceMac(QString::fromLatin1(ifa->ifa_name)))
                 continue;
             struct if_data *data = reinterpret_cast<struct if_data *>(ifa->ifa_data);
             if (data != nullptr) {
