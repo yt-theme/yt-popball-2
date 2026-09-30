@@ -64,7 +64,7 @@ PopBall 打包（Node 友好入口）
   npm run rpm:x64           # 只要 x86_64 的 .rpm
   npm run rpm:arm           # 只要 arm64 的 .rpm
   npm run appimage          # Linux AppImage（仅 Linux 本机）
-  npm run appimage:x64      # x86_64 AppImage（须在 x86_64 机器上跑）
+  npm run appimage:x64      # x86_64 AppImage（x86_64 机器原生；arm64 机器自动交叉编译）
   npm run appimage:arm      # arm64 AppImage（须在 arm64 机器上跑）
   npm run all               # 当前平台支持的全部
   npm run all:x64           # 全套 x64（deb/rpm/appimage:x64 + mac）

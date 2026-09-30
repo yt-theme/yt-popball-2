@@ -112,12 +112,13 @@ ${C_B}popball2 打包脚本（平台感知 + Docker 多架构 + 容错）${C_R}
   deb         Debian/Ubuntu 的 .deb（经 Docker 打 x86_64 + arm64 两种架构）
   deb:x64     只要 x86_64 的 .deb
   deb:arm     只要 arm64 的 .deb
-  rpm         Fedora/RHEL/openSUSE 的 .rpm（经 Docker 打 x86_64 + arm64 两种架构）
+  rpm         Fedora/RHEL/openSUSE 的 .rpm（经 Docker 打 x86_64 + arm64 两种架构；
+              拉不到目标架构镜像时自动在本机镜像内交叉编译兜底）
   rpm:x64     只要 x86_64 的 .rpm
   rpm:arm     只要 arm64 的 .rpm
   appimage    通用 Linux AppImage（本机架构；跨设备请用显式变体）
-  appimage:x64 x86_64 AppImage（须在 x86_64 机器上构建；linuxdeploy 不能跨架构）
-  appimage:arm arm64 AppImage（须在 arm64 机器上构建；linuxdeploy 不能跨架构）
+  appimage:x64 x86_64 AppImage（x86_64 机器原生构建；arm64 机器自动交叉编译组装）
+  appimage:arm arm64 AppImage（须在 arm64 机器上构建；无 arm64 交叉方向）
   mac         macOS 的 .dmg 与 .zip（仅 macOS 宿主）
   win         Windows 的 .zip（仅 Windows 宿主；windeployqt 内置 Qt 运行库，
               并附带 WinRing0 驱动与 README-Windows.txt 使用说明）
@@ -1166,11 +1167,12 @@ stage_native_linux() {
     esac
 }
 
-# 在 Docker 容器里为指定架构构建并打出 .deb（真实可分发）
-# 兜底：守护进程拉不到「目标架构」基础镜像时，在本机架构的构建镜像里交叉编译目标架构 .deb。
+# 在 Docker 容器里为指定架构交叉编译并打出 Linux 包（真实可分发）
+# 兜底：守护进程拉不到「目标架构」基础镜像时，在本机架构的构建镜像里交叉编译目标架构。
 # 仅当 目标架构 != 本机架构 且 本机架构镜像已缓存 时可用。
-cross_build_deb() {
-    local arch_label="$1" debarch="$2"
+# 参数: <架构标签> <deb 风格架构名(amd64|arm64)> <格式: deb|rpm>
+cross_build_linux() {
+    local arch_label="$1" debarch="$2" fmt="${3:-deb}"
     local host_arch native_img native_plat
     host_arch="$(uname -m)"
     case "$host_arch" in
@@ -1190,7 +1192,7 @@ cross_build_deb() {
         err "缺少本机架构构建镜像 $native_img，无法交叉编译 $debarch（请先成功构建本机架构 deb）"
         return 1
     fi
-    step "改用交叉编译：在 $native_img 内为 $debarch 编译并打 .deb"
+    step "改用交叉编译：在 $native_img 内为 $debarch 交叉编译并打 .${fmt}"
     _rewp() { local p="$1"; [ -z "$p" ] && return 0; echo "$p" | sed -E 's#(https?://)127\.0\.0\.1:#\1host.docker.internal:#'; }
     local _hp _hs; _hp="$(_rewp "${HTTP_PROXY:-}")"; _hs="$(_rewp "${HTTPS_PROXY:-}")"
     local proxy_args=()
@@ -1208,16 +1210,20 @@ cross_build_deb() {
     if ! docker run --rm --platform "$native_plat" --add-host=host.docker.internal:host-gateway \
         -v "$stage:/project:rw" -v "$outstage:/out:rw" \
         -v popball2-aptcache:/var/cache/apt/archives -v popball2-aptlists:/var/lib/apt/lists \
-        -e POPBALL2_IN_DOCKER=1 -e NO_COLOR=1 "${proxy_args[@]}" \
-        "$native_img" bash -lc "bash /project/docker/linux-build/cross-build.sh /project /out ${VERSION}"; then
+        -e POPBALL2_IN_DOCKER=1 -e NO_COLOR=1 -e "POPBALL2_KEEP_APPDIR=$KEEP_STAGE" "${proxy_args[@]}" \
+        "$native_img" bash -lc "bash /project/docker/linux-build/cross-build.sh /project /out ${VERSION} ${fmt}"; then
         rm -rf "$stage" "$outstage"
         err "交叉编译失败 ($debarch)"
         return 1
     fi
     cp -f "$outstage"/* "$OUT_DIR"/ 2>/dev/null || true
     rm -rf "$stage" "$outstage"
-    ok "Linux ($arch_label / $debarch) deb（交叉编译）已写入 $OUT_DIR"
+    ok "Linux ($arch_label / $debarch) ${fmt}（交叉编译）已写入 $OUT_DIR"
 }
+
+# deb / rpm 各自的交叉编译入口（cross_build_linux 的薄封装）
+cross_build_deb()  { cross_build_linux "$1" "$2" deb; }
+cross_build_rpm()  { cross_build_linux "$1" "$2" rpm; }
 
 docker_build_deb() {
     local arch_label="$1"
@@ -1311,12 +1317,13 @@ docker_build_deb() {
 }
 
 # 在 Docker 容器里构建 rpm（与 deb 同样的多架构模式；镜像复用 deb 的构建镜像）。
+# 兜底：守护进程拉不到「目标架构」基础镜像时，与 deb 一样退回本机镜像内交叉编译。
 docker_build_rpm() {
     local arch_label="$1"
-    local plat rpmarch img
+    local plat rpmarch debarch img
     case "$arch_label" in
-        amd64|x86_64|x86|x64) plat=linux/amd64; rpmarch=x86_64;  img="popball2-linux-build:amd64" ;;
-        arm64|aarch64|arm)    plat=linux/arm64; rpmarch=aarch64; img="popball2-linux-build:arm64" ;;
+        amd64|x86_64|x86|x64) plat=linux/amd64; rpmarch=x86_64;  debarch=amd64; img="popball2-linux-build:amd64" ;;
+        arm64|aarch64|arm)    plat=linux/arm64; rpmarch=aarch64; debarch=arm64; img="popball2-linux-build:arm64" ;;
         *) err "不支持的 Linux 架构: ${arch_label}"; return 1 ;;
     esac
 
@@ -1338,7 +1345,14 @@ docker_build_rpm() {
     if ! docker image inspect "$img" >/dev/null 2>&1; then
         step "首次构建 Docker 镜像 ${img}（下载 ubuntu:22.04 并安装 Qt6，请稍候）"
         if ! docker build --platform "$plat" -t "$img" -f "$DOCKERFILE" "$DOCKER_CTX" "${build_proxy_args[@]}"; then
-            err "Docker 镜像构建失败（${arch_label}）。rpm 与 deb 共用构建镜像，先成功构建一次本机架构的 deb 即可自动建好镜像。"
+            warn "Docker 镜像构建失败（${arch_label}）：守护进程无法拉取基础镜像 ubuntu:22.04（常见于代理只放行 HTTP / 主机白名单）。"
+            warn "尝试改用交叉编译兜底（在本机架构已缓存的镜像内为目标架构编译 + 打 .rpm）..."
+            if cross_build_rpm "$arch_label" "$debarch"; then
+                return 0
+            fi
+            err "镜像构建与交叉编译均失败（${arch_label}）。最常见原因：Docker 守护进程拉取基础镜像 ubuntu:22.04 失败。"
+            err "  • rpm 与 deb 共用构建镜像/预置交叉镜像：先成功构建一次本机架构 deb 即可就绪；"
+            err "  • 或在 x86_64 本机跑 ./package.sh rpm:x64（无需跨架构，最快出包）。"
             return 1
         fi
     fi
@@ -1388,9 +1402,11 @@ docker_build_rpm() {
 }
 
 # 在 Docker 容器里构建 AppImage（原生路径只在 Linux 宿主可用，这里让 macOS 也能出 AppImage）。
-# 关键限制：linuxdeploy / appimagetool 是「按架构」的工具，不能跨架构，
-# 所以 AppImage 只在「目标架构 == 本机架构」时可构建（本机 arm64 出 aarch64；
-# 要 amd64 AppImage 得起在 x86_64 机器上跑）。
+# 架构策略：
+#   • 目标架构 == 本机架构：在本机架构镜像内用 linuxdeploy + appimagetool 常规打包；
+#   • arm64 宿主 -> amd64 目标：linuxdeploy 不能跨架构，改走 cross-build.sh 交叉编译：
+#     手工组装 amd64 AppDir，再用本机(aarch64) appimagetool + x86_64 runtime 合成；
+#   • x86_64 宿主 -> arm64 目标：交叉脚本暂只实现 arm64->amd64 方向，明确报错。
 docker_build_appimage() {
     local arch_label="$1"
     local plat aiarch img
@@ -1410,9 +1426,14 @@ docker_build_appimage() {
         *)             host_plat="" ;;
     esac
     if [ -z "$host_plat" ] || [ "$plat" != "$host_plat" ]; then
-        err "AppImage 要求「目标架构 == 本机架构」（linuxdeploy 不能跨架构）。"
-        err "  • 本机是 ${host_arch}，只能在本机出对应架构的 AppImage；"
-        err "  • 想要 x86_64/amd64 的 AppImage，请在 x86_64 机器上跑 ./package.sh appimage。"
+        # 目前交叉工具链只实现了 arm64 宿主 -> amd64 一个方向（cross-build.sh 写死）
+        if { [ "$host_arch" = arm64 ] || [ "$host_arch" = aarch64 ]; } && [ "$plat" = linux/amd64 ]; then
+            warn "AppImage 跨架构（${host_arch} -> amd64）：linuxdeploy 不可用，改用交叉编译组装"
+            cross_build_linux "$arch_label" amd64 appimage
+            return $?
+        fi
+        err "AppImage 交叉编译仅支持 arm64 宿主 -> x86_64 目标（当前 ${host_arch} -> ${arch_label}）。"
+        err "  • 想要 ${arch_label} 的 AppImage，请在对应架构机器上跑 ./package.sh appimage。"
         return 1
     fi
     if ! docker image inspect "$img" >/dev/null 2>&1; then
