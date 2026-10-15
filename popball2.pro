@@ -88,14 +88,24 @@ macx: LIBS += -framework IOKit
 macx: OBJECTIVE_SOURCES += macwindow.mm
 macx: HEADERS += macwindow.h
 
-# Linux/X11：检测桌面有没有开混成(compositing)，没开时改用形状蒙版避免黑色矩形。
-# 只有在系统装了 libX11 开发包(pkg-config 能找到 x11)时才启用，找不到也能正常构建，
-# 只是自动检测失效 —— 这时可以在配置里用 shape_mask=1 手动打开蒙版。
+# Linux：Xorg / Wayland 桌面适配（窗口置顶、拖动、混成检测等，见 linuxwindow.cpp）
+unix:!macx {
+    SOURCES += linuxwindow.cpp
+    HEADERS += linuxwindow.h
+}
+
+# Linux/X11：检测桌面有没有开混成(compositing)，没开时改用形状蒙版避免黑色矩形；
+# 并把窗口设成 override-redirect 以压在全屏游戏之上。
+# 需要 libX11：优先用 pkg-config 定位，很多最小化的系统没装 pkg-config，
+# 这时退回"头文件存在就直接 -lX11"（libX11 在任何 X11 桌面上都是必装的）。
 unix:!macx {
     packagesExist(x11) {
         CONFIG += link_pkgconfig
         DEFINES += POPBALL_HAVE_X11
         PKGCONFIG += x11
+    } else:exists(/usr/include/X11/Xlib.h) {
+        DEFINES += POPBALL_HAVE_X11
+        LIBS += -lX11
     }
 }
 

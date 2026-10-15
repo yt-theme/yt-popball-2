@@ -29,6 +29,7 @@ read_app_version() {
 
 # ---------------------------------------------------------------- 默认参数
 BUILD_DIR="$PROJECT_DIR/build"
+BUILD_DIR_SET=0
 INSTALL_PREFIX=""
 QT_PREFIX=""
 JOBS=""
@@ -38,6 +39,7 @@ DEPS_ONLY=0
 DO_INSTALL_PREFIX=0
 DO_RUN=1
 DO_CLEAN=0
+DEBUG_BUILD=0          # 1 = debug 构建（qmake CONFIG+=debug，产物带调试符号）
 
 # ---------------------------------------------------------------- 输出样式
 if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
@@ -95,10 +97,13 @@ ${C_B}popball2 运行脚本${C_R}
       --install          构建后执行 make install 到 --prefix
       --no-run           构建后不运行
       --clean            构建前清理构建目录
+      --debug            debug 构建（qmake CONFIG+=debug，带调试符号；
+                         默认构建目录为 <项目>/build-debug，与 release 互不干扰）
 
 示例:
   ./run.sh                          # 交互式：装环境 -> 构建 -> 运行
   ./run.sh -y                       # 全部默认值，一路到底
+  ./run.sh --debug -y               # debug 构建并直接运行（npm run dev 走这条）
   ./run.sh --qt-prefix ~/Qt/6.8.0 -b ~/tmp/build
   ./run.sh --deps-only              # 只装开发环境
   ./run.sh --no-deps --install -p ~/.local
@@ -126,7 +131,7 @@ while [ $# -gt 0 ]; do
     case "$1" in
         -h|--help)      usage; exit 0 ;;
         -y|--yes)       ASSUME_YES=1 ;;
-        -b|--build-dir) BUILD_DIR="${2:?--build-dir 需要一个参数}"; shift ;;
+        -b|--build-dir) BUILD_DIR="${2:?--build-dir 需要一个参数}"; BUILD_DIR_SET=1; shift ;;
         -p|--prefix)    INSTALL_PREFIX="${2:?--prefix 需要一个参数}"; shift ;;
         --qt-prefix)    QT_PREFIX="${2:?--qt-prefix 需要一个参数}"; shift ;;
         --jobs)         JOBS="${2:?--jobs 需要一个参数}"; shift ;;
@@ -135,6 +140,7 @@ while [ $# -gt 0 ]; do
         --install)      DO_INSTALL_PREFIX=1 ;;
         --no-run)       DO_RUN=0 ;;
         --clean)        DO_CLEAN=1 ;;
+        --debug)        DEBUG_BUILD=1 ;;
         *) die "未知参数: ${1}（用 --help 查看用法）" ;;
     esac
     shift
@@ -203,7 +209,7 @@ deps_opt() {
         debian) echo "qt6-l10n-tools libgl1-mesa-dev libx11-dev pkg-config" ;;
         fedora) echo "qt6-qttools-devel qt6-linguist mesa-libGL-devel libX11-devel pkgconf-pkg-config" ;;
         suse)   echo "qt6-tools-devel Mesa-libGL-devel libX11-devel pkg-config" ;;
-        arch)   echo "qt6-tools" ;;
+        arch)   echo "qt6-tools libx11" ;;
         alpine) echo "qt6-qttools-dev mesa-dev libx11-dev pkgconf" ;;
         void)   echo "qt6-tools-devel" ;;
         macos)  echo "" ;;
@@ -474,10 +480,13 @@ deploy_win_runtime() {   # <exe 路径> [日志文件]
     # "\tmp\..." 并报 "... does not exist."（Qt 库一个都拷不进去）。
     exe_win="$(to_win_path "$exe")"
     # --no-opengl-sw：纯 QWidget/QPainter 绘制，不用 OpenGL/Quick，省掉 ~18MB 的软件 OpenGL 回退
-    "$wdq" --release --no-translations --no-opengl-sw "$exe_win" >"$log" 2>&1 \
+    # debug 构建要配 --debug（MSVC 下 Qt DLL 带 d 后缀，否则会拷错一套）
+    local mode="--release"
+    [ "$DEBUG_BUILD" -eq 1 ] && mode="--debug"
+    "$wdq" "$mode" --no-translations --no-opengl-sw "$exe_win" >"$log" 2>&1 \
         || warn "windeployqt 有警告（日志: $log）"
-    # 有没有 Qt6Core.dll 是「能不能跑」的唯一判据
-    [ -f "$dir/Qt6Core.dll" ] && return 0
+    # 有没有 Qt6Core.dll 是「能不能跑」的唯一判据（MSVC debug 库名为 Qt6Cored.dll）
+    if [ -f "$dir/Qt6Core.dll" ] || [ -f "$dir/Qt6Cored.dll" ]; then return 0; fi
     warn "$dir 里没有 Qt6Core.dll —— Qt6 运行库未部署成功（日志: $log）"
     return 1
 }
@@ -652,6 +661,24 @@ fi
 # ---------------------------------------------------------------- 构建参数
 step "[3/5] 配置构建参数"
 
+# debug 用独立构建目录，避免与 release 产物互相覆盖（用户显式 -b 时以用户为准）
+if [ "$DEBUG_BUILD" -eq 1 ] && [ "$BUILD_DIR_SET" -eq 0 ]; then
+    BUILD_DIR="$PROJECT_DIR/build-debug"
+fi
+# 传给 qmake 的额外参数：debug 时打开调试符号（-g、无 -O2、Qt 断言与警告生效）
+QMAKE_EXTRA=""
+[ "$DEBUG_BUILD" -eq 1 ] && QMAKE_EXTRA="CONFIG+=debug"
+
+# ---------------------------------------------------------------- 非 ASCII 路径兜底
+# qmake 的已知缺陷：路径含非 ASCII（中文目录名等）时，它写进 Makefile 的命令会把每个非 ASCII
+# 字节写成 '?'，表现为 "sh: 1: cd: can't cd to /xxx/??TF/..." —— lrelease 因此生成不出 .qm，
+# 编译在 rcc 阶段失败。等 qmake 写完 Makefile，再把这条被写坏的 '?' 路径换回真实路径即可。
+has_non_ascii() { printf '%s' "$1" | LC_ALL=C grep -q '[^ -~]'; }
+BROKEN_PROJECT_DIR=""
+if has_non_ascii "$PROJECT_DIR"; then
+    BROKEN_PROJECT_DIR="$(printf '%s' "$PROJECT_DIR" | LC_ALL=C sed 's/[^ -~]/?/g')"
+fi
+
 if [ -z "$INSTALL_PREFIX" ]; then
     if [ "$EUID" -eq 0 ]; then INSTALL_PREFIX=/usr/local; else INSTALL_PREFIX="$HOME/.local"; fi
 fi
@@ -674,6 +701,7 @@ if [ -n "$QT_PREFIX" ]; then find_qmake || true; fi
 info "构建目录  : $BUILD_DIR"
 info "安装位置  : $INSTALL_PREFIX"
 info "Qt        : $QMAKE"
+if [ "$DEBUG_BUILD" -eq 1 ]; then info "构建类型  : debug"; else info "构建类型  : release"; fi
 
 step "[4/5] 构建 $APP_NAME"
 [ -f "$PRO_FILE" ] || die "找不到工程文件: $PRO_FILE"
@@ -693,9 +721,28 @@ if [ -z "$APP_VERSION" ]; then APP_VERSION="$(read_app_version)"; fi
 [ -n "$APP_VERSION" ] && export POPBALL2_VERSION="$APP_VERSION"
 if [ "$OS_KIND" = windows ]; then
     [ -n "$APP_VERSION" ] && info "版本      : $APP_VERSION"
-    "$QMAKE" "$PRO_FILE_ARG" VERSION="$APP_VERSION" >/dev/null
+    "$QMAKE" "$PRO_FILE_ARG" VERSION="$APP_VERSION" $QMAKE_EXTRA >/dev/null
 else
-    "$QMAKE" "$PRO_FILE_ARG" >/dev/null
+    "$QMAKE" "$PRO_FILE_ARG" $QMAKE_EXTRA >/dev/null
+fi
+
+# 把 qmake 写进 Makefile 的 '?' 路径换回真实路径（见 [3/5] 里 BROKEN_PROJECT_DIR 的说明）
+if [ -n "$BROKEN_PROJECT_DIR" ]; then
+    fix_done=0
+    for f in Makefile Makefile.Debug Makefile.Release; do
+        [ -f "$f" ] || continue
+        if sed "s|$BROKEN_PROJECT_DIR|$PROJECT_DIR|g" "$f" >"$f.pbfix" 2>/dev/null; then
+            mv -f "$f.pbfix" "$f"
+            fix_done=1
+        else
+            rm -f "$f.pbfix"
+        fi
+    done
+    if [ "$fix_done" -eq 1 ]; then
+        info "已修正 Makefile 中被 qmake 写坏的非 ASCII 路径"
+        # 让 Makefile 比 .pro 新，避免 make 重新执行 qmake 把修补覆盖掉
+        touch Makefile Makefile.Debug Makefile.Release 2>/dev/null || true
+    fi
 fi
 
 if [ -z "$JOBS" ]; then
@@ -707,6 +754,11 @@ fi
 # Windows/MinGW 的 make 叫 mingw32-make
 if [ "$OS_KIND" = windows ] && [ -n "$MINGW_BIN" ]; then MAKE_TOOL=mingw32-make; fi
 info "$MAKE_TOOL -j$JOBS ..."
+
+# 某些 Qt 配置下默认 make 不会自动触发 lrelease 目标，导致 .qm 缺失、rcc 编译失败。
+# 显式先把翻译编译出来（目标名在 Qt 各版本中稳定为 compiler_lrelease_make_all）。
+"$MAKE_TOOL" compiler_lrelease_make_all >/dev/null 2>&1 || true
+
 if ! "$MAKE_TOOL" -j"$JOBS"; then
     die "编译失败，请查看上方错误信息"
 fi
@@ -714,7 +766,13 @@ ok "构建完成"
 
 # 定位可执行文件（macOS 是 .app 包，Linux/Windows 是普通可执行文件，Windows 带 .exe）
 APP_BIN=""
-if [ -x "$BUILD_DIR/$APP_NAME.exe" ]; then                     # Windows / MinGW
+if [ -x "$BUILD_DIR/debug/$APP_NAME.exe" ]; then                # Windows / MSVC（debug 子目录）
+    APP_BIN="$BUILD_DIR/debug/$APP_NAME.exe"
+elif [ -x "$BUILD_DIR/debug/$APP_NAME.app/Contents/MacOS/$APP_NAME" ]; then
+    APP_BIN="$BUILD_DIR/debug/$APP_NAME.app/Contents/MacOS/$APP_NAME"
+elif [ -x "$BUILD_DIR/debug/$APP_NAME" ]; then                  # Linux debug_and_release
+    APP_BIN="$BUILD_DIR/debug/$APP_NAME"
+elif [ -x "$BUILD_DIR/$APP_NAME.exe" ]; then                    # Windows / MinGW
     APP_BIN="$BUILD_DIR/$APP_NAME.exe"
 elif [ -x "$BUILD_DIR/release/$APP_NAME.exe" ]; then            # Windows / MSVC
     APP_BIN="$BUILD_DIR/release/$APP_NAME.exe"
@@ -744,12 +802,12 @@ if [ "$DO_INSTALL_PREFIX" -eq 1 ]; then
     if [ "$OS_KIND" = windows ]; then
         PREFIX_ARG="$(to_win_path "$INSTALL_PREFIX")"
         if [ -n "$APP_VERSION" ]; then
-            "$QMAKE" "$PRO_FILE_ARG" PREFIX="$PREFIX_ARG" VERSION="$APP_VERSION" >/dev/null
+            "$QMAKE" "$PRO_FILE_ARG" PREFIX="$PREFIX_ARG" VERSION="$APP_VERSION" $QMAKE_EXTRA >/dev/null
         else
-            "$QMAKE" "$PRO_FILE_ARG" PREFIX="$PREFIX_ARG" >/dev/null
+            "$QMAKE" "$PRO_FILE_ARG" PREFIX="$PREFIX_ARG" $QMAKE_EXTRA >/dev/null
         fi
     else
-        "$QMAKE" "$PRO_FILE_ARG" PREFIX="$INSTALL_PREFIX" >/dev/null
+        "$QMAKE" "$PRO_FILE_ARG" PREFIX="$INSTALL_PREFIX" $QMAKE_EXTRA >/dev/null
     fi
     "$MAKE_TOOL" -j"$JOBS" >/dev/null 2>&1 || true
     if "$MAKE_TOOL" install INSTALL_ROOT="" >/dev/null 2>&1; then

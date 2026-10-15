@@ -608,7 +608,9 @@ Priority: optional
 Architecture: $DEB_ARCH
 Maintainer: popball2 <noreply@example.com>
 Installed-Size: $size
-Depends: libc6, libqt6core6 | libqt6core6t64, libqt6gui6 | libqt6gui6t64, libqt6widgets6 | libqt6widgets6t64, libqt6svg6 | libqt6svg6t64, libqt6sql6 | libqt6sql6t64, libqt6multimedia6 | libqt6multimedia6t64
+# libx11-6：Linux 侧做"压在所有窗口之上(含全屏游戏)"要直接调 Xlib（见 linuxwindow.cpp），
+# 现在是真的链进二进制了（以前 pkg-config 缺失时 POPBALL_HAVE_X11 没生效才没链上）。
+Depends: libc6, libx11-6, libqt6core6 | libqt6core6t64, libqt6gui6 | libqt6gui6t64, libqt6widgets6 | libqt6widgets6t64, libqt6svg6 | libqt6svg6t64, libqt6sql6 | libqt6sql6t64, libqt6multimedia6 | libqt6multimedia6t64
 Recommends: libqt6sql6-sqlite, gstreamer1.0-plugins-base, gstreamer1.0-plugins-good
 Description: Floating desktop system monitor ball
  A small always-on-top desktop ball that visualises memory and swap usage
@@ -662,6 +664,7 @@ URL:            https://gitee.com/
 Source0:        %{name}-%{version}.tar.gz
 
 Requires:       qt6-qtbase
+Requires:       libX11
 
 %global debug_package %{nil}
 %global _build_id_links none

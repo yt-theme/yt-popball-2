@@ -116,6 +116,9 @@ private:
     QTimer                      *hoverTimer     = nullptr;   // 悬浮球上停留 300ms → 打开面板
     QTimer                      *hideTimer      = nullptr;   // 鼠标离开球与面板后延迟隐藏面板
     QTimer                      *hoverPollTimer = nullptr;   // 轻量轮询：即使窗口/应用未激活也能靠全局光标位置弹出面板
+    // X11 override-redirect 模式下周期性把自己提到最上层：
+    // 全屏游戏等"不受管理"的窗口可能晚于小球映射，只提一次会被它们盖住。
+    QTimer                      *overlayRaiseTimer = nullptr;
     bool                         cursorOverUi   = false;     // 轮询判定的"光标是否在球或面板上"状态（用于检测边界跳变）
     bool                         dragOpening    = false;     // 当前是否正处于文件拖入（拖到球上）状态
 
@@ -191,6 +194,8 @@ private slots:
     void onHideTimeout();
     // 轮询：用全局光标坐标判断是否在球/面板上，未激活窗口也能触发弹出（见需求：不激活时移上去也要出窗口）
     void onHoverPoll();
+    // X11 override-redirect：周期性提层（小球 → 面板，保证面板在小球之上）
+    void onOverlayRaise();
 
     // 拖放：把文件拖到球上（停留 300ms 自动开面板）/ 直接松手落到球上也收下
     void dragEnterEvent(QDragEnterEvent *event) override;

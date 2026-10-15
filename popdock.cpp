@@ -1,5 +1,9 @@
 #include "popdock.h"
 
+#if defined(Q_OS_LINUX)
+#  include "linuxwindow.h"     // Xorg / Wayland 窗口层级适配
+#endif
+
 #include <QApplication>
 #include <QButtonGroup>
 #include <QClipboard>
@@ -2160,7 +2164,14 @@ PreviewPopup::PreviewPopup(QWidget *parent)
 {
     // ToolTip 型窗口：不抢焦点、不激活；再对鼠标透明，绝不干扰面板的进出判定
     setObjectName(QStringLiteral("popDockPreview"));
-    setWindowFlags(Qt::ToolTip | Qt::FramelessWindowHint);
+    Qt::WindowFlags tipFlags = Qt::ToolTip | Qt::FramelessWindowHint | Qt::WindowStaysOnTopHint;
+#if defined(Q_OS_LINUX)
+    // 面板可能是 override-redirect（见 PopDock 构造），预览气泡要跟它同一层，
+    // 否则会被面板压在下面看不见。
+    if (popballLinuxOverlayEnabled())
+        tipFlags |= Qt::BypassWindowManagerHint;
+#endif
+    setWindowFlags(tipFlags);
     setAttribute(Qt::WA_TranslucentBackground);
     setAttribute(Qt::WA_ShowWithoutActivating);
     setAttribute(Qt::WA_TransparentForMouseEvents);
@@ -2391,7 +2402,13 @@ TextEditorWindow::TextEditorWindow(QWidget *parent)
 {
     setObjectName(QStringLiteral("popDockTextEditor"));
     setWindowTitle(tr("文本预览"));
-    setWindowFlags(windowFlags() | Qt::Window);        // 顶层窗口
+    Qt::WindowFlags edFlags = windowFlags() | Qt::Window | Qt::WindowStaysOnTopHint;
+#if defined(Q_OS_LINUX)
+    // 与面板同层：面板是 override-redirect 时，受管理的编辑器窗口会被它压住
+    if (popballLinuxOverlayEnabled())
+        edFlags |= Qt::BypassWindowManagerHint;
+#endif
+    setWindowFlags(edFlags);        // 顶层窗口
     // QWidget 的子类不会自动画样式表里的背景，得显式声明"我要样式表背景"
     setAttribute(Qt::WA_StyledBackground, true);
     resize(520, 380);
@@ -2815,7 +2832,15 @@ void PopDock::cancelHideAnimation()
 PopDock::PopDock(QWidget *parent)
     : QWidget(parent)
 {
-    setWindowFlags(Qt::FramelessWindowHint | Qt::Tool | Qt::NoDropShadowWindowHint);
+    Qt::WindowFlags dockFlags = Qt::FramelessWindowHint | Qt::Tool | Qt::NoDropShadowWindowHint
+                                | Qt::WindowStaysOnTopHint;
+#if defined(Q_OS_LINUX)
+    // X11：与悬浮球保持一致，也走 override-redirect —— 否则在受窗口管理器管理的
+    // 层级里，面板会被晚于它映射的全屏游戏压在下面（球看得见、面板看不见）。
+    if (popballLinuxOverlayEnabled())
+        dockFlags |= Qt::BypassWindowManagerHint;
+#endif
+    setWindowFlags(dockFlags);
     setAttribute(Qt::WA_TranslucentBackground);
     // 允许鼠标在边缘拖拽调整大小：只设最小尺寸，不再 setFixedSize
     setMinimumSize(kMinDockWidth, kMinDockHeight);
@@ -3431,6 +3456,13 @@ Qt::CursorShape PopDock::cursorForEdges(int edges)
 
 void PopDock::mousePressEvent(QMouseEvent *event)
 {
+#if defined(Q_OS_LINUX)
+    // X11 override-redirect 窗口没有窗口管理器帮忙派发键盘焦点，
+    // 点面板时得自己要一次（Qt 会发 _NET_ACTIVE_WINDOW）—— 否则面板里的
+    // 记事输入框(QLineEdit)点了也打不了字。
+    if (popballLinuxOverlayEnabled())
+        this->activateWindow();
+#endif
     if (event->button() == Qt::LeftButton) {
         const int edges = resizeEdgeAt(event->position().toPoint());
         if (edges != kResizeNone) {

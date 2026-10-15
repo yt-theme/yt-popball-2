@@ -15,6 +15,12 @@
 #  include "macwindow.h"
 #endif
 
+#if defined(Q_OS_LINUX)
+// Xorg / Wayland 适配：Wayland 会话下把 Qt 平台插件切到 xcb(XWayland)。
+// 必须在 QApplication 构造之前调用 —— 平台插件是在构造时选定的。
+#  include "linuxwindow.h"
+#endif
+
 int main(int argc, char *argv[])
 {
 #if defined(Q_OS_WIN)
@@ -26,6 +32,12 @@ int main(int argc, char *argv[])
             return installWinRing0DriverService(sysPath) ? 0 : 1;
         }
     }
+#endif
+
+#if defined(Q_OS_LINUX)
+    // Wayland 会话 → 走 XWayland(xcb)：悬浮球需要"任意位置 + 压在所有窗口之上"，
+    // 这两件事原生 Wayland 协议都不支持（详见 linuxwindow.h 顶部说明）。
+    popballLinuxPreparePlatform();
 #endif
 
     QApplication a(argc, argv);

@@ -4,6 +4,7 @@
   "private": true,
   "description": "PopBall 系统监控球 —— 打包入口（Node 友好封装，实际构建由 package.sh 完成）",
   "scripts": {
+    "dev": "node dev.js",
     "pack": "node pack.js",
     "build": "node pack.js",
     "mac": "node pack.js mac",

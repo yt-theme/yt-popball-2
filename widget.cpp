@@ -20,16 +20,11 @@
 #include <QStandardPaths>
 #include <QtMath>
 #include <QFontMetrics>
+#include <QWindow>          // 原生 Wayland 降级：QWindow::startSystemMove()
 
-#if defined(POPBALL_HAVE_X11)
-#  include <QtGui/qguiapplication_platform.h>
-// 顺序很重要：必须在 Qt 头文件之后再包含 Xlib.h。
-// Xlib 会把 None / True / False 定义成宏，与 Qt 里的同名枚举冲突；
-// 用完立刻清理，避免影响后面可能被包含进来的 Qt 头文件。
-#  include <X11/Xlib.h>
-#  undef None
-#  undef True
-#  undef False
+#if defined(Q_OS_LINUX)
+// X11(Xorg / XWayland) 与 Wayland 的窗口把戏都收在 linuxwindow.h 里
+#  include "linuxwindow.h"
 #endif
 
 #if defined(Q_OS_MACOS)
@@ -112,61 +107,9 @@ constexpr int kBallBar      = 3;
 constexpr int kBallBarW     = 190;
 constexpr int kBallBarH     = 64;
 
-#if defined(POPBALL_HAVE_X11)
-// X11：检测桌面上有没有「混成管理器(compositing manager)」在跑。
-// 没有混成时，WA_TranslucentBackground 不会被真正混合，小球四周就会露出一块
-// 黑色矩形 —— 这正是「关掉桌面混成后小球旁边出现黑框」的根因。
-// 标准判断方式：看 _NET_WM_CM_Sx 这个选择(selection)有没有被占用。
-bool x11CompositingMissing()
-{
-    QNativeInterface::QX11Application *x11 =
-        qGuiApp->nativeInterface<QNativeInterface::QX11Application>();
-    if (x11 == nullptr)
-        return false;                    // 拿不到 X11 连接，按「有混成」处理
-    Display *dpy = x11->display();
-    if (dpy == nullptr)
-        return false;
-
-    // 1 = only_if_exists(即 Xlib 的 True)；0 = Xlib 的 None
-    const Atom cm = XInternAtom(dpy, "_NET_WM_CM_S0", 1);
-    if (cm == 0)
-        return true;                     // 连这个 atom 都不存在 → 肯定没有混成
-    return XGetSelectionOwner(dpy, cm) == 0;
-}
-
-// X11：把窗口设为 sticky —— 跟随所有虚拟桌面(workspace)，切桌面不带走。
-// _NET_WM_STATE_STICKY 是 EWMH 标准属性；Qt 的 WindowStaysOnTopHint 只负责 ABOVE，
-// 不管 workspace，所以这里要单独发一条 _NET_WM_STATE_ADD。
-void x11MakeSticky(WId win)
-{
-    QNativeInterface::QX11Application *x11 =
-        qGuiApp->nativeInterface<QNativeInterface::QX11Application>();
-    if (x11 == nullptr)
-        return;
-    Display *dpy = x11->display();
-    if (dpy == nullptr)
-        return;
-
-    const Atom wmState = XInternAtom(dpy, "_NET_WM_STATE", 0);
-    const Atom sticky = XInternAtom(dpy, "_NET_WM_STATE_STICKY", 0);
-    if (wmState == 0 || sticky == 0)
-        return;
-
-    XEvent ev;
-    memset(&ev, 0, sizeof(ev));
-    ev.xany.type       = ClientMessage;
-    ev.xclient.window  = static_cast<Window>(win);
-    ev.xclient.message_type = wmState;
-    ev.xclient.format   = 32;
-    ev.xclient.data.l[0] = 1;   // _NET_WM_STATE_ADD
-    ev.xclient.data.l[1] = static_cast<long>(sticky);
-    ev.xclient.data.l[2] = 0;
-    ev.xclient.data.l[3] = 1;   // normal application
-    XSendEvent(dpy, DefaultRootWindow(dpy), 0,
-               SubstructureRedirectMask | SubstructureNotifyMask, &ev);
-    XFlush(dpy);
-}
-#endif
+// 注：X11 的混成检测 / sticky / 提层等平台代码已移到 linuxwindow.cpp
+// （popballLinuxCompositingMissing / popballLinuxMakeSticky / popballLinuxRaise），
+// 这里不再直接包含 Xlib，避免 Xlib 的宏(None/True/False)污染本文件。
 
 }   // namespace
 
@@ -245,6 +188,17 @@ Widget::Widget(QWidget *parent)
     this->hoverPollTimer->setInterval(100);
     connect(this->hoverPollTimer, &QTimer::timeout, this, &Widget::onHoverPoll);
     this->hoverPollTimer->start();
+
+    // X11 override-redirect：周期性把自己提到最上层，压住后出现的全屏游戏窗口
+#if defined(Q_OS_LINUX)
+    if (popballLinuxOverlayEnabled())
+    {
+        this->overlayRaiseTimer = new QTimer(this);
+        this->overlayRaiseTimer->setInterval(2000);
+        connect(this->overlayRaiseTimer, &QTimer::timeout, this, &Widget::onOverlayRaise);
+        this->overlayRaiseTimer->start();
+    }
+#endif
 
     this->popDock = new PopDock(this);
     connect(this->popDock, &PopDock::mouseEntered, this, &Widget::cancelHidePopDock);
@@ -782,10 +736,6 @@ void Widget::setUiFrame()
     // 无边框 + 始终置顶 + 工具窗口（不占任务栏、不进 Dock / Cmd-Tab），
     // 效果就类似 360 悬浮球。
     //
-    // 注意：这里刻意不再使用 Qt::BypassWindowManagerHint。
-    // 它会让窗口完全绕过窗口管理器：在 X11 上合成器因此不接管该窗口，
-    // 半透明区域直接漏出黑色矩形（"关掉混成后小球旁出现黑框"的根因之一）；
-    // 在 Wayland 上它也没有意义。改用标准的 无边框 + 置顶 组合即可。
     // 窗口 flags 与半透明属性恒定不变，且必须在原生窗口创建之前设置。
     // 切忌对已显示的窗口重复调用：setWindowFlags()/setAttribute(WA_TranslucentBackground)
     // 会触发平台层重建窗口 —— X11 上 KWin 会解除对窗口的管理（WM_STATE 丢失），
@@ -798,6 +748,17 @@ void Widget::setUiFrame()
         flags |= Qt::WindowDoesNotAcceptFocus;
         // 去掉系统窗口投影（边缘虚化阴影）；需要阴影时可用配置里的 shadow_radius
         flags |= Qt::NoDropShadowWindowHint;
+#elif defined(Q_OS_LINUX)
+        // X11（Xorg 或 XWayland）：绕过窗口管理器(override-redirect)。
+        // 这是"压在所有窗口之上（含全屏游戏）"的唯一可靠做法 ——
+        // 受窗口管理器管理的窗口最高只能到 _NET_WM_STATE_ABOVE，
+        // 而 KWin / Mutter 都把全屏窗口排在这个层之上；override-redirect 窗口
+        // 属于"不受管理"的那一级，天然在最顶层，且位置由自己 XMoveWindow，拖动立即生效。
+        // 混成(半透明)依然由合成器负责；万一桌面没开混成，走形状蒙版兜底
+        // （见 reevaluateShapeMask，与有无窗口管理器无关）。
+        // 想退回"受管理的普通置顶"，设环境变量 POPBALL2_X11_OVERLAY=0。
+        if (popballLinuxOverlayEnabled())
+            flags |= Qt::BypassWindowManagerHint;
 #endif
         this->setWindowFlags(flags);
 
@@ -893,15 +854,32 @@ void Widget::applyDesktopBehavior()
         popballPinToAllDesktops(static_cast<unsigned long long>(this->winId()));
 #endif
 
-    // ------------------------------------------------ Wayland
+    // ------------------------------------------------ Wayland（原生）
     // Wayland 协议不允许客户端给顶层窗口定位，setGeometry 里的 x/y 会被合成器忽略，
-    // 因此拖动小球、以及"关掉窗口后记住位置"在 Wayland 下不会生效 —— 这是协议限制，
-    // 不是程序 bug。半透明与无边框本身是支持的，正常显示即可，不做额外处理。
-    // 另外，多数合成器也不提供"始终置顶"，实际层级由桌面环境决定。
+    // 多数合成器也不给普通顶层窗口"始终置顶" —— 这是协议限制，不是程序 bug。
+    //
+    // 正常情况下 main() 已经把 Wayland 会话切到 XWayland(xcb) 了（见 linuxwindow.cpp
+    // 的 popballLinuxPreparePlatform），能走到这里说明 XWayland 不可用或用户强制
+    // wayland：此时拖动改由合成器接管（QWindow::startSystemMove，见 mousePressEvent），
+    // 层级交给桌面环境决定，不做额外处理。
     if (isWayland)
         return;
 
-    // ------------------------------------------------ X11 (Xorg)
+    // ------------------------------------------------ X11 (Xorg / XWayland)
+#if defined(Q_OS_LINUX)
+    if (popballLinuxOverlayEnabled())
+    {
+        // override-redirect：窗口管理器不参与，层叠序只能自己提。
+        // 全屏游戏可能晚于小球映射，所以还要周期性地再提一次（见 onOverlayRaise）。
+        popballLinuxRaise(this->winId());
+    }
+    else
+    {
+        // 退回受管理的模式：跨所有虚拟桌面(STICKY) + 置顶(ABOVE)
+        popballLinuxMakeSticky(this->winId());
+    }
+#endif
+
     // 若桌面没开混成(compositing)，半透明不会被混合，窗口四角会露出黑色矩形。
     // 这时退回「圆形形状蒙版」：直接把窗口裁成圆的，矩形四角根本不存在。
     //
@@ -909,10 +887,6 @@ void Widget::applyDesktopBehavior()
     // 之后的重复检测搭在 updateUITimer 上（每 kCompositingCheckEveryUiTicks 次
     // UI 刷新查一次，见 onTimerIntervalForUpdateUI），不额外占一个定时器。
     Q_UNUSED(isX11);
-    // 跨所有虚拟桌面：切 workspace 时悬浮球不留在原桌面
-#if defined(POPBALL_HAVE_X11)
-    x11MakeSticky(this->winId());
-#endif
     this->reevaluateShapeMask();
 }
 
@@ -931,8 +905,8 @@ void Widget::reevaluateShapeMask()
     case 1:   needMask = true;  break;      // 强制开启
     case 2:   needMask = false; break;      // 强制关闭
     default:                                // 自动：跟随桌面混成
-#if defined(POPBALL_HAVE_X11)
-        needMask = x11CompositingMissing();
+#if defined(Q_OS_LINUX)
+        needMask = popballLinuxCompositingMissing();
 #endif
         break;
     }
@@ -1033,6 +1007,15 @@ void Widget::mousePressEvent(QMouseEvent *event)
         this->isMousePressed = true;
         this->curWindowPos = event->pos();
         this->pressGlobalPos = event->globalPosition().toPoint();
+
+#if defined(Q_OS_LINUX)
+        // 原生 Wayland 降级路径（XWayland 不可用时）：客户端不能自己定位顶层窗口，
+        // 把这次拖动交给合成器 —— 由它跟着光标移动窗口（xdg-toplevel interactive move）。
+        if (popballLinuxIsWaylandNative()) {
+            if (QWindow *wh = this->windowHandle())
+                wh->startSystemMove();
+        }
+#endif
     } else if (event->button() == Qt::RightButton) {
         // 悬浮球右键菜单已移除：操作项（设置 / 系统监视器 / 退出）
         // 全部收进中转站面板右上角的"操作"按钮菜单（见 PopDock）。
@@ -1053,6 +1036,13 @@ void Widget::mouseMoveEvent(QMouseEvent *event)
         if (this->popDock != nullptr && this->popDock->isVisible())
             this->popDock->hideAnimated();      // 拖动开始：划入收起，别挡着球
     }
+
+#if defined(Q_OS_LINUX)
+    // 原生 Wayland：位置由合成器决定（mousePressEvent 里已 startSystemMove），
+    // 这里再自己 move 也没用 —— QWidget::pos() 只是记账，合成器不理它。
+    if (popballLinuxIsWaylandNative())
+        return;
+#endif
 
     // ---------------- 竖条形态：只沿边缘上下走 ----------------
     if (this->config->getShape() == SHAPE_ASIDE)
@@ -1171,6 +1161,19 @@ void Widget::onHoverPoll()
         if (this->popDock->isVisible())
             this->scheduleHidePopDock();       // 离开球与面板 → 延迟隐藏
     }
+}
+
+// X11 override-redirect 模式：周期性提层。
+// 小球先提、面板后提 —— 保证面板始终压在小球之上（两者不重叠，但预览气泡可能压到球）。
+void Widget::onOverlayRaise()
+{
+#if defined(Q_OS_LINUX)
+    if (!popballLinuxOverlayEnabled())
+        return;
+    popballLinuxRaise(static_cast<unsigned long long>(this->winId()));
+    if (this->popDock != nullptr && this->popDock->isVisible())
+        popballLinuxRaise(static_cast<unsigned long long>(this->popDock->winId()));
+#endif
 }
 
 void Widget::onHoverTimeout()

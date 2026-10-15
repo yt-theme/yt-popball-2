@@ -124,18 +124,27 @@ chmod +x popball2-1.0.0-x86_64.AppImage
 - **不内置 Qt**（所有 Qt 桌面应用的 deb 都这样，避免重复打包、保持与系统一致）。
 - 包的 `Depends` 已声明：
   ```
-  libc6, libqt6core6 | libqt6core6t64,
+  libc6, libx11-6, libqt6core6 | libqt6core6t64,
   libqt6gui6 | libqt6gui6t64, libqt6widgets6 | libqt6widgets6t64,
   libqt6sql6 | libqt6sql6t64,
   libqt6multimedia6 | libqt6multimedia6t64
   ```
   （`*t64` 是 64 位时间制式变体，Debian 13 / Ubuntu 24.04+ 用；用 `|` 兼容两种）
-- **图形会话（X11 / Wayland）**：Xorg 会话用 Qt 的 **xcb** 平台插件（`qt6-qpa-plugins`，
-  通常随 `libqt6gui6` 传递依赖装好）；Wayland 会话需要 **`qt6-wayland`** 提供的
-  wayland 平台插件。两者都装后，**同一二进制在 Xorg 与 Wayland 下都能直接跑**（Qt 自动
-  检测会话）。缺插件时启动会报 `could not load the Qt platform plugin "xcb"/"wayland"`，
-  用包管理器补装对应包即可。弹窗尺寸调整在 Wayland 下自动启用右/下边缘拖拽（协议不提供
-  全局鼠标坐标，左/上缘固定；X11 与 Windows 四边缘全支持），尺寸一律实时落盘。
+  `libx11-6` 是"压在所有窗口之上（含全屏游戏）"要用的 —— Linux 侧会直接调 Xlib
+  把小球做成 override-redirect 窗口（见源码 `linuxwindow.cpp`）。
+- **图形会话（Xorg / Wayland）**：
+  - **Xorg** 会话：Qt 自动用 **xcb** 平台插件，功能完整。
+  - **Wayland** 会话：悬浮球需要"任意位置 + 永远在最上层"，这两件事 Wayland 协议都不支持
+    （客户端不能给顶层窗口定位、也没有给普通顶层窗口的置顶语义）。因此程序会在启动时
+    主动切到 **xcb**，通过 **XWayland** 运行 —— 所以 Wayland 会话下必须有 XWayland
+    与 Qt 的 xcb 平台插件（`qt6-qpa-plugins`，通常随 `libqt6gui6` 装好）。
+    两者都缺时程序会留在原生 Wayland（不崩，但**拖不动球、也置不了顶**）。
+  - 缺插件时启动会报 `could not load the Qt platform plugin "xcb"/"wayland"`，
+    用包管理器补装对应包即可。需要覆盖自动选择时用环境变量：
+    `POPBALL2_QT_PLATFORM=wayland`（强制原生 Wayland）、`=xcb`（强制 X11）、
+    `POPBALL2_X11_OVERLAY=0`（退回"受窗口管理器管理的普通置顶"）。
+  - 弹窗尺寸调整在原生 Wayland 下自动启用右/下边缘拖拽（协议不提供全局鼠标坐标，
+    左/上缘固定；X11 与 Windows 四边缘全支持），尺寸一律实时落盘。
 - **剪贴板历史（SQLite）**：程序用 QtSql 的 QSQLITE 驱动把中转站内容持久化到
   `~/.popball2_clipboard.db`。deb 里以 `Recommends: libqt6sql6-sqlite` 声明驱动插件
   （apt 默认会装上；用 `--no-install-recommends` 时不会装）。缺这个插件时程序**照常运行**，
