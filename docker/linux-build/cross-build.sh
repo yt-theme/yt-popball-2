@@ -122,7 +122,7 @@ else
     echo ">>> WARN: 未找到 $QTINC/QtSql/QSqlDatabase → 剪贴板历史退化为内存模式（不落盘）"
 fi
 x86_64-linux-gnu-g++ -fPIC -std=c++17 $DEFINES $QTI $X11_CFLAGS \
-    clipstore.cpp config.cpp main.cpp popdock.cpp settingsdialog.cpp sysInfo.cpp widget.cpp \
+    clipstore.cpp config.cpp main.cpp popdock.cpp settingsdialog.cpp sysInfo.cpp widget.cpp linuxwindow.cpp \
     moc_popdock.cpp moc_settingsdialog.cpp moc_widget.cpp moc_clipstore.cpp \
     qrc_default_config.cpp qrc_resources.cpp qrc_trans.cpp \
     -o popball2 -lQt6Widgets -lQt6Gui $SQL_LIBS -lQt6Core $X11_LIBS

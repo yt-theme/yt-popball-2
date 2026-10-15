@@ -600,6 +600,10 @@ pkg_deb() {
     local size
     size="$(du -sk "$stage" | awk '{print $1}')"
 
+    # 注意：DEBIAN/control 不接受注释行（'#' 会被当成字段名，dpkg-deb 报
+    # "field name '#' must be followed by colon"），依赖说明只能写在 shell 注释里：
+    #   libx11-6：Linux 侧做"压在所有窗口之上(含全屏游戏)"要直接调 Xlib（见 linuxwindow.cpp），
+    #   现在是真的链进二进制了（以前 pkg-config 缺失时 POPBALL_HAVE_X11 没生效才没链上）。
     cat > "$stage/DEBIAN/control" <<EOF
 Package: $APP_NAME
 Version: $VERSION
@@ -608,8 +612,6 @@ Priority: optional
 Architecture: $DEB_ARCH
 Maintainer: popball2 <noreply@example.com>
 Installed-Size: $size
-# libx11-6：Linux 侧做"压在所有窗口之上(含全屏游戏)"要直接调 Xlib（见 linuxwindow.cpp），
-# 现在是真的链进二进制了（以前 pkg-config 缺失时 POPBALL_HAVE_X11 没生效才没链上）。
 Depends: libc6, libx11-6, libqt6core6 | libqt6core6t64, libqt6gui6 | libqt6gui6t64, libqt6widgets6 | libqt6widgets6t64, libqt6svg6 | libqt6svg6t64, libqt6sql6 | libqt6sql6t64, libqt6multimedia6 | libqt6multimedia6t64
 Recommends: libqt6sql6-sqlite, gstreamer1.0-plugins-base, gstreamer1.0-plugins-good
 Description: Floating desktop system monitor ball
@@ -618,9 +620,14 @@ Description: Floating desktop system monitor ball
  Supports Intel/AMD, ARM64, IBM POWER and IBM Z on Linux, and macOS.
 EOF
     local out="$OUT_DIR/${APP_NAME}_${VERSION}_${DEB_ARCH}.deb"
+    rm -f "$out"
     if command -v dpkg-deb >/dev/null 2>&1; then
-        dpkg-deb --root-owner-group --build "$stage" "$out" >/dev/null 2>&1 \
-            || dpkg-deb --build "$stage" "$out" >/dev/null
+        # 失败时不要吞掉输出，否则 control 文件格式错误无从排查
+        if ! dpkg-deb --root-owner-group --build "$stage" "$out" 2>&1 \
+            && ! dpkg-deb --build "$stage" "$out"; then
+            err "dpkg-deb 打包失败（通常是 DEBIAN/control 格式问题）"
+            return 1
+        fi
     else
         warn "系统没有 dpkg-deb，改用 ar+tar 手工组装（产物结构等价）"
         local t="$WORK_DIR/debtmp"; rm -rf "$t"; mkdir -p "$t"
@@ -628,6 +635,10 @@ EOF
         ( cd "$stage" && tar -czf "$t/data.tar.gz" --exclude=./DEBIAN . )
         printf '2.0\n' > "$t/debian-binary"
         ( cd "$t" && ar rc "$out" debian-binary control.tar.gz data.tar.gz )
+    fi
+    if [ ! -f "$out" ]; then
+        err "deb 未生成: $out"
+        return 1
     fi
     ok "deb  -> $out"
 }

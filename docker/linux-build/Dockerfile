@@ -34,7 +34,10 @@ RUN unset HTTP_PROXY HTTPS_PROXY http_proxy https_proxy 2>/dev/null; \
         patchelf \
         file \
         binutils \
+        # libgl1 是运行时，libgl1-mesa-dev 才提供链接期需要的 /usr/lib/<triplet>/libGL.so
+        #（缺它时链接报：ld: cannot find /usr/lib/x86_64-linux-gnu/libGL.so）
         libgl1 \
+        libgl1-mesa-dev \
         libglib2.0-0 \
         ca-certificates \
     && rm -rf /var/lib/apt/lists/*
