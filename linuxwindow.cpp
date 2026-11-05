@@ -12,6 +12,7 @@
 // 与 Qt 里的同名枚举冲突；用完立刻清理，避免影响后面被包含进来的 Qt 头文件。
 #  include <QtGui/qguiapplication_platform.h>
 #  include <X11/Xlib.h>
+#  include <X11/Xatom.h>
 #  undef None
 #  undef True
 #  undef False
