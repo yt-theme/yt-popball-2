@@ -902,6 +902,84 @@
 
 这只会把默认值填回本窗口，还需点「应用」或「确定」才会真正生效。</translation>
     </message>
+    <message>
+        <source>配置备份</source>
+        <translation>配置备份</translation>
+    </message>
+    <message>
+        <source>导出全部设置到 JSON 文件，可备份或迁移到其他设备；导入会覆盖当前设置。</source>
+        <translation>导出全部设置到 JSON 文件，可备份或迁移到其他设备；导入会覆盖当前设置。</translation>
+    </message>
+    <message>
+        <source>导出到 JSON</source>
+        <translation>导出到 JSON</translation>
+    </message>
+    <message>
+        <source>从 JSON 导入</source>
+        <translation>从 JSON 导入</translation>
+    </message>
+    <message>
+        <source>导出配置</source>
+        <translation>导出配置</translation>
+    </message>
+    <message>
+        <source>JSON 文件 (*.json)</source>
+        <translation>JSON 文件 (*.json)</translation>
+    </message>
+    <message>
+        <source>导出失败</source>
+        <translation>导出失败</translation>
+    </message>
+    <message>
+        <source>无法写入文件：
+%1</source>
+        <translation>无法写入文件：
+%1</translation>
+    </message>
+    <message>
+        <source>已导出到：
+%1</source>
+        <translation>已导出到：
+%1</translation>
+    </message>
+    <message>
+        <source>导入配置</source>
+        <translation>导入配置</translation>
+    </message>
+    <message>
+        <source>导入失败</source>
+        <translation>导入失败</translation>
+    </message>
+    <message>
+        <source>无法读取文件：
+%1</source>
+        <translation>无法读取文件：
+%1</translation>
+    </message>
+    <message>
+        <source>文件格式不正确，不是有效的配置 JSON。</source>
+        <translation>文件格式不正确，不是有效的配置 JSON。</translation>
+    </message>
+    <message>
+        <source>文件里没有可用的配置项。</source>
+        <translation>文件里没有可用的配置项。</translation>
+    </message>
+    <message>
+        <source>导入会覆盖当前全部设置并立即生效，是否继续？</source>
+        <translation>导入会覆盖当前全部设置并立即生效，是否继续？</translation>
+    </message>
+    <message>
+        <source>配置写入失败。</source>
+        <translation>配置写入失败。</translation>
+    </message>
+    <message>
+        <source>配置已导入并立即生效。</source>
+        <translation>配置已导入并立即生效。</translation>
+    </message>
+    <message>
+        <source>界面语言将在下次启动应用后生效。</source>
+        <translation>界面语言将在下次启动应用后生效。</translation>
+    </message>
 </context>
 <context>
     <name>TextEditorWindow</name>
@@ -1055,14 +1133,14 @@
         <source>找不到可用的系统监视器或终端模拟器。
 %1
 
-可安装 gnome-system-monitor / plasma-systemmonitor / ksysguard /
+可安装 resources / gnome-system-monitor / plasma-systemmonitor / ksysguard /
 xfce4-taskmanager / mate-system-monitor / lxtask / qps /
 deepin-system-monitor（或 htop/… + 终端），
 也可在「设置 → 系统监视器」里指定命令。</source>
         <translation>找不到可用的系统监视器或终端模拟器。
 %1
 
-可安装 gnome-system-monitor / plasma-systemmonitor / ksysguard /
+可安装 resources / gnome-system-monitor / plasma-systemmonitor / ksysguard /
 xfce4-taskmanager / mate-system-monitor / lxtask / qps /
 deepin-system-monitor（或 htop/… + 终端），
 也可在「设置 → 系统监视器」里指定命令。</translation>

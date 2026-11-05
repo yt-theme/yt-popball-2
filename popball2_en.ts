@@ -900,6 +900,84 @@ To avoid running dangerous commands, this item was NOT saved; everything else wa
 
 This only fills the defaults back into this window; click Apply or OK to actually apply them.</translation>
     </message>
+    <message>
+        <source>配置备份</source>
+        <translation>Config backup</translation>
+    </message>
+    <message>
+        <source>导出全部设置到 JSON 文件，可备份或迁移到其他设备；导入会覆盖当前设置。</source>
+        <translation>Export all settings to a JSON file for backup or migration; importing overwrites the current settings.</translation>
+    </message>
+    <message>
+        <source>导出到 JSON</source>
+        <translation>Export to JSON</translation>
+    </message>
+    <message>
+        <source>从 JSON 导入</source>
+        <translation>Import from JSON</translation>
+    </message>
+    <message>
+        <source>导出配置</source>
+        <translation>Export configuration</translation>
+    </message>
+    <message>
+        <source>JSON 文件 (*.json)</source>
+        <translation>JSON files (*.json)</translation>
+    </message>
+    <message>
+        <source>导出失败</source>
+        <translation>Export failed</translation>
+    </message>
+    <message>
+        <source>无法写入文件：
+%1</source>
+        <translation>Cannot write file:
+%1</translation>
+    </message>
+    <message>
+        <source>已导出到：
+%1</source>
+        <translation>Exported to:
+%1</translation>
+    </message>
+    <message>
+        <source>导入配置</source>
+        <translation>Import configuration</translation>
+    </message>
+    <message>
+        <source>导入失败</source>
+        <translation>Import failed</translation>
+    </message>
+    <message>
+        <source>无法读取文件：
+%1</source>
+        <translation>Cannot read file:
+%1</translation>
+    </message>
+    <message>
+        <source>文件格式不正确，不是有效的配置 JSON。</source>
+        <translation>Invalid file format: not a valid configuration JSON.</translation>
+    </message>
+    <message>
+        <source>文件里没有可用的配置项。</source>
+        <translation>The file contains no usable configuration items.</translation>
+    </message>
+    <message>
+        <source>导入会覆盖当前全部设置并立即生效，是否继续？</source>
+        <translation>Importing will overwrite all current settings and take effect immediately. Continue?</translation>
+    </message>
+    <message>
+        <source>配置写入失败。</source>
+        <translation>Failed to write configuration.</translation>
+    </message>
+    <message>
+        <source>配置已导入并立即生效。</source>
+        <translation>Configuration imported and applied.</translation>
+    </message>
+    <message>
+        <source>界面语言将在下次启动应用后生效。</source>
+        <translation>The interface language will take effect after restarting the app.</translation>
+    </message>
 </context>
 <context>
     <name>TextEditorWindow</name>
@@ -1052,14 +1130,14 @@ Make sure it is an executable command or program path (you can use "Choose progr
         <source>找不到可用的系统监视器或终端模拟器。
 %1
 
-可安装 gnome-system-monitor / plasma-systemmonitor / ksysguard /
+可安装 resources / gnome-system-monitor / plasma-systemmonitor / ksysguard /
 xfce4-taskmanager / mate-system-monitor / lxtask / qps /
 deepin-system-monitor（或 htop/… + 终端），
 也可在「设置 → 系统监视器」里指定命令。</source>
         <translation>No usable system monitor or terminal emulator found.
 %1
 
-You can install gnome-system-monitor / plasma-systemmonitor / ksysguard /
+You can install resources / gnome-system-monitor / plasma-systemmonitor / ksysguard /
 xfce4-taskmanager / mate-system-monitor / lxtask / qps /
 deepin-system-monitor (or htop/… + a terminal), or set a command in Settings → System Monitor.</translation>
     </message>

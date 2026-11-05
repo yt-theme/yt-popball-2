@@ -3,6 +3,7 @@
 
 #include <QSettings>
 #include <QString>
+#include <QVariantMap>
 #include <QFile>
 #include <QDebug>
 #include <QDir>
@@ -112,6 +113,12 @@ public:
     bool checkOrCreateConfig();
     // get arg value
     void readConfig();
+
+    // ########### export / import ###########
+    // 导出全部配置键值（用于 JSON 备份）
+    QVariantMap exportSettings() const;
+    // 导入配置：只写入当前配置文件里已知的键，忽略未知键；写入后重读缓存
+    bool importSettings(const QVariantMap &values);
 
     // ########### write to config #############
     void setX(qint32 val);

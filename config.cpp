@@ -28,6 +28,33 @@ Config::~Config()
     delete this->settingsObj;
 }
 
+QVariantMap Config::exportSettings() const
+{
+    QVariantMap out;
+    if (this->settingsObj == nullptr)
+        return out;
+    for (const QString &key : this->settingsObj->allKeys())
+        out.insert(key, this->settingsObj->value(key));
+    return out;
+}
+
+bool Config::importSettings(const QVariantMap &values)
+{
+    if (this->settingsObj == nullptr || values.isEmpty())
+        return false;
+    // 以当前配置文件已有的键作为白名单：导入文件里多出来的键一律忽略，
+    // 避免 JSON 被塞入任意 QSettings 键。
+    const QStringList known = this->settingsObj->allKeys();
+    for (auto it = values.constBegin(); it != values.constEnd(); ++it) {
+        if (!known.contains(it.key()))
+            continue;
+        this->settingsObj->setValue(it.key(), it.value());
+    }
+    this->settingsObj->sync();
+    this->readConfig();
+    return true;
+}
+
 // check config file isExists and create
 bool Config::checkOrCreateConfig()
 {

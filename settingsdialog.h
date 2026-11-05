@@ -84,6 +84,8 @@ private slots:
     void onOk();
     void onCancel();
     void onRestoreDefault();
+    void exportConfigToJson();
+    void importConfigFromJson();
 
 private:
     struct ColorRow {
@@ -115,6 +117,7 @@ private:
     QWidget *buildChartSection();
     QWidget *buildAdvancedSection();
     QWidget *buildMonitorSection();
+    QWidget *buildBackupSection();
     QWidget *buildDockSection();
     QWidget *buildGeneralSection();
 

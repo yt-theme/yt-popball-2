@@ -1858,16 +1858,20 @@ static bool launchInTerminal(const QString &program)
 }
 
 // 桌面监视器找不到（很可能装的是 Flatpak 版）时的 Flatpak 包名映射。
-static const QHash<QString, QString> &flatpakMonitorMap()
+// 一个程序可能有多个历史 App ID，按顺序尝试。
+static const QHash<QString, QStringList> &flatpakMonitorMap()
 {
-    static const QHash<QString, QString> m = {
-        { QStringLiteral("gnome-system-monitor"), QStringLiteral("org.gnome.SystemMonitor") },
-        { QStringLiteral("plasma-systemmonitor"), QStringLiteral("org.kde.systemmonitor") },
-        { QStringLiteral("systemmonitor"),         QStringLiteral("org.kde.systemmonitor") },
-        { QStringLiteral("ksysguard"),             QStringLiteral("org.kde.ksysguard") },
-        { QStringLiteral("xfce4-taskmanager"),     QStringLiteral("org.xfce.xtaskmanager") },
-        { QStringLiteral("mate-system-monitor"),   QStringLiteral("org.mate.SystemMonitor") },
-        { QStringLiteral("lxtask"),                QStringLiteral("org.lxde.lxtask") },
+    static const QHash<QString, QStringList> m = {
+        { QStringLiteral("gnome-system-monitor"), { QStringLiteral("org.gnome.SystemMonitor") } },
+        // GNOME 50+ / Ubuntu 26.04 起，默认系统监视器由系统监视器换成 Resources
+        { QStringLiteral("resources"),            { QStringLiteral("org.gnome.Resources"),
+                                                     QStringLiteral("net.nokyan.Resources") } },
+        { QStringLiteral("plasma-systemmonitor"), { QStringLiteral("org.kde.systemmonitor") } },
+        { QStringLiteral("systemmonitor"),         { QStringLiteral("org.kde.systemmonitor") } },
+        { QStringLiteral("ksysguard"),             { QStringLiteral("org.kde.ksysguard") } },
+        { QStringLiteral("xfce4-taskmanager"),     { QStringLiteral("org.xfce.xtaskmanager") } },
+        { QStringLiteral("mate-system-monitor"),   { QStringLiteral("org.mate.SystemMonitor") } },
+        { QStringLiteral("lxtask"),                { QStringLiteral("org.lxde.lxtask") } },
     };
     return m;
 }
@@ -1875,8 +1879,8 @@ static const QHash<QString, QString> &flatpakMonitorMap()
 // PATH 里没有该监视器时，判断它是否以 Flatpak 方式安装并启动。
 static bool launchFlatpakMonitor(const QString &name, QString *errMsg)
 {
-    const QString appId = flatpakMonitorMap().value(name);
-    if (appId.isEmpty())
+    const QStringList appIds = flatpakMonitorMap().value(name);
+    if (appIds.isEmpty())
         return false;
     if (QStandardPaths::findExecutable(QStringLiteral("flatpak")).isEmpty())
         return false;
@@ -1897,10 +1901,13 @@ static bool launchFlatpakMonitor(const QString &name, QString *errMsg)
                 cached << s;
         }
     }
-    if (!cached.contains(appId))
-        return false;
-    return launchMonitorOnce(QStringLiteral("flatpak:") + appId,
-                             QStringLiteral("flatpak"), { QStringLiteral("run"), appId }, errMsg);
+    for (const QString &appId : appIds) {
+        if (!cached.contains(appId))
+            continue;
+        return launchMonitorOnce(QStringLiteral("flatpak:") + appId,
+                                 QStringLiteral("flatpak"), { QStringLiteral("run"), appId }, errMsg);
+    }
+    return false;
 }
 
 // 按名字启动一个 GUI 监视器：优先 PATH，找不到再试 Flatpak 版。
@@ -1974,12 +1981,17 @@ void Widget::onMenuSystemMonitor()
         specific = { QStringLiteral("deepin-system-monitor") };
     else if (joined.contains(QLatin1String("cinnamon")))
         specific = { QStringLiteral("gnome-system-monitor") };
-    // else：GNOME / Unity / Budgie / Pantheon / GNOME Flashback 及纯 WM，首选留空
+    else if (joined.contains(QLatin1String("gnome")) || joined.contains(QLatin1String("unity")) ||
+             joined.contains(QLatin1String("budgie")) || joined.contains(QLatin1String("pantheon")))
+        // GNOME 50+ / Ubuntu 26.04 起默认换成 Resources；老版本仍是 System Monitor。
+        specific = { QStringLiteral("resources"), QStringLiteral("gnome-system-monitor") };
+    // else：纯 WM 等无法判断的桌面，首选留空，交给下面的兜底列表
 
     // 桌面和“实际装了哪个”未必一致（如用 LXDE 却只装 gnome-system-monitor）。
     // 把“首选”之外的所有已知 GUI 监视器追加进去兜底 —— 哪个装了用哪个。
     const QStringList pool = {
         QStringLiteral("gnome-system-monitor"),
+        QStringLiteral("resources"),
         QStringLiteral("plasma-systemmonitor"),
         QStringLiteral("systemmonitor"),
         QStringLiteral("ksysguard"),
@@ -2015,7 +2027,7 @@ void Widget::onMenuSystemMonitor()
         qWarning() << "未找到可用的系统监视器或终端." << err;
         QMessageBox::warning(this, tr("系统监视器"),
             tr("找不到可用的系统监视器或终端模拟器。\n%1\n\n"
-               "可安装 gnome-system-monitor / plasma-systemmonitor / ksysguard /\n"
+               "可安装 resources / gnome-system-monitor / plasma-systemmonitor / ksysguard /\n"
                "xfce4-taskmanager / mate-system-monitor / lxtask / qps /\n"
                "deepin-system-monitor（或 htop/… + 终端），\n"
                "也可在「设置 → 系统监视器」里指定命令。").arg(err));

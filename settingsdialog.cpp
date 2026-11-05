@@ -20,6 +20,11 @@
 #include <QtGlobal>
 #include <QFileDialog>
 #include <QStandardPaths>
+#include <QFile>
+#include <QDir>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QJsonParseError>
 #include <QRadioButton>
 #include <QListWidget>
 #include <QStackedWidget>
@@ -377,9 +382,9 @@ void SettingsDialog::buildUi()
     stack->addWidget(makePage({ buildShowSection() }));
     // 4 数据中转站
     stack->addWidget(makePage({ buildDockSection() }));
-    // 5 通用：语言 + 高级 + 系统监视器
-    stack->addWidget(makePage({ buildGeneralSection(), buildAdvancedSection(),
-                                buildMonitorSection() }));
+    // 5 通用：语言 + 配置备份 + 高级 + 系统监视器
+    stack->addWidget(makePage({ buildGeneralSection(), buildBackupSection(),
+                                buildAdvancedSection(), buildMonitorSection() }));
 
     const QStringList cats = {
         tr("外观"), tr("悬浮球"), tr("监控项"), tr("数据中转站"), tr("通用") };
@@ -1058,7 +1063,119 @@ QWidget *SettingsDialog::buildDockSection()
     return box;
 }
 
-// 数据中转站弹窗的入口说明
+QWidget *SettingsDialog::buildBackupSection()
+{
+    auto *box = new QWidget(this);
+    auto *v = new QVBoxLayout(box);
+    v->setContentsMargins(0, 0, 0, 0);
+    v->setSpacing(8);
+
+    auto *g = new QLabel(tr("配置备份"), box);
+    g->setProperty("section", "group");
+    v->addWidget(g);
+
+    auto *hint = new QLabel(tr("导出全部设置到 JSON 文件，可备份或迁移到其他设备；导入会覆盖当前设置。"), box);
+    hint->setProperty("role", "hint");
+    hint->setWordWrap(true);
+    v->addWidget(hint);
+
+    auto *row = new QHBoxLayout();
+    row->setSpacing(8);
+    auto *btnExport = new QPushButton(tr("导出到 JSON"), box);
+    auto *btnImport = new QPushButton(tr("从 JSON 导入"), box);
+    btnExport->setCursor(Qt::PointingHandCursor);
+    btnImport->setCursor(Qt::PointingHandCursor);
+    row->addWidget(btnExport);
+    row->addWidget(btnImport);
+    row->addStretch(1);
+    v->addLayout(row);
+
+    connect(btnExport, &QPushButton::clicked, this, &SettingsDialog::exportConfigToJson);
+    connect(btnImport, &QPushButton::clicked, this, &SettingsDialog::importConfigFromJson);
+    return box;
+}
+
+void SettingsDialog::exportConfigToJson()
+{
+    const QString docs = QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation);
+    const QString dir = docs.isEmpty() ? QDir::homePath() : docs;
+    const QString path = QFileDialog::getSaveFileName(
+        this, tr("导出配置"), QDir(dir).absoluteFilePath(QStringLiteral("popball2-config.json")),
+        tr("JSON 文件 (*.json)"));
+    if (path.isEmpty())
+        return;
+
+    QFile f(path);
+    if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+        QMessageBox::warning(this, tr("导出失败"),
+                             tr("无法写入文件：\n%1").arg(f.errorString()));
+        return;
+    }
+    QJsonObject root;
+    root.insert(QStringLiteral("app"), QStringLiteral("yt-popball2"));
+    root.insert(QStringLiteral("version"), 1);
+    root.insert(QStringLiteral("config"), QJsonObject::fromVariantMap(this->cfg->exportSettings()));
+    f.write(QJsonDocument(root).toJson(QJsonDocument::Indented));
+    f.close();
+
+    QMessageBox::information(this, tr("导出配置"), tr("已导出到：\n%1").arg(path));
+}
+
+void SettingsDialog::importConfigFromJson()
+{
+    const QString docs = QStandardPaths::writableLocation(QStandardPaths::DocumentsLocation);
+    const QString dir = docs.isEmpty() ? QDir::homePath() : docs;
+    const QString path = QFileDialog::getOpenFileName(
+        this, tr("导入配置"), dir, tr("JSON 文件 (*.json)"));
+    if (path.isEmpty())
+        return;
+
+    QFile f(path);
+    if (!f.open(QIODevice::ReadOnly)) {
+        QMessageBox::warning(this, tr("导入失败"),
+                             tr("无法读取文件：\n%1").arg(f.errorString()));
+        return;
+    }
+    QJsonParseError err;
+    const QJsonDocument doc = QJsonDocument::fromJson(f.readAll(), &err);
+    f.close();
+    if (err.error != QJsonParseError::NoError || !doc.isObject()) {
+        QMessageBox::warning(this, tr("导入失败"),
+                             tr("文件格式不正确，不是有效的配置 JSON。"));
+        return;
+    }
+
+    // 兼容两种结构：{"config":{...}} 或直接就是键值对象
+    const QJsonObject root = doc.object();
+    const QJsonObject cfgObj = root.value(QStringLiteral("config")).isObject()
+        ? root.value(QStringLiteral("config")).toObject() : root;
+    const QVariantMap values = cfgObj.toVariantMap();
+    if (values.isEmpty()) {
+        QMessageBox::warning(this, tr("导入失败"), tr("文件里没有可用的配置项。"));
+        return;
+    }
+
+    const QMessageBox::StandardButton r = QMessageBox::question(
+        this, tr("导入配置"), tr("导入会覆盖当前全部设置并立即生效，是否继续？"),
+        QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
+    if (r != QMessageBox::Yes)
+        return;
+
+    const int oldLang = this->cfg->getLanguage();
+    if (!this->cfg->importSettings(values)) {
+        QMessageBox::warning(this, tr("导入失败"), tr("配置写入失败。"));
+        return;
+    }
+
+    this->loadFromConfig();
+    emit this->settingsApplied();
+
+    QString msg = tr("配置已导入并立即生效。");
+    if (this->cfg->getLanguage() != oldLang)
+        msg += QStringLiteral("\n") + tr("界面语言将在下次启动应用后生效。");
+    QMessageBox::information(this, tr("导入配置"), msg);
+}
+
 QWidget *SettingsDialog::buildMonitorSection()
 {
     auto *box = new QWidget(this);
