@@ -5,6 +5,8 @@
 #endif
 
 #include <QApplication>
+#include <QToolTip>
+#include <QHelpEvent>
 #include <QButtonGroup>
 #include <QClipboard>
 #include <QCryptographicHash>
@@ -3799,6 +3801,25 @@ void PopDock::leaveEvent(QEvent *event)
 
 bool PopDock::eventFilter(QObject *watched, QEvent *e)
 {
+    // 进程列表名称列被省略成「…」时，悬停显示完整名称
+    if (e->type() == QEvent::ToolTip && this->m_procTable != nullptr &&
+        watched == this->m_procTable->viewport()) {
+        auto *he = static_cast<QHelpEvent *>(e);
+        const QModelIndex idx = this->m_procTable->indexAt(he->pos());
+        if (idx.isValid() && idx.column() == kProcColName) {
+            const QTableWidgetItem *it = this->m_procTable->item(idx.row(), kProcColName);
+            const QString full = it != nullptr ? it->text() : QString();
+            const int avail = this->m_procTable->visualRect(idx).width() - 12;  // 去掉 6px×2 内边距
+            if (!full.isEmpty() && avail > 0 &&
+                QFontMetrics(this->m_procTable->font()).horizontalAdvance(full) > avail) {
+                QToolTip::showText(he->globalPos(), full, this->m_procTable->viewport());
+                return true;
+            }
+        }
+        QToolTip::hideText();
+        return true;
+    }
+
     if (e->type() == QEvent::Enter) {
         emit mouseEntered();
         return false;
