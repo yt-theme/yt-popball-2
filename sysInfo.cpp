@@ -18,6 +18,9 @@
 #if defined(Q_OS_MACOS)
 #include <IOKit/IOKitLib.h>
 #include <CoreFoundation/CoreFoundation.h>
+#include <QThread>
+#include <QTimer>
+#include <functional>
 #endif
 
 /* =====================================================================================
@@ -431,9 +434,10 @@ double smcParseTemp(const char *type, unsigned int size, const unsigned char *b)
 }
 
 // 枚举 SMC 全部键，挑出 CPU 温度相关的键（只需在启动时做一次）
-QList<quint32> smcDiscoverCpuTempKeys(io_connect_t conn)
+// 顺带把每个键的 dataSize / dataType 缓存下来，采样时就不必再逐键查键信息。
+QList<SmcTempKey> smcDiscoverCpuTempKeys(io_connect_t conn)
 {
-    QList<quint32> keys;
+    QList<SmcTempKey> keys;
 
     const quint32 keyCount = smcKeyFromStr("#KEY");
     unsigned int  ksize    = 0;
@@ -478,24 +482,24 @@ QList<quint32> smcDiscoverCpuTempKeys(io_connect_t conn)
             continue;
         if (size != 4 && size != 2)
             continue;
-        keys.append(out.key);
+        SmcTempKey e;
+        e.key = out.key;
+        e.size = size;
+        memcpy(e.type, type, sizeof(e.type));
+        keys.append(e);
     }
     return keys;
 }
 
-// 读取所有候选键，取最大值作为 CPU 温度
-bool smcReadCpuTemperature(io_connect_t conn, const QList<quint32> &keys, double *outTemp)
+// 读取候选键（size/type 已缓存），取最大值作为温度
+bool smcReadCpuTemperature(io_connect_t conn, const QList<SmcTempKey> &keys, double *outTemp)
 {
     double best = -1.0;
-    for (quint32 k : keys) {
-        unsigned int size = 0;
-        char type[5] = {0};
-        if (!smcKeyInfo(conn, k, &size, type))
-            continue;
+    for (const SmcTempKey &k : keys) {
         unsigned char buf[32] = {0};
-        if (!smcReadBytes(conn, k, size, buf))
+        if (!smcReadBytes(conn, k.key, k.size, buf))
             continue;
-        const double v = smcParseTemp(type, size, buf);
+        const double v = smcParseTemp(k.type, k.size, buf);
         if (v > 0.0 && v < 150.0 && v > best)
             best = v;
     }
@@ -504,6 +508,47 @@ bool smcReadCpuTemperature(io_connect_t conn, const QList<quint32> &keys, double
     *outTemp = best;
     return true;
 }
+
+// 温度采样器：跑在独立线程里周期性读 SMC，结果投递回 UI 线程。
+// SMC 每次读都要走一次 mach IPC，系统繁忙时可能阻塞很久，所以绝不能放在 UI 线程。
+class SmcTempPoller : public QObject
+{
+public:
+    SmcTempPoller(io_connect_t conn, const QList<SmcTempKey> &cpuKeys,
+                  const QList<SmcTempKey> &gpuKeys,
+                  std::function<void(double, double, bool, bool)> cb)
+        : m_conn(conn), m_cpuKeys(cpuKeys), m_gpuKeys(gpuKeys), m_cb(std::move(cb)) {}
+
+    void begin()   // 必须在采样线程里调用
+    {
+        m_timer = new QTimer(this);
+        m_timer->setInterval(1000);   // 温度变化慢，1 秒一次足够
+        QObject::connect(m_timer, &QTimer::timeout, this, [this]() { poll(); });
+        m_timer->start();
+        poll();                       // 启动后先给首帧一个值
+    }
+
+private:
+    void poll()
+    {
+        double cpu = 0.0, gpu = 0.0;
+        const bool cpuOk = smcReadCpuTemperature(m_conn, m_cpuKeys, &cpu);
+        const bool gpuOk = smcReadCpuTemperature(m_conn, m_gpuKeys, &gpu);
+        if (QCoreApplication *app = QCoreApplication::instance()) {
+            QMetaObject::invokeMethod(app,
+                [cb = m_cb, cpu, gpu, cpuOk, gpuOk]() {
+                    if (cb) cb(cpu, gpu, cpuOk, gpuOk);
+                },
+                Qt::QueuedConnection);
+        }
+    }
+
+    io_connect_t      m_conn;
+    QList<SmcTempKey> m_cpuKeys;
+    QList<SmcTempKey> m_gpuKeys;
+    std::function<void(double, double, bool, bool)> m_cb;
+    QTimer           *m_timer = nullptr;
+};
 
 // ---------------------------------------------------------------------------------------
 //  macOS：GPU 占用率（IOAccelerator 的 PerformanceStatistics）
@@ -561,9 +606,9 @@ double macReadGpuUtilization(QString *nameOut)
 
 // GPU 温度键：T 开头、第二个字符为 G/g（Intel 独显 TG0D/TG0P、AMD TG@D/TGGC、
 // Apple Silicon 若暴露 Tg.. 也会被捕获）。与 CPU 键（TC/Tp/Te/Tc）不冲突。
-QList<quint32> smcDiscoverGpuTempKeys(io_connect_t conn)
+QList<SmcTempKey> smcDiscoverGpuTempKeys(io_connect_t conn)
 {
-    QList<quint32> keys;
+    QList<SmcTempKey> keys;
     const quint32 keyCount = smcKeyFromStr("#KEY");
     unsigned int  ksize = 0;
     char          ktype[5] = {0};
@@ -596,7 +641,11 @@ QList<quint32> smcDiscoverGpuTempKeys(io_connect_t conn)
             continue;
         if (size != 4 && size != 2)
             continue;
-        keys.append(out.key);
+        SmcTempKey e;
+        e.key = out.key;
+        e.size = size;
+        memcpy(e.type, type, sizeof(e.type));
+        keys.append(e);
     }
     return keys;
 }
@@ -1357,6 +1406,25 @@ SysInfo::SysInfo()
 {
     this->checkTemperatorFilePath();
     this->updateSysinfo();
+
+#if defined(Q_OS_MACOS)
+    // 温度采样放到独立线程：SMC 的 mach IPC 跑在 UI 线程上会让弹窗和悬浮球周期性卡住。
+    if (this->_smcOpen && (!this->_smcCpuKeys.isEmpty() || !this->_smcGpuKeys.isEmpty())) {
+        this->_smcThread = new QThread;
+        this->_smcThread->setObjectName(QStringLiteral("SmcTempPoller"));
+        SmcTempPoller *poller = new SmcTempPoller(
+            static_cast<io_connect_t>(this->_smcConn), this->_smcCpuKeys, this->_smcGpuKeys,
+            [this](double cpu, double gpu, bool cpuOk, bool gpuOk) {
+                this->applySmcTemps(cpu, gpu, cpuOk, gpuOk);
+            });
+        this->_smcPoller = poller;
+        poller->moveToThread(this->_smcThread);
+        QObject::connect(this->_smcThread, &QThread::started, poller,
+                         [poller]() { poller->begin(); });
+        QObject::connect(this->_smcThread, &QThread::finished, poller, &QObject::deleteLater);
+        this->_smcThread->start();
+    }
+#endif
 }
 
 SysInfo::~SysInfo()
@@ -1368,7 +1436,18 @@ SysInfo::~SysInfo()
     }
 #endif
 #if defined(Q_OS_MACOS)
-    if (this->_smcOpen && this->_smcConn) {
+    // 先停采样线程（它可能正在读 SMC），再关连接
+    bool workerStopped = true;
+    if (this->_smcThread != nullptr) {
+        this->_smcThread->quit();
+        workerStopped = this->_smcThread->wait(5000);
+        if (workerStopped) {          // 线程已退出才可销毁它
+            delete this->_smcThread;
+        }                             // 极端情况下 SMC 卡死：宁可退出时泄漏，也不跨线程销毁运行中的线程
+        this->_smcThread = nullptr;
+        this->_smcPoller = nullptr;   // 由 deleteLater 在线程退出前销毁
+    }
+    if (workerStopped && this->_smcOpen && this->_smcConn) {
         IOServiceClose(static_cast<io_connect_t>(this->_smcConn));
         this->_smcConn = 0;
         this->_smcOpen = false;
@@ -1779,16 +1858,9 @@ void SysInfo::updateSysinfo()
     this->memOk  = (memoryInfo.mem_total  > 0);
     this->swapOk = (memoryInfo.swap_total > 0);
 
-    // ---------------------------------------------------------------------- CPU 温度
-    double temp = 0.0;
-    if (this->_smcOpen && !this->_smcCpuKeys.isEmpty()
-        && smcReadCpuTemperature(static_cast<io_connect_t>(this->_smcConn), this->_smcCpuKeys, &temp)) {
-        this->cpuTemperature   = temp;
-        this->cpuTemperatureOk = true;
-    } else {
-        this->cpuTemperature   = 0.0;
-        this->cpuTemperatureOk = false;
-    }
+    // ---------------------------------------------------------------------- CPU / GPU 温度
+    // 温度由后台线程（SmcTempPoller）每秒采一次后写回，这里不再做 SMC 读取：
+    // 80 个温度键 × 2 次 mach IPC 放在 UI 线程上会让弹窗和悬浮球周期性卡住。
 
     // ---------------------------------------------------------------------- GPU 占用率
     {
@@ -1804,18 +1876,7 @@ void SysInfo::updateSysinfo()
         }
     }
     // ---------------------------------------------------------------------- GPU 温度
-    {
-        double gt = 0.0;
-        if (this->_smcOpen && !this->_smcGpuKeys.isEmpty()
-            && smcReadCpuTemperature(static_cast<io_connect_t>(this->_smcConn),
-                                     this->_smcGpuKeys, &gt)) {
-            this->gpuTemperature   = gt;
-            this->gpuTemperatureOk = true;
-        } else {
-            this->gpuTemperature   = 0.0;
-            this->gpuTemperatureOk = false;
-        }
-    }
+    // 同 CPU 温度：交给 SmcTempPoller 在后台线程采样，这里不再直接读 SMC。
 
     // ---------------------------------------------------------------------- CPU 频率
     {   // Intel Mac 可用；Apple Silicon 无公开接口
@@ -1966,6 +2027,15 @@ void SysInfo::updateSysinfo()
     }
 
     this->lastUpdateTime = QDateTime::currentMSecsSinceEpoch();
+}
+
+// 后台温度线程把最新读数写回（在 UI 线程执行）
+void SysInfo::applySmcTemps(double cpu, double gpu, bool cpuOk, bool gpuOk)
+{
+    this->cpuTemperature   = cpuOk ? cpu : 0.0;
+    this->cpuTemperatureOk = cpuOk;
+    this->gpuTemperature   = gpuOk ? gpu : 0.0;
+    this->gpuTemperatureOk = gpuOk;
 }
 
 #endif // Q_OS_MACOS

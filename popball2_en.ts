@@ -225,6 +225,42 @@
         <source>文本 · %1 字</source>
         <translation>Text · %1 char(s)</translation>
     </message>
+    <message>
+        <source>打开文件位置</source>
+        <translation>Open file location</translation>
+    </message>
+    <message>
+        <source>结束进程</source>
+        <translation>End process</translation>
+    </message>
+    <message>
+        <source>无法获取进程「%1」(PID %2) 的可执行文件路径。</source>
+        <translation>Cannot get the executable path of process "%1" (PID %2).</translation>
+    </message>
+    <message>
+        <source>找不到可用的文件管理器、终端或文本编辑器。
+文件路径：
+%1</source>
+        <translation>No usable file manager, terminal, or text editor found.
+File path:
+%1</translation>
+    </message>
+    <message>
+        <source>确定结束进程「%1」(PID %2)？
+该进程未保存的数据可能丢失。</source>
+        <translation>End process "%1" (PID %2)?
+Unsaved data in this process may be lost.</translation>
+    </message>
+    <message>
+        <source>结束进程失败</source>
+        <translation>Failed to end process</translation>
+    </message>
+    <message>
+        <source>无法结束进程「%1」(PID %2)：
+%3</source>
+        <translation>Cannot end process "%1" (PID %2):
+%3</translation>
+    </message>
 </context>
 <context>
     <name>PreviewPopup</name>

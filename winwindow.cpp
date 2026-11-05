@@ -83,4 +83,38 @@ bool popballWinFullscreenAppActive()
         && r.right >= m.right && r.bottom >= m.bottom;
 }
 
+QString popballWinProcessPath(qint64 pid)
+{
+    if (pid <= 0)
+        return QString();
+    HANDLE h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE,
+                           static_cast<DWORD>(pid));
+    if (h == nullptr)
+        return QString();
+    WCHAR buf[32768];
+    DWORD len = static_cast<DWORD>(sizeof(buf) / sizeof(buf[0]));
+    QString out;
+    if (QueryFullProcessImageNameW(h, 0, buf, &len) != FALSE)
+        out = QString::fromWCharArray(buf, static_cast<int>(len));
+    CloseHandle(h);
+    return out;
+}
+
+bool popballWinTerminateProcess(qint64 pid, QString *errMsg)
+{
+    if (pid <= 0)
+        return false;
+    HANDLE h = OpenProcess(PROCESS_TERMINATE, FALSE, static_cast<DWORD>(pid));
+    if (h == nullptr) {
+        if (errMsg != nullptr)
+            *errMsg = QStringLiteral("Win32 error %1").arg(GetLastError());
+        return false;
+    }
+    const BOOL ok = TerminateProcess(h, 1);
+    if (ok == FALSE && errMsg != nullptr)
+        *errMsg = QStringLiteral("Win32 error %1").arg(GetLastError());
+    CloseHandle(h);
+    return ok != FALSE;
+}
+
 #endif // Q_OS_WIN

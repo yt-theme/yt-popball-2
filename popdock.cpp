@@ -2,9 +2,23 @@
 
 #if defined(Q_OS_LINUX)
 #  include "linuxwindow.h"     // Xorg / Wayland 窗口层级适配
+#elif defined(Q_OS_MACOS)
+#  include "macwindow.h"       // 进程可执行文件路径
+#elif defined(Q_OS_WIN)
+#  include "winwindow.h"       // 进程可执行文件路径 / 结束进程
 #endif
 
+#if defined(Q_OS_LINUX) || defined(Q_OS_MACOS)
+#  include <signal.h>
+#  include <sys/types.h>
+#  include <errno.h>
+#  include <string.h>
+#endif
+
+#include <QScopeGuard>
+#include <QThread>
 #include <QApplication>
+#include <QAction>
 #include <QToolTip>
 #include <QHelpEvent>
 #include <QButtonGroup>
@@ -15,6 +29,7 @@
 #include <QContextMenuEvent>
 #include <QDir>
 #include <QFile>
+#include <QMessageBox>
 #ifdef POPBALL2_HAVE_QT_SVG
 #include <QSvgRenderer>
 #endif
@@ -163,6 +178,189 @@ static constexpr int kProcColCpu  = 1;
 static constexpr int kProcColGpu  = 2;
 static constexpr int kProcColMem  = 3;
 
+// ---------------- 进程定位 / 结束相关（跨平台） ----------------
+
+#if defined(Q_OS_LINUX)
+// 运行并等待结束（用于需要知道成功与否的场景，比如 dbus-send / xdg-open）。
+static bool runAndWait(const QString &program, const QStringList &args, int timeoutMs)
+{
+    QProcess p;
+    p.start(program, args);
+    if (!p.waitForStarted(800))
+        return false;
+    if (!p.waitForFinished(timeoutMs))
+        return false;
+    return p.exitStatus() == QProcess::NormalExit && p.exitCode() == 0;
+}
+#endif
+
+// 进程可执行文件路径；拿不到时返回空。
+static QString processExecPath(qint64 pid)
+{
+    if (pid <= 0)
+        return QString();
+#if defined(Q_OS_LINUX)
+    const QString link = QStringLiteral("/proc/%1/exe").arg(pid);
+    const QString target = QFile::symLinkTarget(link);
+    if (!target.isEmpty())
+        return target;
+    // 权限不足读不到 exe 时，退回 cmdline 的 argv0
+    QFile cmd(QStringLiteral("/proc/%1/cmdline").arg(pid));
+    if (cmd.open(QIODevice::ReadOnly)) {
+        const QString argv0 = QString::fromLocal8Bit(cmd.readAll())
+                                  .section(QLatin1Char('\0'), 0, 0);
+        if (argv0.startsWith(QLatin1Char('/')))
+            return argv0;
+    }
+    return QString();
+#elif defined(Q_OS_MACOS)
+    return popballMacProcessPath(pid);
+#elif defined(Q_OS_WIN)
+    return popballWinProcessPath(pid);
+#else
+    return QString();
+#endif
+}
+
+// 在文件管理器里定位文件。成功返回 true。
+static bool revealInFileManager(const QString &path)
+{
+    const QFileInfo fi(path);
+    const QString target = fi.exists() ? fi.absoluteFilePath() : fi.absolutePath();
+#if defined(Q_OS_MACOS)
+    return QProcess::startDetached(QStringLiteral("open"),
+                                   { QStringLiteral("-R"), target });
+#elif defined(Q_OS_WIN)
+    const QString native = QDir::toNativeSeparators(target);
+    if (fi.exists())
+        return QProcess::startDetached(QStringLiteral("explorer.exe"),
+                                       { QStringLiteral("/select,") + native });
+    return QProcess::startDetached(QStringLiteral("explorer.exe"), { native });
+#elif defined(Q_OS_LINUX)
+    // 1) 标准 FileManager1 接口：Nautilus / Dolphin / Nemo / Caja 等都支持，
+    //    不需要猜用户用的是哪个文件管理器。
+    if (fi.exists() && fi.isFile() &&
+        !QStandardPaths::findExecutable(QStringLiteral("dbus-send")).isEmpty()) {
+        const QString uri = QUrl::fromLocalFile(fi.absoluteFilePath()).toString();
+        if (runAndWait(QStringLiteral("dbus-send"),
+                       { QStringLiteral("--session"),
+                         QStringLiteral("--type=method_call"),
+                         QStringLiteral("--dest=org.freedesktop.FileManager1"),
+                         QStringLiteral("/org/freedesktop/FileManager1"),
+                         QStringLiteral("org.freedesktop.FileManager1.ShowItems"),
+                         QStringLiteral("array:string:") + uri,
+                         QStringLiteral("string:") },
+                       1500))
+            return true;
+    }
+    // 2) 直接调用各桌面自带的文件管理器
+    const QString folder = fi.absolutePath();
+    struct FmDef { const char *bin; bool select; };
+    const QList<FmDef> fms = {
+        { "nautilus",          true  },   // GNOME
+        { "dolphin",           true  },   // KDE
+        { "nemo",              false },   // Cinnamon
+        { "caja",              false },   // MATE
+        { "thunar",            false },   // XFCE
+        { "pcmanfm-qt",        false },   // LXQt
+        { "pcmanfm",           false },   // LXDE
+        { "peony",             false },   // UKUI
+        { "dde-file-manager",  false },   // Deepin
+    };
+    for (const FmDef &fm : fms) {
+        const QString exe = QStandardPaths::findExecutable(QString::fromLatin1(fm.bin));
+        if (exe.isEmpty())
+            continue;
+        if (fm.select) {
+            if (QProcess::startDetached(exe, { QStringLiteral("--select"), target }))
+                return true;
+        }
+        if (QProcess::startDetached(exe, { folder }))
+            return true;
+    }
+    // 3) 交给系统的默认处理
+    if (!QStandardPaths::findExecutable(QStringLiteral("xdg-open")).isEmpty())
+        return runAndWait(QStringLiteral("xdg-open"), { folder }, 2000);
+    return false;
+#else
+    return false;
+#endif
+}
+
+// 在终端里打开某个目录。成功返回 true。
+static bool openTerminalAt(const QString &dir)
+{
+#if defined(Q_OS_MACOS)
+    return QProcess::startDetached(QStringLiteral("open"),
+                                   { QStringLiteral("-a"), QStringLiteral("Terminal"), dir });
+#elif defined(Q_OS_WIN)
+    const QString nativeDir = QDir::toNativeSeparators(dir);
+    if (!QStandardPaths::findExecutable(QStringLiteral("wt.exe")).isEmpty())
+        return QProcess::startDetached(QStringLiteral("wt.exe"),
+                                       { QStringLiteral("-d"), nativeDir });
+    return QProcess::startDetached(
+        QStringLiteral("cmd.exe"),
+        { QStringLiteral("/c"), QStringLiteral("start"), QString(),
+          QStringLiteral("cmd.exe"), QStringLiteral("/k"),
+          QStringLiteral("cd"), QStringLiteral("/d"), nativeDir });
+#elif defined(Q_OS_LINUX)
+    struct TermDef { const char *bin; QStringList args; };
+    const QList<TermDef> terms = {
+        { "gnome-terminal", { QStringLiteral("--working-directory"), dir } },
+        { "konsole",        { QStringLiteral("--workdir"), dir } },
+        { "xfce4-terminal", { QStringLiteral("--working-directory"), dir } },
+        { "mate-terminal",  { QStringLiteral("--working-directory"), dir } },
+        { "lxterminal",     { QStringLiteral("--working-directory"), dir } },
+        { "tilix",          { QStringLiteral("--working-directory"), dir } },
+        { "terminator",     { QStringLiteral("--working-directory"), dir } },
+        { "kitty",          { QStringLiteral("--directory"), dir } },
+        { "alacritty",      { QStringLiteral("--working-directory"), dir } },
+        { "wezterm",        { QStringLiteral("start"), QStringLiteral("--cwd"), dir } },
+        { "qterminal",      { QStringLiteral("--workdir"), dir } },
+    };
+    for (const TermDef &t : terms) {
+        const QString exe = QStandardPaths::findExecutable(QString::fromLatin1(t.bin));
+        if (exe.isEmpty())
+            continue;
+        if (QProcess::startDetached(exe, t.args))
+            return true;
+    }
+    return false;
+#else
+    return false;
+#endif
+}
+
+// 用文本编辑器打开文件。成功返回 true。
+static bool openInTextEditor(const QString &path)
+{
+#if defined(Q_OS_MACOS)
+    return QProcess::startDetached(QStringLiteral("open"),
+                                   { QStringLiteral("-t"), path });
+#elif defined(Q_OS_WIN)
+    return QProcess::startDetached(QStringLiteral("notepad.exe"),
+                                   { QDir::toNativeSeparators(path) });
+#elif defined(Q_OS_LINUX)
+    const QStringList editors = {
+        QStringLiteral("gnome-text-editor"), QStringLiteral("gedit"),
+        QStringLiteral("kate"), QStringLiteral("kwrite"),
+        QStringLiteral("xed"), QStringLiteral("pluma"),
+        QStringLiteral("mousepad"), QStringLiteral("leafpad"),
+        QStringLiteral("code"),
+    };
+    for (const QString &name : editors) {
+        const QString exe = QStandardPaths::findExecutable(name);
+        if (exe.isEmpty())
+            continue;
+        if (QProcess::startDetached(exe, { path }))
+            return true;
+    }
+    return false;
+#else
+    return false;
+#endif
+}
+
 // ---------------- 小工具：人类可读的文件大小 ----------------
 static QString humanSize(qint64 bytes)
 {
@@ -196,6 +394,67 @@ static QByteArray imageToPng(const QImage &img)
     buf.open(QIODevice::WriteOnly);
     img.save(&buf, "PNG");
     return ba;
+}
+
+// 已编码好的 PNG 字节直接落临时文件（不再二次编码）。
+// 历史库里有原始 PNG，剪贴板里常常也原样带着 PNG —— 直接写字节能省掉
+// 一次整图编码（4K 截图编码一次要几百毫秒到秒级，正是弹窗"转圈"的来源）。
+static QString writeTempPng(const QByteArray &png)
+{
+    if (png.isEmpty())
+        return QString();
+    static quint64 seq = 0;
+    const QString dir =
+        QStandardPaths::writableLocation(QStandardPaths::TempLocation) + "/popball2";
+    QDir().mkpath(dir);
+    const QString p = dir + "/img_" +
+                      QString::number(QDateTime::currentMSecsSinceEpoch()) + "_" +
+                      QString::number(++seq) + ".png";
+    QFile f(p);
+    if (!f.open(QIODevice::WriteOnly))
+        return QString();
+    f.write(png);
+    f.close();
+    return p;
+}
+
+// 从大图快速做缩略图：先最近邻降到 2× 目标，再平滑收尾。
+// 直接对 4K 图做一次平滑缩放很贵（几十~上百毫秒），两步走画质足够、开销小得多。
+static QImage thumbImageFor(const QImage &img, int size)
+{
+    if (img.isNull())
+        return QImage();
+    if (img.width() <= size && img.height() <= size)
+        return img;
+    const QImage mid = img.scaled(size * 2, size * 2, Qt::KeepAspectRatio,
+                                  Qt::FastTransformation);
+    return mid.scaled(size, size, Qt::KeepAspectRatio, Qt::SmoothTransformation);
+}
+
+// 文件图标：按"后缀 / 类型"缓存。macOS 上 QFileIconProvider 走 LaunchServices，
+// 逐条调用在历史回填（几十条）时会明显卡顿；同后缀的图标本来就一样，缓存一次即可。
+// 目录与 .app 包按路径缓存（每个 App 的图标不同）。
+static QIcon cachedFileIcon(const QFileInfo &fi)
+{
+    static QFileIconProvider prov;
+    static QHash<QString, QIcon> cache;
+
+    const QString suffix = fi.suffix().toLower();
+    const bool perPath = fi.isDir() || suffix == QLatin1String("app");
+    const QString key = perPath ? QStringLiteral("/p/") + fi.absoluteFilePath()
+                                : QStringLiteral("/t/") + suffix;
+
+    auto it = cache.constFind(key);
+    if (it != cache.constEnd())
+        return it.value();
+
+    QIcon ic = prov.icon(fi);
+    if (ic.isNull())
+        ic = prov.icon(QFileIconProvider::File);
+    if (cache.size() > 300)
+        cache.clear();
+    cache.insert(key, ic);
+    return ic;
 }
 
 // 带尺寸读图片文件：只解码到需要的大小（几十兆的手机原图整张解码既慢又吃内存）。
@@ -436,32 +695,45 @@ private:
         const QFontMetrics fm(f);
         const int w = rect.width();
 
-        // 先按行宽折行，只取前 kIconLabelLines 行的范围
-        QVector<QPair<int, int>> segs;      // (起始下标, 长度)
-        QTextLayout lay(body, f);
-        QTextOption opt;
-        opt.setWrapMode(QTextOption::WrapAtWordBoundaryOrAnywhere);
-        lay.setTextOption(opt);
-        lay.beginLayout();
-        for (int i = 0; i < kIconLabelLines; ++i) {
-            QTextLine ln = lay.createLine();
-            if (!ln.isValid())
-                break;
-            ln.setLineWidth(w);
-            segs.append(qMakePair(ln.textStart(), ln.textLength()));
-        }
-        lay.endLayout();
-        if (segs.isEmpty())
-            return;
-
-        const int consumed = segs.last().first + segs.last().second;
+        // 折行结果缓存：滚动时同一批格子每帧都会重绘，不必每帧再跑一遍 QTextLayout
+        // 的文字整形（中文/中英混排尤其费时）。缓存键 = 行宽 + 正文。
+        const QString ck = QString::number(w) + QLatin1Char('|') + body;
         QStringList lines;
-        for (int i = 0; i < segs.size(); ++i) {
-            if (i == segs.size() - 1 && consumed < body.size())
-                lines << fm.elidedText(body.mid(segs[i].first), Qt::ElideRight, w);   // 还剩内容 → 省略
-            else
-                lines << body.mid(segs[i].first, segs[i].second);
+        auto hit = m_labelCache.constFind(ck);
+        if (hit != m_labelCache.constEnd()) {
+            lines = hit.value();
+        } else {
+            // 先按行宽折行，只取前 kIconLabelLines 行的范围
+            QVector<QPair<int, int>> segs;      // (起始下标, 长度)
+            QTextLayout lay(body, f);
+            QTextOption opt;
+            opt.setWrapMode(QTextOption::WrapAtWordBoundaryOrAnywhere);
+            lay.setTextOption(opt);
+            lay.beginLayout();
+            for (int i = 0; i < kIconLabelLines; ++i) {
+                QTextLine ln = lay.createLine();
+                if (!ln.isValid())
+                    break;
+                ln.setLineWidth(w);
+                segs.append(qMakePair(ln.textStart(), ln.textLength()));
+            }
+            lay.endLayout();
+
+            if (!segs.isEmpty()) {
+                const int consumed = segs.last().first + segs.last().second;
+                for (int i = 0; i < segs.size(); ++i) {
+                    if (i == segs.size() - 1 && consumed < body.size())
+                        lines << fm.elidedText(body.mid(segs[i].first), Qt::ElideRight, w);   // 还剩内容 → 省略
+                    else
+                        lines << body.mid(segs[i].first, segs[i].second);
+                }
+            }
+            if (m_labelCache.size() > 400)     // 防止条目不断变化时无限堆积
+                m_labelCache.clear();
+            m_labelCache.insert(ck, lines);
         }
+        if (lines.isEmpty())
+            return;
 
         const int lh = fm.lineSpacing();
         int y = rect.top() + (rect.height() - lh * lines.size()) / 2;
@@ -685,6 +957,8 @@ private:
     QColor m_accentColor = QColor::fromRgb(0x41, 0xB0, 0xDD);
     // 缩略图缓存：paint 是 const 的，所以这里用 mutable（内容与绘制结果无关的纯缓存）
     mutable QHash<QString, QPixmap> m_cache;
+    // 标签折行缓存（键 = 行宽 + 正文），滚动重绘时复用，避免每帧做文字整形
+    mutable QHash<QString, QStringList> m_labelCache;
 };
 
 // ============================ TransferStation ============================
@@ -705,6 +979,10 @@ TransferStation::TransferStation(QWidget *parent)
     setDragDropMode(QAbstractItemView::DragDrop);
     setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+    // 按像素滚动（而不是默认的"整行"滚动）：滚轮平滑动画的单位是像素，
+    // 逐行模式下每帧会整行整行跳（图标网格一行就 100 多 px），看起来就是"卡"。
+    // 像素模式还能让 Qt 只重绘滚动新露出的那一条，滚动更顺。
+    setVerticalScrollMode(QAbstractItemView::ScrollPerPixel);
     setFrameShape(QFrame::NoFrame);
     setFocusPolicy(Qt::StrongFocus);
     setContextMenuPolicy(Qt::DefaultContextMenu);   // 走 contextMenuEvent
@@ -984,10 +1262,12 @@ QString TransferStation::subtitleFor(const QVariantMap &data)
         return s;
     }
     if (type == TsType::Image) {
-        const QImage img(path);
         QString s = QObject::tr("图片");
-        if (!img.isNull())
-            s += QStringLiteral(" · %1×%2").arg(img.width()).arg(img.height());
+        // 只读文件头拿尺寸，不整张解码：历史回填/滚动时省掉一次大图解码
+        QImageReader reader(path);
+        const QSize sz = reader.size();
+        if (sz.isValid())
+            s += QStringLiteral(" · %1×%2").arg(sz.width()).arg(sz.height());
         QFileInfo fi(path);
         if (fi.exists())
             s += QStringLiteral(" · ") + humanSize(fi.size());
@@ -1068,9 +1348,10 @@ void TransferStation::appendItem(const QIcon &icon, const QString &text,
 
     // 只让"最新的那条"滚进可见区：否则列表已滚过时新条目落在视口外，
     // 看起来像"没加进去"。历史回填（插在中间/末尾）不打断你当前的浏览位置。
-    if (row == 0 && !it->isHidden())
+    if (row == 0 && !it->isHidden()) {
         abortScrollAnim();
         scrollToItem(it, QAbstractItemView::PositionAtTop);
+    }
     startGridShiftAnimation(oldPos);          // 新增后：被挤动的格子平滑向前对齐
     emit stationChanged();
 }
@@ -1107,8 +1388,10 @@ bool TransferStation::hasDedup(const QString &dedupKey) const
 
 QString TransferStation::imageHash(const QImage &img)
 {
-    // 归一化到小尺寸再取 MD5，避免不同封装/格式造成的不一致，同时控制开销
-    const QImage small = img.scaled(128, 128, Qt::KeepAspectRatio, Qt::SmoothTransformation)
+    // 归一化到小尺寸再取 MD5，避免不同封装/格式造成的不一致，同时控制开销。
+    // 只用 FastTransformation：4K 截图做一次平滑缩小就是几十~上百毫秒，这里只要
+    // 指纹稳定（同一张图每次算出来的值恒定即可），没必要付平滑缩放的代价。
+    const QImage small = img.scaled(128, 128, Qt::KeepAspectRatio, Qt::FastTransformation)
                              .convertToFormat(QImage::Format_RGB32);
     const QByteArray ba(reinterpret_cast<const char *>(small.constBits()),
                         small.sizeInBytes());
@@ -1150,12 +1433,8 @@ void TransferStation::addFileItemEx(const QString &path, qint64 dbId, qint64 ran
         if (!pm.isNull())
             icon = QIcon(pm);
     }
-    if (icon.isNull()) {
-        QFileIconProvider prov;
-        icon = prov.icon(fi);
-        if (icon.isNull())
-            icon = prov.icon(QFileIconProvider::File);
-    }
+    if (icon.isNull())
+        icon = cachedFileIcon(fi);       // 按后缀缓存，避免逐条走 LaunchServices
 
     const QString key = QStringLiteral("f:") + QDir::cleanPath(path);
     const bool fromHistory = (dbId >= 0);
@@ -1180,34 +1459,67 @@ void TransferStation::addFileItemEx(const QString &path, qint64 dbId, qint64 ran
         requestVideoThumb(key, path);
 }
 
-void TransferStation::addImageItem(const QImage &image, const QString &name, int source)
+void TransferStation::addImageItem(const QImage &image, const QString &name, int source,
+                                   const QByteArray &pngBytes)
 {
-    addImageItemEx(image, name, -1, -1, source);
+    addImageItemEx(image, name, -1, -1, source, pngBytes);
 }
 
 void TransferStation::addImageItemEx(const QImage &image, const QString &name, qint64 dbId,
-                                     qint64 rank, int source)
+                                     qint64 rank, int source,
+                                     const QByteArray &pngBytes, const QString &knownKey)
 {
-    if (image.isNull())
+    QImage img = image;
+    const bool fromHistory = (dbId >= 0);
+
+    if (img.isNull() && !pngBytes.isEmpty()) {
+        // 历史回灌：只要一张缩略图，直接按目标尺寸解码（不整张解 PNG，
+        // 4K 截图整张解码一次就要上百毫秒，几十条叠起来就是"打开弹窗转圈"）
+        QBuffer buf;
+        buf.setData(pngBytes);
+        buf.open(QIODevice::ReadOnly);
+        QImageReader reader(&buf);
+        reader.setAutoTransform(true);
+        const QSize src = reader.size();
+        if (src.isValid()) {
+            // 解码到 256px：比网格/列表要的 88px 大，预览模式下用这张图也不会糊，
+            // 又远小于整张 4K（按目标尺寸解码是 QImageReader 的强项，很快）。
+            const QSize target = src.scaled(QSize(256, 256), Qt::KeepAspectRatio);
+            if (target.isValid() && target != src)
+                reader.setScaledSize(target);
+        }
+        img = reader.read();
+    }
+    if (img.isNull())
         return;
 
-    const QString key = QStringLiteral("i:") + imageHash(image);
-    const bool fromHistory = (dbId >= 0);
+    const QString key = knownKey.isEmpty() ? QStringLiteral("i:") + imageHash(img)
+                                           : knownKey;
     removeExisting(key);                 // 相同图片去重，提升到顶部
 
-    const QString p = saveImageTemp(image);
-    const QPixmap pm = QPixmap::fromImage(image).scaled(
-        88, 88, Qt::KeepAspectRatio, Qt::SmoothTransformation);
-    const QString label = name.isEmpty() ? QFileInfo(p).fileName() : name;
+    // PNG 只编码一次：能给原始字节（剪贴板 / 历史库）就直接复用，否则编码一遍；
+    // 临时文件也直接写字节，不再编码第二遍（原来"临时文件 + 入库"各编码一次）。
+    QByteArray png = pngBytes;
+    if (png.isEmpty())
+        png = imageToPng(img);
+
+    // 历史回灌的图片不落临时文件（几十张图各写几 MB 会拖慢打开），
+    // 需要时（双击打开 / 悬停预览）再按需还原，见 ensureImageTemp()。
+    const QString p = (!fromHistory && !png.isEmpty()) ? writeTempPng(png) : QString();
+
+    // 历史回灌的图片没有临时文件可读，条目图标留大一点（192px），
+    // 预览/图标网格里当兜底图使用时不会明显发糊；新图片一律按临时文件取真实缩略图。
+    const QImage iconImg = thumbImageFor(img, fromHistory ? 192 : 88);
+    const QPixmap pm = QPixmap::fromImage(iconImg);
+    const QString label = name.isEmpty()
+                              ? (p.isEmpty() ? QObject::tr("图片") : QFileInfo(p).fileName())
+                              : name;
 
     // 先入库拿到行 id，再插列表（图片存 PNG 二进制，不依赖临时文件）
     qint64 rowId = dbId;
-    if (!fromHistory && m_store != nullptr) {
-        const QByteArray png = imageToPng(image);
-        if (!png.isEmpty())
-            rowId = m_store->put(ClipStore::ImageKind, key, label, QString(),
-                                 QString(), png, png.size(), source);
-    }
+    if (!fromHistory && m_store != nullptr && !png.isEmpty())
+        rowId = m_store->put(ClipStore::ImageKind, key, label, QString(),
+                             QString(), png, png.size(), source);
 
     QVariantMap d;
     d[QStringLiteral("path")]  = p;
@@ -1255,29 +1567,52 @@ void TransferStation::addTextItemEx(const QString &text, const QString &label, q
 // 与库里 `recent()` 的排序（used_at DESC, id DESC）完全对应，重启前后一致。
 void TransferStation::loadRecords(const QVector<ClipRecord> &records)
 {
-    for (const ClipRecord &r : records) {
-        if (hasDedup(r.hash))
-            continue;
-        const qint64 rank = qMax<qint64>(1, r.usedAt);   // 老库里 usedAt=0 的历史排到最旧
-        switch (r.kind) {
-        case ClipStore::TextKind:
-            if (!r.text.isEmpty())
-                addTextItemEx(r.text, r.title, r.id, rank, r.source);
-            break;
-        case ClipStore::FileKind:
-            if (!r.path.isEmpty() && QFileInfo::exists(r.path))
-                addFileItemEx(r.path, r.id, rank, r.source);
-            break;
-        case ClipStore::ImageKind: {
-            const QByteArray png = (m_store != nullptr) ? m_store->pngOf(r.id) : QByteArray();
-            const QImage img = QImage::fromData(png, "PNG");
-            if (!img.isNull())
-                addImageItemEx(img, r.title, r.id, rank, r.source);
-            break;
-        }
-        default:
-            break;
-        }
+    if (records.isEmpty())
+        return;
+    m_pendingRecords = records;
+    m_pendingLoadIndex = 0;
+    loadRecordsChunk();
+}
+
+// 历史回填分块：一次插 6 条，然后让出事件循环。
+// 图片记录要读库里的 PNG、再解码缩略图，几十条一口气做完会让弹窗打开时"转圈"；
+// 分块后弹窗立刻可用，其余内容在随后的空闲帧里补齐（顺序仍由每条 rank 决定）。
+void TransferStation::loadRecordsChunk()
+{
+    const int chunk = 6;
+    const int end = qMin(m_pendingLoadIndex + chunk, m_pendingRecords.size());
+    for (; m_pendingLoadIndex < end; ++m_pendingLoadIndex)
+        restoreRecord(m_pendingRecords.at(m_pendingLoadIndex));
+
+    if (m_pendingLoadIndex < m_pendingRecords.size())
+        QTimer::singleShot(0, this, &TransferStation::loadRecordsChunk);
+    else
+        m_pendingRecords.clear();
+}
+
+void TransferStation::restoreRecord(const ClipRecord &r)
+{
+    if (hasDedup(r.hash))
+        return;
+    const qint64 rank = qMax<qint64>(1, r.usedAt);   // 老库里 usedAt=0 的历史排到最旧
+    switch (r.kind) {
+    case ClipStore::TextKind:
+        if (!r.text.isEmpty())
+            addTextItemEx(r.text, r.title, r.id, rank, r.source);
+        break;
+    case ClipStore::FileKind:
+        if (!r.path.isEmpty() && QFileInfo::exists(r.path))
+            addFileItemEx(r.path, r.id, rank, r.source);
+        break;
+    case ClipStore::ImageKind: {
+        // 直接复用库里的 PNG 字节与去重键：不整张解码、不重算哈希、不重编码、不落临时文件
+        const QByteArray png = (m_store != nullptr) ? m_store->pngOf(r.id) : QByteArray();
+        if (!png.isEmpty())
+            addImageItemEx(QImage(), r.title, r.id, rank, r.source, png, r.hash);
+        break;
+    }
+    default:
+        break;
     }
 }
 
@@ -1294,17 +1629,6 @@ void TransferStation::pasteClipboard()
     } else if (m->hasText()) {
         addTextItem(m->text());
     }
-}
-
-QString TransferStation::saveImageTemp(const QImage &img)
-{
-    const QString dir =
-        QStandardPaths::writableLocation(QStandardPaths::TempLocation) + "/popball2";
-    QDir().mkpath(dir);
-    const QString p = dir + "/img_" +
-                      QString::number(QDateTime::currentMSecsSinceEpoch()) + ".png";
-    img.save(p, "PNG");
-    return p;
 }
 
 // ---------------- 扩展名分类（视频要单独显示播放标识） ----------------
@@ -1540,9 +1864,11 @@ void TransferStation::applyFilter()
 {
     for (int i = 0; i < count(); ++i) {
         QListWidgetItem *it = item(i);
-        if (it != nullptr)
-            it->setHidden(!itemMatchesFilter(dataOf(it), m_filter)
-                          || !itemMatchesSource(dataOf(it), m_sourceFilter));
+        if (it == nullptr)
+            continue;
+        const QVariantMap d = dataOf(it);     // 只取一次，别为两个条件各转一遍
+        it->setHidden(!itemMatchesFilter(d, m_filter)
+                      || !itemMatchesSource(d, m_sourceFilter));
     }
 
     // 正悬停的那条被筛掉了：立刻收起预览气泡（否则气泡会挂在一条已不可见的条目上）
@@ -1826,8 +2152,10 @@ void TransferStation::wheelEvent(QWheelEvent *event)
             const int step = qMax(24, qRound(sb->pageStep() * 0.25));
             const int steps = qRound(deltaY / 120.0);
             // 首次滚轮以当前位置为基准，之后持续累加目标（动画不打断）
-            if (m_scrollTarget < 0)
-                m_scrollTarget = sb->value();
+            if (m_scrollTarget < 0) {
+                m_scrollTarget  = sb->value();
+                m_scrollApplied = sb->value();
+            }
             m_scrollTarget = qBound(sb->minimum(), m_scrollTarget - steps * step,
                                     sb->maximum());
             if (m_scrollTimer == nullptr) {
@@ -1849,33 +2177,32 @@ void TransferStation::scrollTick()
 {
     QScrollBar *sb = verticalScrollBar();
     const int cur = sb->value();
+
+    // 值不是上一帧由平滑动画写入的（拖滚动条 / scrollToItem / 恢复位置）：跟随外部，放弃动画。
+    // 用"自己写过的值"判定，而不是按差值大小猜 —— 快速连续滚轮（目标很远）依然平滑，
+    // 不会被误判成外部定位而突然跳一大段。
+    if (m_scrollTarget < 0 || (m_scrollApplied >= 0 && cur != m_scrollApplied)) {
+        abortScrollAnim();
+        return;
+    }
+
     const int diff = m_scrollTarget - cur;
-    if (diff == 0) {
-        m_scrollTarget = -1;
-        m_scrollTimer->stop();
-        return;
-    }
-    // 值被外部大幅改动（拖滚动条 / scrollToItem 定位）：跟随外部，放弃平滑动画
-    if (qAbs(diff) > qMax(100, sb->pageStep())) {
-        m_scrollTarget = -1;
-        m_scrollTimer->stop();
-        return;
-    }
     if (qAbs(diff) <= 2) {              // 已到位：直接落点并停止
-        sb->setValue(m_scrollTarget);
-        m_scrollTarget = -1;
-        m_scrollTimer->stop();
+        sb->setValue(m_scrollTarget);   // setValue 可能被 range 夹紧，无妨
+        abortScrollAnim();
         return;
     }
     const int push = qMax(1, qRound(qAbs(diff) * 0.30));   // 每帧走剩余距离的 30%
     sb->setValue(cur + (diff > 0 ? push : -push));
+    m_scrollApplied = sb->value();      // 记录本次写入值，供下一帧识别外部改动
 }
 
 // 外部直接定位滚动（恢复上次位置 / 回顶 / 筛选跳转 / 加载历史）时放弃平滑动画，
 // 避免动画把值"拉回去"
 void TransferStation::abortScrollAnim()
 {
-    m_scrollTarget = -1;
+    m_scrollTarget  = -1;
+    m_scrollApplied = -1;
     if (m_scrollTimer != nullptr)
         m_scrollTimer->stop();
 }
@@ -2001,9 +2328,36 @@ void TransferStation::openItem(QListWidgetItem *it)
                                d.value(QStringLiteral("text")).toString());
         return;
     }
-    const QString p = d.value(QStringLiteral("path")).toString();
+    const QString p = (type == TsType::Image)
+                          ? ensureImageTemp(it)          // 历史图片按需还原临时文件
+                          : d.value(QStringLiteral("path")).toString();
     if (!p.isEmpty())
         QDesktopServices::openUrl(QUrl::fromLocalFile(p));
+}
+
+// 历史回填的图片条目没有落临时文件（一次性写几十 MB 会拖慢弹窗打开），
+// 双击打开 / 拖出 / 悬停预览这些真正需要文件路径时再按需还原，
+// 并从库里取回原始 PNG 字节写一份临时文件，把路径记回条目（只做一次）。
+QString TransferStation::ensureImageTemp(QListWidgetItem *it)
+{
+    if (it == nullptr)
+        return QString();
+    QVariantMap d = dataOf(it);
+    const QString p = d.value(QStringLiteral("path")).toString();
+    if (!p.isEmpty() && QFileInfo::exists(p))
+        return p;
+    const qint64 dbId = d.value(QStringLiteral("dbId")).toLongLong();
+    if (dbId <= 0 || m_store == nullptr)
+        return p;
+    const QByteArray png = m_store->pngOf(dbId);
+    if (png.isEmpty())
+        return p;
+    const QString tmp = writeTempPng(png);
+    if (!tmp.isEmpty()) {
+        d[QStringLiteral("path")] = tmp;
+        it->setData(Qt::UserRole, d);
+    }
+    return tmp;
 }
 
 QListWidgetItem *TransferStation::findTextItem(qint64 dbId, const QString &originalKey) const
@@ -2150,7 +2504,9 @@ void TransferStation::startDrag(Qt::DropActions /*supportedActions*/)
     const TsType type = TsType(d[QStringLiteral("type")].toInt());
     auto *m = new QMimeData;
     if (type == TsType::File || type == TsType::Image) {
-        const QString p = d[QStringLiteral("path")].toString();
+        const QString p = (type == TsType::Image)
+                              ? ensureImageTemp(it)      // 历史图片按需还原临时文件
+                              : d[QStringLiteral("path")].toString();
         if (!p.isEmpty()) {
             m->setUrls({ QUrl::fromLocalFile(p) });
             if (type == TsType::Image) {
@@ -2829,8 +3185,8 @@ void PopDock::applyProcSettings(bool show, bool showCpu, bool showGpu, bool show
 
     // 重置增量基准，避免用陈旧基准第一次就弹出异常瞬时值。
     // 注意：不在这里清空表格——重采样后的第一拍只建基准（返回空），
-    // onProcTick 会保留上一次的旧内容，避免每次应用设置都空白等待加载。
-    m_procSampler.reset();
+    // onProcSampled 会保留上一次的旧内容，避免每次应用设置都空白等待加载。
+    emit this->requestProcReset();
 
     // 已经显示中 → 立即（重）开始采样；尚未显示 → 交给 showEvent 启动。
     if (m_procShow && isVisible() && m_procTimer != nullptr)
@@ -2841,15 +3197,28 @@ void PopDock::applyProcSettings(bool show, bool showCpu, bool showGpu, bool show
 
 void PopDock::onProcTick()
 {
-    if (m_procTable == nullptr)
-        return;
+    if (m_procTable == nullptr || m_procSampleBusy)
+        return;   // 上一拍还在后台线程计算，跳过这一拍，避免请求堆积
 
     // 整机 GPU 占用：拿得到就按 CPU 权重分摊成每进程估算值，拿不到（返回 <0）则列显 "—"
     const double wholeGpu = (m_sysInfo != nullptr && m_sysInfo->isGpuUsageAvailable())
                                 ? m_sysInfo->getGpuUsage()
                                 : -1.0;
+    m_procSampleBusy = true;
+    emit this->requestProcSample(wholeGpu);
+}
 
-    QList<ProcSample> list = m_procSampler.sample(wholeGpu);
+void PopDock::onProcSampled(const QList<ProcSample> &raw)
+{
+    m_procSampleBusy = false;
+    if (m_procDiscardNext) {
+        m_procDiscardNext = false;   // 这次结果只用于建立 CPU 增量基准
+        return;
+    }
+    if (m_procTable == nullptr)
+        return;
+
+    QList<ProcSample> list = raw;
 
     // 排序：0=CPU（默认） 1=GPU 2=内存，都是从高到低
     const int key = m_procSort;
@@ -2870,6 +3239,9 @@ void PopDock::onProcTick()
     // 不清空表格、不等加载。
     if (list.isEmpty())
         return;
+
+    // 行号 -> 进程 的映射，供双击/右键使用
+    this->m_procRows = list;
 
     if (m_procTable->rowCount() != list.size())
         m_procTable->setRowCount(list.size());
@@ -2903,6 +3275,68 @@ void PopDock::onProcTick()
 
     if (m_procCountLbl != nullptr)
         m_procCountLbl->setText(tr("%1 条").arg(list.size()));
+}
+
+void PopDock::openProcessFileLocation(const ProcSample &s)
+{
+    // 弹窗期间阻止面板自动收起
+    this->beginInteraction();
+    auto guard = qScopeGuard([this]() { this->endInteraction(); });
+
+    const QString exe = processExecPath(s.pid);
+    if (exe.isEmpty()) {
+        QMessageBox::warning(this, tr("打开文件位置"),
+                             tr("无法获取进程「%1」(PID %2) 的可执行文件路径。")
+                                 .arg(s.name).arg(s.pid));
+        return;
+    }
+
+    // 优先文件管理器定位；没有就退回终端（打开所在目录）；再没有就用文本编辑器打开。
+    if (revealInFileManager(exe))
+        return;
+    if (openTerminalAt(QFileInfo(exe).absolutePath()))
+        return;
+    if (openInTextEditor(exe))
+        return;
+
+    QMessageBox::warning(this, tr("打开文件位置"),
+                         tr("找不到可用的文件管理器、终端或文本编辑器。\n文件路径：\n%1")
+                             .arg(exe));
+}
+
+void PopDock::terminateProcess(const ProcSample &s)
+{
+    if (s.pid <= 0)
+        return;
+
+    this->beginInteraction();
+    auto guard = qScopeGuard([this]() { this->endInteraction(); });
+
+    const QMessageBox::StandardButton r = QMessageBox::question(
+        this, tr("结束进程"),
+        tr("确定结束进程「%1」(PID %2)？\n该进程未保存的数据可能丢失。")
+            .arg(s.name).arg(s.pid),
+        QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
+    if (r != QMessageBox::Yes)
+        return;
+
+    bool ok = false;
+    QString err;
+#if defined(Q_OS_WIN)
+    ok = popballWinTerminateProcess(s.pid, &err);
+#else
+    errno = 0;
+    if (::kill(static_cast<pid_t>(s.pid), SIGTERM) == 0)
+        ok = true;
+    else
+        err = QString::fromLocal8Bit(strerror(errno));
+#endif
+
+    if (!ok) {
+        QMessageBox::warning(this, tr("结束进程失败"),
+                             tr("无法结束进程「%1」(PID %2)：\n%3")
+                                 .arg(s.name).arg(s.pid).arg(err));
+    }
 }
 
 void PopDock::showAnimated(const QPoint &targetPos, const QRect &ballRect)
@@ -3339,7 +3773,7 @@ PopDock::PopDock(QWidget *parent)
             m_procPanel->hide();
             if (m_procTimer != nullptr)
                 m_procTimer->stop();
-            m_procSampler.reset();
+            emit this->requestProcReset();
             emit procListCloseRequested();          // Widget 负责把 proc_show 持久化为 0
         });
         ph->addWidget(m_procCloseBtn);
@@ -3394,6 +3828,45 @@ PopDock::PopDock(QWidget *parent)
 
     m_procTimer = new QTimer(this);
     m_procTimer->setInterval(3000);
+
+    // 进程采样放到独立线程：采样要枚举全部进程并读取 CPU/内存，在 macOS/Linux
+    // 上可能有几十到几百毫秒耗时，放在 UI 线程会让面板操作卡顿。
+    m_procThread = new QThread(this);
+    m_procWorker = new ProcSamplerWorker();          // 无 parent，moveToThread 后由线程管理
+    m_procWorker->moveToThread(m_procThread);
+    connect(m_procThread, &QThread::finished, m_procWorker, &QObject::deleteLater);
+    connect(this, &PopDock::requestProcReset, m_procWorker, &ProcSamplerWorker::reset);
+    connect(this, &PopDock::requestProcSample, m_procWorker, &ProcSamplerWorker::sample);
+    connect(m_procWorker, &ProcSamplerWorker::sampled, this, &PopDock::onProcSampled);
+    m_procThread->start();
+
+    // 双击进程行 -> 打开该进程可执行文件所在位置
+    connect(m_procTable, &QTableWidget::cellDoubleClicked, this,
+            [this](int row, int) {
+                if (row >= 0 && row < this->m_procRows.size())
+                    this->openProcessFileLocation(this->m_procRows.at(row));
+            });
+    // 右键菜单：打开文件位置 / 结束进程
+    m_procTable->setContextMenuPolicy(Qt::CustomContextMenu);
+    connect(m_procTable, &QTableWidget::customContextMenuRequested, this,
+            [this](const QPoint &pos) {
+                if (this->m_procTable == nullptr)
+                    return;
+                const QModelIndex idx = this->m_procTable->indexAt(pos);
+                if (!idx.isValid() || idx.row() < 0 || idx.row() >= this->m_procRows.size())
+                    return;
+                const ProcSample s = this->m_procRows.at(idx.row());
+                QMenu menu(this);
+                QAction *actReveal = menu.addAction(tr("打开文件位置"));
+                QAction *actKill   = menu.addAction(tr("结束进程"));
+                this->beginInteraction();
+                QAction *chosen = menu.exec(this->m_procTable->viewport()->mapToGlobal(pos));
+                if (chosen == actReveal)
+                    this->openProcessFileLocation(s);
+                else if (chosen == actKill)
+                    this->terminateProcess(s);
+                this->endInteraction();
+            });
     connect(m_procTimer, &QTimer::timeout, this, &PopDock::onProcTick);
 
     connect(viewGroup, &QButtonGroup::idClicked, this, [this](int id) {
@@ -3431,6 +3904,18 @@ PopDock::PopDock(QWidget *parent)
 
 PopDock::~PopDock()
 {
+    // 先停进程采样线程：采样任务可能还在跑，必须等它结束再析构。
+    if (m_procThread != nullptr) {
+        m_procThread->quit();
+        if (!m_procThread->wait(3000)) {
+            // 采样迟迟没结束（例如 macOS 枚举上千个进程）：把线程对象从父子关系里摘出，
+            // 避免 QThread 在运行中被基类析构销毁导致进程崩溃；线程随后自行结束。
+            m_procThread->setParent(nullptr);
+        }
+        m_procWorker = nullptr;   // 已通过 finished->deleteLater 释放
+        m_procThread = nullptr;   // 正常结束时 QThread 是 this 的子对象，随后由基类析构释放
+    }
+
     if (m_textEditor != nullptr) {
         m_textEditor->close();     // 关闭会触发"未保存改动自动保存"
         delete m_textEditor;       // 顶层窗口、无 parent：由面板统一持有与释放
@@ -3643,9 +4128,20 @@ void PopDock::captureClipboard()
     }
 
     if (m->hasImage()) {
+        // 剪贴板里常常原样带着 PNG 字节（截图 / 复制图片）：直接复用，
+        // 省掉一次整图 PNG 编码（4K 截图编码一次要几百毫秒到秒级，正是"转圈"的来源）
+        QByteArray png;
+        for (const char *fmt : { "image/png", "public.png" }) {
+            const QString f = QString::fromLatin1(fmt);
+            if (!m->hasFormat(f))
+                continue;
+            png = m->data(f);
+            if (!png.isEmpty())
+                break;
+        }
         const QImage img = qvariant_cast<QImage>(m->imageData());
-        if (!img.isNull()) {
-            m_station->addImageItem(img, QString(), 1);   // 拖入 = 中转站数据
+        if (!img.isNull() || !png.isEmpty()) {
+            m_station->addImageItem(img, QString(), 1, png);   // 拖入 = 中转站数据
             return;
         }
     }
@@ -3871,16 +4367,20 @@ void PopDock::showEvent(QShowEvent *event)
     // - 再次打开（已有旧内容）：保留旧内容立即可见，只建立基准，下一拍原地刷新。
     if (m_procShow && m_procTimer != nullptr) {
         const bool hadContent = (m_procTable != nullptr && m_procTable->rowCount() > 0);
-        m_procSampler.reset();
+        emit this->requestProcReset();
         m_procTimer->start(m_procRefreshMs);
         QTimer::singleShot(0, this, [this, hadContent]() {
             if (!m_procShow || !isVisible())
                 return;
             if (hadContent) {
-                // 仅建基准（首拍返回 CPU=0 的列表，丢弃即可），保留旧内容
+                // 仅建基准（结果回来后丢弃），保留旧内容
+                if (m_procSampleBusy)
+                    return;   // 上一拍还没回来，等下一个节拍即可
                 const double wg = (m_sysInfo != nullptr && m_sysInfo->isGpuUsageAvailable())
                                       ? m_sysInfo->getGpuUsage() : -1.0;
-                m_procSampler.sample(wg);
+                m_procSampleBusy = true;
+                m_procDiscardNext = true;
+                emit this->requestProcSample(wg);
             } else {
                 // 首次立即渲染：首拍返回进程名/内存（CPU 暂 0），马上填表
                 onProcTick();
@@ -3968,17 +4468,40 @@ void PopDock::onPreviewRequested(const QVariantMap &data, const QPoint &globalCe
         const QString t = data.value(QStringLiteral("text")).toString();
         m_preview->showText(t, tr("文本 · %1 字").arg(t.size()));
     } else if (type == TsType::Image) {
+        // 带尺寸解码：悬停时不再整张解 4K 截图（整解一次就是几百毫秒的"转圈"）
         const QString p = data.value(QStringLiteral("path")).toString();
-        const QImage img(p);
+        QImage img;
+        QSize  real;
+        if (!p.isEmpty()) {
+            img  = readImageScaled(p, QSize(320, 240));
+            real = QImageReader(p).size();          // 只读文件头，拿原始宽高做说明
+        } else {
+            // 历史回灌的图片没有临时文件：按需从库里取 PNG，只解码到预览尺寸
+            const qint64 dbId = data.value(QStringLiteral("dbId")).toLongLong();
+            if (dbId > 0 && m_store != nullptr) {
+                const QByteArray png = m_store->pngOf(dbId);
+                if (!png.isEmpty()) {
+                    QBuffer buf;
+                    buf.setData(png);
+                    buf.open(QIODevice::ReadOnly);
+                    QImageReader rd(&buf);
+                    rd.setAutoTransform(true);
+                    real = rd.size();
+                    if (real.isValid() && real.width() > 320)
+                        rd.setScaledSize(real.scaled(QSize(320, 240), Qt::KeepAspectRatio));
+                    img = rd.read();
+                }
+            }
+        }
         if (img.isNull()) {
             hidePreview();
             return;
         }
-        const QImage scaled = img.scaled(320, 240, Qt::KeepAspectRatio,
-                                         Qt::SmoothTransformation);
-        m_preview->showPixmap(QPixmap::fromImage(scaled),
+        m_preview->showPixmap(QPixmap::fromImage(img),
                               QStringLiteral("%1 · %2×%3")
-                                  .arg(name).arg(img.width()).arg(img.height()));
+                                  .arg(name)
+                                  .arg(real.isValid() ? real.width() : img.width())
+                                  .arg(real.isValid() ? real.height() : img.height()));
     } else if (type == TsType::Video) {
         // 视频：悬停即静音循环播放（没有 QtMultimedia 时退化成静态封面 + 提示）
         const QString p = data.value(QStringLiteral("path")).toString();
@@ -4005,10 +4528,7 @@ void PopDock::onPreviewRequested(const QVariantMap &data, const QPoint &globalCe
                                       .arg(real.isValid() ? real.height() : img.height())
                                       .arg(humanSize(fi.size())));
         } else {
-            QFileIconProvider prov;
-            QIcon ic = prov.icon(fi);
-            if (ic.isNull())
-                ic = prov.icon(QFileIconProvider::File);
+            const QIcon ic = cachedFileIcon(fi);
             // 标题行只显示完整文件名（路径在下方详情栏里，避免重复）
             m_preview->showPixmap(ic.pixmap(96, 96), fi.fileName());
         }

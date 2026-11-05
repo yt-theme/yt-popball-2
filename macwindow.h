@@ -2,6 +2,7 @@
 #define MACWINDOW_H
 
 #include <qglobal.h>
+#include <QString>
 
 #if defined(Q_OS_MACOS)
 // macOS 上让悬浮球更"桌面挂件"一些：
@@ -10,6 +11,9 @@
 //   * 全屏应用之上也可见
 // wId 传 QWidget::winId()。
 void popballApplyMacWindowBehavior(unsigned long long wId);
+
+// 进程可执行文件路径；读不到时返回空字符串。
+QString popballMacProcessPath(qint64 pid);
 
 // 把应用切成「配件型(accessory)」：不在 Dock 显示图标，也不出现在 Cmd+Tab 里，
 // 但窗口照常显示在最上层 —— 这正是 360 悬浮球那类桌面挂件的行为。

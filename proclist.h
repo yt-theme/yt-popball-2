@@ -4,6 +4,7 @@
 #include <QHash>
 #include <QList>
 #include <QString>
+#include <QMetaType>
 
 // 单个进程的一拍采样
 struct ProcSample {
@@ -13,6 +14,8 @@ struct ProcSample {
     double  memMb      = 0.0;   // 常驻内存，MB
     double  gpuPercent = 0.0;   // GPU 占用 %，-1 表示不可用（整机 GPU 都拿不到时）
 };
+Q_DECLARE_METATYPE(ProcSample)
+Q_DECLARE_METATYPE(QList<ProcSample>)
 
 // 跨平台进程采样器：维护上一拍的 CPU 时间基准，用「两拍差值」算瞬时 CPU%。
 // 每进程 GPU 占用只有 Windows 能精确拿到；Linux(/proc) 与 macOS 没有公开的

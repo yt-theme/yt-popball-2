@@ -4,8 +4,31 @@
 
 #import <Cocoa/Cocoa.h>
 #import <CoreGraphics/CoreGraphics.h>
+#include <QProcess>
 #include <cstdint>
 #include <vector>
+#include <libproc.h>     // proc_pidpath：直接问内核要进程的可执行文件路径
+
+QString popballMacProcessPath(qint64 pid)
+{
+    if (pid <= 0)
+        return QString();
+
+    // 首选 proc_pidpath：纯内核查询，微秒级，不会像启 ps 那样卡住主线程。
+    char buf[PROC_PIDPATHINFO_MAXSIZE] = { 0 };
+    const int rc = proc_pidpath(int(pid), buf, sizeof(buf));
+    if (rc > 0)
+        return QString::fromLocal8Bit(buf, rc);
+
+    // 少数情况下（权限 / 已退出）读不到，再退回 ps（可能慢 ~1s，只在这类边缘情况发生）
+    QProcess ps;
+    ps.start(QStringLiteral("/bin/ps"),
+             { QStringLiteral("-p"), QString::number(pid),
+               QStringLiteral("-o"), QStringLiteral("comm=") });
+    if (!ps.waitForStarted(800) || !ps.waitForFinished(1500))
+        return QString();
+    return QString::fromLocal8Bit(ps.readAllStandardOutput()).trimmed();
+}
 
 void popballApplyMacWindowBehavior(unsigned long long wId)
 {

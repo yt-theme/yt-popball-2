@@ -11,6 +11,7 @@
 #include <QTimer>
 #include <QLineEdit>
 #include <QVector>
+#include <QList>
 #include <QDragEnterEvent>
 #include <QDragMoveEvent>
 #include <QDropEvent>
@@ -59,7 +60,8 @@ public:
     // 一批文件按**给定顺序**成组入列（复制/拖入 A,B,C 后，面板里也是 A,B,C）。
     // source：1=中转站（拖入，默认） 0=剪贴板。
     void addFileItems(const QStringList &paths, int source = 1);
-    void addImageItem(const QImage &image, const QString &name = QString(), int source = 0);
+    void addImageItem(const QImage &image, const QString &name = QString(), int source = 0,
+                      const QByteArray &pngBytes = QByteArray());
     void addTextItem(const QString &text, const QString &label = QString(), int source = 0);
     // 从剪贴板粘贴（图像或文本）到中转站
     void pasteClipboard();
@@ -216,9 +218,18 @@ private:
     qint64 nextRank();
     void noteRank(qint64 rank);
     void addTextItemEx(const QString &text, const QString &label, qint64 dbId, qint64 rank = -1, int source = 0);
-    void addImageItemEx(const QImage &image, const QString &name, qint64 dbId, qint64 rank = -1, int source = 0);
+    // pngBytes：已有的原始 PNG 字节（剪贴板原样数据 / 历史库），可省掉一次整图编码；
+    // knownKey：已知去重键（历史库记录自带），可省掉一次图片归一化哈希；
+    // image 为空且给了 pngBytes 时，按缩略图尺寸直接解码（用于历史回填）。
+    void addImageItemEx(const QImage &image, const QString &name, qint64 dbId, qint64 rank = -1,
+                        int source = 0, const QByteArray &pngBytes = QByteArray(),
+                        const QString &knownKey = QString());
+    // 历史回填分块：每批插入若干条后让出事件循环，避免弹窗打开时一次性解码几十张图片而卡住
+    void loadRecordsChunk();
+    void restoreRecord(const ClipRecord &r);
+    // 历史回填的图片不落临时文件；双击/预览等真正需要文件路径时按需还原
+    QString ensureImageTemp(QListWidgetItem *it);
     void addFileItemEx(const QString &path, qint64 dbId, qint64 rank = -1, int source = 0);
-    QString saveImageTemp(const QImage &img);
     static QPixmap textIcon(const QColor &accent);
     // 视频条目图标：封面帧（或胶片占位图）+ 居中播放按钮
     static QIcon videoIcon(const QPixmap &frame);
@@ -246,6 +257,8 @@ private:
     int             m_sourceFilter = 0;       // 来源筛选：0=全部 1=仅剪贴板 2=仅中转站
     int             m_density    = 1;        // 0=紧凑 1=标准 2=宽松
     int             m_savedScroll = 0;       // 记住的滚动位置（弹窗关闭时保存，下次打开恢复）
+    QVector<ClipRecord> m_pendingRecords;    // 分批回填中尚未处理的历史记录
+    int             m_pendingLoadIndex = 0;  // 下一批从哪条开始
     QColor          m_accentColor = QColor::fromRgb(0x41, 0xB0, 0xDD); // 主题强调色（默认=主题蓝）
     TsItemDelegate *m_delegate   = nullptr;   // 图标/列表/详细/预览 四种绘制模式
     QTimer         *m_hoverTimer = nullptr;
@@ -262,6 +275,7 @@ private:
     QVariantAnimation      *m_shiftAnim = nullptr;  // 网格位移动画（增删/筛选后剩余格子向前对齐）
     QTimer                 *m_scrollTimer = nullptr; // 滚轮连续平滑滚动驱动（约 16ms/帧）
     int                     m_scrollTarget = -1;  // 滚轮累积的滚动目标值；-1 = 无进行中动画
+    int                     m_scrollApplied = -1; // 上一次由平滑动画写入的滚动条值（用于识别外部定位）
 };
 
 // 悬停预览气泡：图片 / 文件图标 / 文本内容 / 视频（有 QtMultimedia 时静音播放）。
@@ -333,6 +347,25 @@ private:
     QLabel          *m_status  = nullptr;      // 底栏左：状态 · 字数 · 行数
     QPlainTextEdit  *m_edit    = nullptr;      // 正文
     QToolButton     *m_saveBtn = nullptr;      // 保存（未改动时禁用）
+};
+
+// 进程采样工作对象：在独立线程里枚举进程/计算差值，避免阻塞 UI（尤其 macOS 枚举
+// 数百个进程时会有明显耗时）。所有 ProcessSampler 状态只在该线程内访问。
+class ProcSamplerWorker : public QObject
+{
+    Q_OBJECT
+public:
+    explicit ProcSamplerWorker(QObject *parent = nullptr) : QObject(parent) {}
+
+public slots:
+    void reset() { m_sampler.reset(); }
+    void sample(double wholeGpuPercent) { emit sampled(m_sampler.sample(wholeGpuPercent)); }
+
+signals:
+    void sampled(const QList<ProcSample> &list);
+
+private:
+    ProcessSampler m_sampler;
 };
 
 // 悬浮球 hover / 拖拽 300ms 后弹出的"数据中转站"面板。
@@ -427,6 +460,10 @@ signals:
     // 用户点进程列表右上角的 × ：隐藏整个进程列表（Widget 负责把 proc_show 持久化为 0）
     void procListCloseRequested();
 
+    // 进程采样请求：投递到独立采样线程（结果通过 ProcSamplerWorker::sampled 返回）
+    void requestProcReset();
+    void requestProcSample(double wholeGpuPercent);
+
 protected:
     void showEvent(QShowEvent *event) override;
     void hideEvent(QHideEvent *event) override;
@@ -446,7 +483,10 @@ private slots:
     void onPreviewHideRequested();
     void onClipboardChanged();      // 剪贴板变了（防抖后真正抓取）
     void captureClipboard();        // 把当前剪贴板内容收进中转站 + 入库
-    void onProcTick();              // 定期采样进程并刷新进程表格
+    void onProcTick();              // 定时发出采样请求（真正采样在工作线程）
+    void onProcSampled(const QList<ProcSample> &list);  // 工作线程采样结果回到 UI 线程后刷新表格
+    void openProcessFileLocation(const ProcSample &s);  // 双击/右键：打开可执行文件位置
+    void terminateProcess(const ProcSample &s);         // 右键：结束进程
 
 private:
     void installDockTracking(QObject *obj);   // 递归安装事件过滤器，稳定捕获进出
@@ -520,7 +560,11 @@ private:
     QToolButton   *m_procCloseBtn = nullptr;  // 面板右上角 ×（隐藏整个列表）
     QTableWidget  *m_procTable    = nullptr;  // 进程表格
     QTimer        *m_procTimer    = nullptr;  // 采样刷新定时器
-    ProcessSampler m_procSampler;             // 进程采样器（维护 CPU 增量基准）
+    QThread       *m_procThread   = nullptr;  // 进程采样专用线程
+    ProcSamplerWorker *m_procWorker = nullptr; // 采样工作对象（运行在 m_procThread）
+    bool           m_procSampleBusy  = false; // 上一次采样还没返回（跳过节拍，避免堆积）
+    bool           m_procDiscardNext = false; // 丢弃下一次结果（只用于重置后建立基准）
+    QList<ProcSample> m_procRows;             // 当前表格每一行对应的进程（下标与行号一致）
     SysInfo       *m_sysInfo      = nullptr;  // 取整机 GPU 占用（不持有所有权）
     bool           m_procShow      = false;   // 是否显示进程列表
     bool           m_procShowCpu   = true;    // 显示 CPU 列

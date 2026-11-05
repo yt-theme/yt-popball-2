@@ -71,6 +71,21 @@
 
 #include "struct_def.h"
 
+class QThread;
+class QObject;
+
+#if defined(Q_OS_MACOS)
+// 一个 SMC 温度键：启动枚举时把 size/type 一并缓存下来。
+// 原先每次采样都对每个键再查一次键信息，80 个键 = 160 次 mach IPC；
+// 而且这些 IPC 跑在 UI 线程上，系统繁忙时单次可能阻塞几十毫秒甚至更久，
+// 弹窗和悬浮球就会一起卡住。现在只在启动时查一次，采样放到独立线程。
+struct SmcTempKey {
+    quint32      key  = 0;
+    unsigned int size = 0;
+    char         type[5] = { 0 };
+};
+#endif
+
 class SysInfo {
 private:
 #if defined(Q_OS_LINUX)
@@ -157,11 +172,13 @@ private:
 #endif
 
 #if defined(Q_OS_MACOS)
-    // AppleSMC：用于读取 CPU 温度（Intel / Apple Silicon 通用）
-    unsigned int   _smcConn     = 0;     // io_connect_t
-    bool           _smcOpen     = false;
-    QList<quint32> _smcCpuKeys  = {};    // 启动时枚举出的 CPU 温度键
-    QList<quint32> _smcGpuKeys  = {};    // 启动时枚举出的 GPU 温度键
+    // AppleSMC：用于读取 CPU / GPU 温度（Intel / Apple Silicon 通用）
+    unsigned int       _smcConn    = 0;      // io_connect_t
+    bool               _smcOpen    = false;
+    QList<SmcTempKey>  _smcCpuKeys = {};     // 启动时枚举出的 CPU 温度键
+    QList<SmcTempKey>  _smcGpuKeys = {};     // 启动时枚举出的 GPU 温度键
+    QThread           *_smcThread  = nullptr;  // 温度采样线程（避免 SMC IPC 阻塞 UI）
+    QObject           *_smcPoller  = nullptr;
 #endif
 
     // 公共收尾：按各盘本间隔 (读,写) 差值，按"指定盘 / IO 最高的盘"选出生效盘
@@ -175,6 +192,11 @@ public:
 
     // call system api to get sys info
     void updateSysinfo();
+
+#if defined(Q_OS_MACOS)
+    // 温度采样线程的回调：把后台线程读到的最新温度写回（在 UI 线程执行）
+    void applySmcTemps(double cpu, double gpu, bool cpuOk, bool gpuOk);
+#endif
 
     qulonglong getMemTotal();
     qulonglong getMemUsed();
