@@ -15,6 +15,7 @@
 #include <QLineF>
 #include <QPointF>
 #include <QTimer>
+#include <QElapsedTimer>
 #include <QLCDNumber>
 #include <QGraphicsDropShadowEffect>
 #include <QMenu>
@@ -119,6 +120,14 @@ private:
     // X11 override-redirect 模式下周期性把自己提到最上层：
     // 全屏游戏等"不受管理"的窗口可能晚于小球映射，只提一次会被它们盖住。
     QTimer                      *overlayRaiseTimer = nullptr;
+    // 悬停跑环息屏：光标停在球上 → 外圈进度环跑满 → 关闭显示器；移动鼠标由系统唤醒。
+    // sleepArmed 在光标离开球后重新置位，避免唤醒瞬间光标仍在球上又立刻再次息屏。
+    QTimer                      *sleepTimer       = nullptr;
+    QElapsedTimer                sleepElapsed;                 // 本次倒计时起点
+    bool                         sleepCountdownActive = false;  // 进度环是否正在跑
+    bool                         sleepArmed       = true;      // 是否允许再次触发（离开球后重置）
+    qreal                        sleepProgress    = 0.0;       // 0.0 ~ 1.0
+    QList<QWidget*>              dimOverlays;                  // 各屏幕的全屏渐暗遮罩
     bool                         cursorOverUi   = false;     // 轮询判定的"光标是否在球或面板上"状态（用于检测边界跳变）
     bool                         dragOpening    = false;     // 当前是否正处于文件拖入（拖到球上）状态
 
@@ -192,6 +201,15 @@ private slots:
     void cancelHidePopDock();
     void onHoverTimeout();
     void onHideTimeout();
+    // 悬停跑环息屏：开始/取消倒计时、每帧推进、跑满后关闭显示器
+    void startSleepCountdown();
+    void cancelSleepCountdown();
+    void onSleepTick();
+    void triggerScreenOff();
+    // 随跑环进度让整屏渐暗：全屏黑色遮罩（点击穿透，不抢焦点）
+    void showDimOverlays(qreal opacity);
+    void updateDimOverlays(qreal opacity);
+    void hideDimOverlays();
     // 轮询：用全局光标坐标判断是否在球/面板上，未激活窗口也能触发弹出（见需求：不激活时移上去也要出窗口）
     void onHoverPoll();
     // X11 override-redirect：周期性提层（小球 → 面板，保证面板在小球之上）

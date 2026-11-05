@@ -15,6 +15,8 @@
 #include <QMessageBox>
 #include <QGuiApplication>
 #include <QScreen>
+#include <QVariantAnimation>
+#include <QEasingCurve>
 #include <QtGlobal>
 #include <QFileDialog>
 #include <QStandardPaths>
@@ -85,8 +87,14 @@ QIcon presetIcon(const PresetDef &p)
 // ---------------------------------------------------------------- 扁平化样式
 static const char *kDialogStyle = R"(
 QDialog { background-color:#FFFFFF; }
-QScrollArea { background-color:#FFFFFF; border:none; }
-QWidget#content { background-color:#FFFFFF; }
+QScrollArea { background-color:#F2F3F5; border:none; }
+QWidget#content { background-color:#F2F3F5; }
+/* iOS 设置风格：每个设置区域一张白色圆角卡片，卡片之间由灰色底隔开 */
+QWidget[role="card"] {
+    background-color:#FFFFFF;
+    border:1px solid #E7EAEE;
+    border-radius:10px;
+}
 QLabel  { color:#3A3F45; font-size:13px; background:transparent; }
 QLabel[section="title"] { color:#1B1F24; font-size:17px; font-weight:600; }
 QLabel[section="group"] { color:#9AA0A6; font-size:11px; font-weight:600; }
@@ -111,13 +119,6 @@ QPushButton[role="preset"] {
 }
 QPushButton[role="preset"]:hover  { border-color:#2E7DD8; background-color:#EFF6FF; }
 QPushButton[role="preset"]:pressed{ background-color:#E0EEFC; }
-QCheckBox { color:#3A3F45; font-size:13px; spacing:6px; background:transparent; }
-QCheckBox::indicator {
-    width:16px; height:16px; border:1px solid #C9CFD6;
-    border-radius:3px; background-color:#FFFFFF;
-}
-QCheckBox::indicator:hover  { border-color:#2E7DD8; }
-QCheckBox::indicator:checked{ background-color:#2E7DD8; border-color:#2E7DD8; }
 QSlider::groove:horizontal  { height:4px; background:#E2E6EB; border-radius:2px; }
 QSlider::sub-page:horizontal{ height:4px; background:#2E7DD8; border-radius:2px; }
 QSlider::handle:horizontal {
@@ -173,6 +174,98 @@ QListWidget#nav::item:selected { background-color:#E0EEFC; color:#2E7DD8; }
 )";
 
 // ---------------------------------------------------------------- 构造
+// ---------------------------------------------------------------- iOS 风格开关
+SwitchButton::SwitchButton(QWidget *parent) : QAbstractButton(parent)
+{
+    this->setCheckable(true);
+    this->setCursor(Qt::PointingHandCursor);
+    this->setFocusPolicy(Qt::StrongFocus);
+    this->setFixedSize(46, 26);
+    this->setToolTipDuration(8000);
+    connect(this, &QAbstractButton::toggled, this, [this](bool on) { this->animateTo(on); });
+}
+
+QSize SwitchButton::sizeHint() const
+{
+    return QSize(46, 26);
+}
+
+void SwitchButton::animateTo(bool on)
+{
+    if (this->m_anim == nullptr) {
+        this->m_anim = new QVariantAnimation(this);
+        this->m_anim->setDuration(160);
+        this->m_anim->setEasingCurve(QEasingCurve::OutCubic);
+        connect(this->m_anim, &QVariantAnimation::valueChanged, this,
+                [this](const QVariant &v) {
+                    this->m_pos = v.toReal();
+                    this->update();
+                });
+    }
+    this->m_anim->stop();
+    this->m_anim->setStartValue(this->m_pos);
+    this->m_anim->setEndValue(on ? 1.0 : 0.0);
+    this->m_anim->start();
+}
+
+void SwitchButton::showEvent(QShowEvent *e)
+{
+    // 初次展示直接到位，不要一打开设置页所有开关都滑动一遍
+    this->m_pos = this->isChecked() ? 1.0 : 0.0;
+    QAbstractButton::showEvent(e);
+    this->update();
+}
+
+void SwitchButton::enterEvent(QEnterEvent *e)
+{
+    this->m_hover = true;
+    this->update();
+    QAbstractButton::enterEvent(e);
+}
+
+void SwitchButton::leaveEvent(QEvent *e)
+{
+    this->m_hover = false;
+    this->update();
+    QAbstractButton::leaveEvent(e);
+}
+
+void SwitchButton::paintEvent(QPaintEvent *)
+{
+    QPainter p(this);
+    p.setRenderHint(QPainter::Antialiasing, true);
+
+    const qreal w = this->width();
+    const qreal h = this->height();
+    const qreal r = h / 2.0;
+    QColor track;
+    if (!this->isEnabled()) {
+        if (this->isChecked()) {
+            track = this->m_onColor;
+            track.setAlpha(120);          // 禁用：只留淡主题色
+        } else {
+            track = QColor(0xEC, 0xEE, 0xF0);
+        }
+    } else if (this->isChecked()) {
+        track = this->m_onColor;
+        if (this->m_hover)
+            track = track.darker(108);
+    } else {
+        track = this->m_hover ? QColor(0xD8, 0xDC, 0xE1) : QColor(0xE3, 0xE6, 0xEA);
+    }
+
+    p.setPen(Qt::NoPen);
+    p.setBrush(track);
+    p.drawRoundedRect(QRectF(0, 0, w, h), r, r);
+
+    // 滑块：左右各留 3px，随 m_pos 平滑移动
+    const qreal m = 3.0;
+    const qreal d = h - m * 2.0;
+    const qreal x = m + this->m_pos * (w - d - m * 2.0);
+    p.setBrush(this->isEnabled() ? QColor(0xFF, 0xFF, 0xFF) : QColor(0xFA, 0xFA, 0xFA));
+    p.drawEllipse(QRectF(x, m, d, d));
+}
+
 SettingsDialog::SettingsDialog(Config *cfg, SysInfo *sysInfo, QWidget *parent)
     : QDialog(parent), cfg(cfg), sysInfo(sysInfo)
 {
@@ -250,12 +343,27 @@ void SettingsDialog::buildUi()
         sa->setWidgetResizable(true);
         sa->setFrameShape(QFrame::NoFrame);
         sa->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+        // 视口也用灰色底，避免内容较短时下方露出白色
+        sa->viewport()->setAutoFillBackground(true);
+        QPalette vpPal = sa->viewport()->palette();
+        vpPal.setColor(QPalette::Window, QColor(0xF2, 0xF3, 0xF5));
+        sa->viewport()->setPalette(vpPal);
         auto *content = new QWidget(sa);
         content->setObjectName(QStringLiteral("content"));
         auto *l = new QVBoxLayout(content);
         l->setContentsMargins(20, 18, 20, 18);
         l->setSpacing(16);
-        for (QWidget *w : sections) l->addWidget(w);
+        for (QWidget *w : sections) {
+            // 每个设置区域套一张圆角卡片：白色卡片 + 灰色页底 = iOS 分组观感
+            auto *card = new QWidget(content);
+            card->setProperty("role", "card");
+            card->setAttribute(Qt::WA_StyledBackground, true);
+            auto *cl = new QVBoxLayout(card);
+            cl->setContentsMargins(14, 12, 14, 12);
+            cl->setSpacing(0);
+            cl->addWidget(w);
+            l->addWidget(card);
+        }
         l->addStretch(1);
         sa->setWidget(content);
         return sa;
@@ -270,7 +378,8 @@ void SettingsDialog::buildUi()
     // 4 数据中转站
     stack->addWidget(makePage({ buildDockSection() }));
     // 5 通用：语言 + 高级 + 系统监视器
-    stack->addWidget(makePage({ buildGeneralSection() }));
+    stack->addWidget(makePage({ buildGeneralSection(), buildAdvancedSection(),
+                                buildMonitorSection() }));
 
     const QStringList cats = {
         tr("外观"), tr("悬浮球"), tr("监控项"), tr("数据中转站"), tr("通用") };
@@ -314,6 +423,26 @@ void SettingsDialog::buildUi()
 }
 
 // ---------------------------------------------------------------- 各分区
+// iOS 设置行：左侧说明文字，右侧滑动开关
+QWidget *SettingsDialog::makeSwitchRow(const QString &text, SwitchButton *&out,
+                                       const QString &tooltip, bool labelWrap)
+{
+    auto *row = new QWidget();
+    auto *h = new QHBoxLayout(row);
+    h->setContentsMargins(0, 0, 0, 0);
+    h->setSpacing(12);
+    auto *lbl = new QLabel(text, row);
+    lbl->setWordWrap(labelWrap);
+    h->addWidget(lbl, 1);
+    out = new SwitchButton(row);
+    h->addWidget(out, 0, Qt::AlignRight | Qt::AlignVCenter);
+    if (!tooltip.isEmpty()) {
+        row->setToolTip(tooltip);
+        out->setToolTip(tooltip);
+    }
+    return row;
+}
+
 QWidget *SettingsDialog::buildColorSection()
 {
     auto *box = new QWidget(this);
@@ -373,20 +502,11 @@ QWidget *SettingsDialog::buildShowSection()
     g->setProperty("section", "group");
     v->addWidget(g);
 
-    auto *grid = new QGridLayout();
-    grid->setHorizontalSpacing(18);
-    grid->setVerticalSpacing(10);
-    chkTemp = new QCheckBox(tr("CPU 温度"), box);
-    chkFreq = new QCheckBox(tr("CPU 频率"), box);
-    chkNet  = new QCheckBox(tr("网速"), box);
-    chkDiskIo = new QCheckBox(tr("磁盘读写"), box);
-    chkGpuTemp = new QCheckBox(tr("GPU 温度"), box);
-    QCheckBox *showChks[] = { chkTemp, chkFreq, chkNet, chkDiskIo, chkGpuTemp };
-    const int kShowCols = 3;
-    for (int i = 0; i < int(sizeof(showChks) / sizeof(showChks[0])); ++i)
-        grid->addWidget(showChks[i], i / kShowCols, i % kShowCols, Qt::AlignLeft);
-    grid->setColumnStretch(kShowCols, 1);
-    v->addLayout(grid);
+    v->addWidget(makeSwitchRow(tr("CPU 温度"), chkTemp));
+    v->addWidget(makeSwitchRow(tr("CPU 频率"), chkFreq));
+    v->addWidget(makeSwitchRow(tr("网速"), chkNet));
+    v->addWidget(makeSwitchRow(tr("磁盘读写"), chkDiskIo));
+    v->addWidget(makeSwitchRow(tr("GPU 温度"), chkGpuTemp));
 
     // ---- 磁盘读写统计哪块盘 ----
     auto *drow = new QHBoxLayout();
@@ -430,30 +550,22 @@ QWidget *SettingsDialog::buildShowSection()
     v->addWidget(pg);
 
     // 显示开关
-    auto *pShow = new QHBoxLayout();
-    pShow->setSpacing(10);
-    chkProcShow = new QCheckBox(tr("显示进程列表"), box);
+    v->addWidget(makeSwitchRow(tr("显示进程列表"), chkProcShow,
+        tr("在弹窗底部显示按占用从高到低排序的进程列表。\n"
+           "也可直接点列表右上角的 × 临时隐藏。")));
     chkProcShow->setObjectName("procShow");
-    chkProcShow->setToolTip(tr("在弹窗底部显示按占用从高到低排序的进程列表。\n"
-                               "也可直接点列表右上角的 × 临时隐藏。"));
-    pShow->addWidget(chkProcShow);
-    pShow->addStretch(1);
-    v->addLayout(pShow);
 
     // 三列开关
-    auto *pCols = new QHBoxLayout();
-    pCols->setSpacing(10);
-    chkProcCpu = new QCheckBox(tr("CPU"), box);   chkProcCpu->setObjectName("procCpu");
-    chkProcGpu = new QCheckBox(tr("GPU"), box);   chkProcGpu->setObjectName("procGpu");
-    chkProcMem = new QCheckBox(tr("内存"), box);  chkProcMem->setObjectName("procMem");
-    chkProcGpu->setToolTip(tr("每进程 GPU 占用：Windows 精确；Linux/macOS 为按 CPU 权重估算值"));
-    auto *colsLbl = new QLabel(tr("显示列："), box);
-    pCols->addWidget(colsLbl);
-    pCols->addWidget(chkProcCpu);
-    pCols->addWidget(chkProcGpu);
-    pCols->addWidget(chkProcMem);
-    pCols->addStretch(1);
-    v->addLayout(pCols);
+    auto *colsG = new QLabel(tr("显示列"), box);
+    colsG->setProperty("section", "group");
+    v->addWidget(colsG);
+    v->addWidget(makeSwitchRow(tr("CPU"), chkProcCpu));
+    chkProcCpu->setObjectName("procCpu");
+    v->addWidget(makeSwitchRow(tr("GPU"), chkProcGpu,
+        tr("每进程 GPU 占用：Windows 精确；Linux/macOS 为按 CPU 权重估算值")));
+    chkProcGpu->setObjectName("procGpu");
+    v->addWidget(makeSwitchRow(tr("内存"), chkProcMem));
+    chkProcMem->setObjectName("procMem");
 
     // 刷新间隔
     auto *pRefresh = new QHBoxLayout();
@@ -477,6 +589,7 @@ QWidget *SettingsDialog::buildShowSection()
     comboProcMax->addItem(tr("10 条"), 10);
     comboProcMax->addItem(tr("15 条"), 15);
     comboProcMax->addItem(tr("20 条"), 20);
+    comboProcMax->addItem(tr("无限制"), 0);   // 0 = 不截断，显示全部进程
     pMax->addWidget(comboProcMax, 1);
     v->addLayout(pMax);
 
@@ -575,6 +688,49 @@ QWidget *SettingsDialog::buildBallSection()
     bs->addWidget(comboBallStyle, 1);
     v->addLayout(bs);
 
+    // 外圈内存占用比例环图：仅球形形态有效，其他形态下置灰不可选
+    v->addWidget(makeSwitchRow(tr("外圈显示为内存占用比例环图"), chkRingMem,
+        tr("开启后悬浮球外圈按内存占用比例绘制环图（从正上方顺时针填充）。\n"
+           "仅「球形」形态有效，圆角矩形/直角方形/长条形下不显示。")));
+    auto *ringHint = new QLabel(tr("* 仅「球形」形态有效"), box);
+    ringHint->setProperty("role", "hint");
+    v->addWidget(ringHint);
+
+    // 内存环宽度：只在启用「外圈内存占比环」时显示（且仅球形形态有意义）
+    ringWidthRow = new QWidget(box);
+    auto *rw = new QHBoxLayout(ringWidthRow);
+    rw->setContentsMargins(0, 0, 0, 0);
+    rw->setSpacing(10);
+    rw->addWidget(new QLabel(tr("外圈环宽度"), ringWidthRow));
+    spinRingWidth = new QSpinBox(ringWidthRow);
+    spinRingWidth->setObjectName("ringWidth");
+    spinRingWidth->setRange(2, 16);
+    spinRingWidth->setSuffix(tr(" px"));
+    rw->addWidget(spinRingWidth, 1);
+    v->addWidget(ringWidthRow);
+    ringWidthRow->setVisible(false);   // 默认未启用内存环 → 先隐藏
+
+    // 鼠标悬停跑环息屏：悬停球 3 秒外圈进度环跑满 → 关闭显示器，移动鼠标由系统唤醒
+    v->addWidget(makeSwitchRow(tr("鼠标悬停悬浮球跑环息屏"), chkHoverSleep,
+        tr("开启后，鼠标停在悬浮球上约 3 秒，外圈进度环跑满即关闭显示器；\n"
+           "移动鼠标（或按键盘）由系统自动唤醒。\n"
+           "开启后悬停不再自动弹出中转站面板（点击悬浮球仍可打开）。")));
+    auto *sleepHint = new QLabel(tr("* 仅「球形」形态有效；悬停不再自动弹出面板（点击仍可打开）"), box);
+    sleepHint->setProperty("role", "hint");
+    sleepHint->setWordWrap(true);
+    v->addWidget(sleepHint);
+
+    connect(comboBallStyle, &QComboBox::currentIndexChanged, this, [this](int) {
+        const bool sphere = comboBallStyle->currentData().toInt() == 0;
+        chkRingMem->setEnabled(sphere);
+        chkHoverSleep->setEnabled(sphere);
+        ringWidthRow->setVisible(sphere && chkRingMem->isChecked());
+    });
+    // 只有启用外圈内存环时才展示宽度设置
+    connect(chkRingMem, &QAbstractButton::toggled, this, [this](bool on) {
+        ringWidthRow->setVisible(on && comboBallStyle->currentData().toInt() == 0);
+    });
+
     // 大小（宽×高）
     auto *sz = new QHBoxLayout();
     sz->setSpacing(10);
@@ -618,10 +774,8 @@ QWidget *SettingsDialog::buildGeneralSection()
     iv->addLayout(lg);
     v->addWidget(iface);
 
-    // 高级（刷新间隔 / 形状蒙版）与系统监视器命令
-    v->addWidget(buildAdvancedSection());
-    v->addWidget(buildMonitorSection());
-
+    // 高级（刷新间隔 / 形状蒙版）与系统监视器命令由 buildUi 作为独立卡片加入，
+    // 这样通用页的每个设置区域都有各自的 iOS 风格分组。
     return box;
 }
 
@@ -636,11 +790,10 @@ QWidget *SettingsDialog::buildAsideSection()
     g->setProperty("section", "group");
     v->addWidget(g);
 
-    chkSnapEdge = new QCheckBox(tr("拖到屏幕左右边缘时吸附成竖条"), box);
-    chkSnapEdge->setToolTip(tr("开启后把小球拖到屏幕左/右边缘，会吸附成一根圆角竖条，\n"
-                               "条内用窄柱图显示 CPU 占用 / 内存 / 交换分区。\n"
-                               "把竖条往屏幕里侧拖开、或单击竖条，即可变回小球。"));
-    v->addWidget(chkSnapEdge);
+    v->addWidget(makeSwitchRow(tr("拖到屏幕左右边缘时吸附成竖条"), chkSnapEdge,
+        tr("开启后把小球拖到屏幕左/右边缘，会吸附成一根圆角竖条，\n"
+           "条内用窄柱图显示 CPU 占用 / 内存 / 交换分区。\n"
+           "把竖条往屏幕里侧拖开、或单击竖条，即可变回小球。")));
 
     // 快捷档位：一次把"宽度 + 圆角"调到位，点完立即生效（可对着竖条看效果）
     auto *pre = new QHBoxLayout();
@@ -892,15 +1045,10 @@ QWidget *SettingsDialog::buildDockSection()
     v->addLayout(op);
 
     // 记住上次滚动位置（默认不记住 → 每次打开弹窗都从顶部开始）
-    auto *mem = new QHBoxLayout();
-    mem->setSpacing(10);
-    checkRememberScroll = new QCheckBox(tr("记住上次滚动位置"), box);
+    v->addWidget(makeSwitchRow(tr("记住上次滚动位置"), checkRememberScroll,
+        tr("开启后关闭弹窗会记住当前滚动位置，下次打开回到原处；\n"
+           "关闭（默认）则每次打开都从顶部开始")));
     checkRememberScroll->setObjectName("rememberScroll");
-    checkRememberScroll->setToolTip(tr("勾选后关闭弹窗会记住当前滚动位置，下次打开回到原处；\n"
-                                       "不勾选（默认）则每次打开都从顶部开始"));
-    mem->addWidget(checkRememberScroll);
-    mem->addStretch(1);
-    v->addLayout(mem);
 
     auto *hint = new QLabel(tr("* 尺寸、密度与不透明度保存后立即生效；位置在下一次打开弹窗时按新规则摆放"), box);
     hint->setProperty("role", "hint");
@@ -1089,6 +1237,12 @@ void SettingsDialog::loadFromConfig()
 
     opacitySlider->setValue(int(qBound(0.5, cfg->getOpacity(), 1.0) * 100));
     comboBallStyle->setCurrentIndex(qBound(0, cfg->getBallStyle(), comboBallStyle->count() - 1));
+    chkRingMem->setChecked(cfg->getRingMem() != 0);
+    chkRingMem->setEnabled(cfg->getBallStyle() == 0);   // 仅球形形态可设置
+    spinRingWidth->setValue(qBound(2, cfg->getRingMemWidth(), 16));
+    ringWidthRow->setVisible(cfg->getBallStyle() == 0 && cfg->getRingMem() != 0);
+    chkHoverSleep->setChecked(cfg->getHoverSleep() != 0);
+    chkHoverSleep->setEnabled(cfg->getBallStyle() == 0);
     comboLanguage->setCurrentIndex(qBound(0, cfg->getLanguage(), comboLanguage->count() - 1));
     spinWidth->setValue(qBound(spinWidth->minimum(),  cfg->getWidth(),  spinWidth->maximum()));
     spinHeight->setValue(qBound(spinHeight->minimum(), cfg->getHeight(), spinHeight->maximum()));
@@ -1182,6 +1336,12 @@ void SettingsDialog::loadDefaults()
 
     // 窗口
     comboBallStyle->setCurrentIndex(0);   // 悬浮球形态：球形（默认）
+    chkRingMem->setChecked(false);        // 外圈内存比例环图：默认关闭
+    chkRingMem->setEnabled(true);         // 默认球形形态下可用
+    spinRingWidth->setValue(3);           // 默认环宽度 3px
+    ringWidthRow->setVisible(false);      // 未启用内存环 → 隐藏宽度设置
+    chkHoverSleep->setChecked(false);     // 悬停跑环息屏：默认关闭
+    chkHoverSleep->setEnabled(true);
     comboLanguage->setCurrentIndex(0);   // 界面语言：跟随系统（默认）
     opacitySlider->setValue(91);          // 0.91
     spinWidth->setValue(100);
@@ -1325,6 +1485,9 @@ void SettingsDialog::applyChanges()
 
     // 悬浮球形态
     cfg->setBallStyle(comboBallStyle->currentData().toInt());
+    cfg->setRingMem(chkRingMem->isChecked() ? 1 : 0);
+    cfg->setRingMemWidth(spinRingWidth->value());
+    cfg->setHoverSleep(chkHoverSleep->isChecked() ? 1 : 0);
     cfg->setLanguage(comboLanguage->currentData().toInt());
 
     // 系统监视器命令：只允许“单条程序+参数”。含 shell 运算符的危险串不落盘，

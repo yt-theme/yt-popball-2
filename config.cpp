@@ -114,6 +114,12 @@ void Config::readConfig()
     this->dock_view_style       = this->settingsObj->value("/ui/dock_view_style", 0).toInt();
     // 悬浮球形态：0=球形（默认）1=圆角矩形 2=直角方形 3=长条形
     this->ball_style            = this->settingsObj->value("/ui/ball_style", 0).toInt();
+    // 外圈内存占用比例环图：1=开启 0=关闭（默认）；仅球形形态有效
+    this->ring_mem              = this->settingsObj->value("/ui/ring_mem", 0).toInt();
+    // 内存环宽度（px），默认 3
+    this->ring_mem_width        = qBound(2, this->settingsObj->value("/ui/ring_mem_width", 3).toInt(), 16);
+    // 悬停跑环息屏：1=开启 0=关闭（默认）
+    this->hover_sleep           = this->settingsObj->value("/ui/hover_sleep", 0).toInt();
     // 弹窗：尺寸 / 位置 / 密度（后加的键，老配置没有必须给默认值）
     this->dock_width            = this->settingsObj->value("/ui/dock_width", 330).toInt();
     this->dock_height           = this->settingsObj->value("/ui/dock_height", 452).toInt();
@@ -371,6 +377,25 @@ void Config::setBallStyle(qint32 val)
 {
     this->settingsObj->setValue("/ui/ball_style", val);
     this->ball_style = qBound<qint32>(0, val, 3);
+}
+
+void Config::setRingMem(qint32 val)
+{
+    this->settingsObj->setValue("/ui/ring_mem", val);
+    this->ring_mem = (val != 0) ? 1 : 0;
+}
+
+void Config::setRingMemWidth(qint32 val)
+{
+    const qint32 v = qBound(2, val, 16);
+    this->settingsObj->setValue("/ui/ring_mem_width", v);
+    this->ring_mem_width = v;
+}
+
+void Config::setHoverSleep(qint32 val)
+{
+    this->settingsObj->setValue("/ui/hover_sleep", val);
+    this->hover_sleep = (val != 0) ? 1 : 0;
 }
 
 void Config::setDockWidth(qint32 val)
@@ -643,6 +668,21 @@ qint32 Config::getDockViewStyle()
 qint32 Config::getBallStyle()
 {
     return this->ball_style;
+}
+
+qint32 Config::getRingMem()
+{
+    return this->ring_mem;
+}
+
+qint32 Config::getRingMemWidth()
+{
+    return this->ring_mem_width;
+}
+
+qint32 Config::getHoverSleep()
+{
+    return this->hover_sleep;
 }
 
 qint32 Config::getDockWidth()

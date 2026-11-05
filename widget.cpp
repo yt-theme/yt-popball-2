@@ -19,6 +19,8 @@
 #include <QProcess>
 #include <QStandardPaths>
 #include <QtMath>
+#include <QGuiApplication>
+#include <QScreen>
 #include <QFontMetrics>
 #include <QWindow>          // 原生 Wayland 降级：QWindow::startSystemMove()
 
@@ -122,6 +124,44 @@ constexpr int kBallBar      = 3;
 constexpr int kBallBarW     = 190;
 constexpr int kBallBarH     = 64;
 
+// 悬停跑环息屏：光标停在球上多久把外圈进度环跑满并关闭显示器（毫秒）。
+constexpr int kHoverSleepMs = 3000;
+
+// 全屏渐暗遮罩：用带 alpha 的黑色自绘，不依赖 setWindowOpacity
+// （Wayland / 部分 X11 合成器对 window opacity 支持不一致，自绘 alpha 更通用）。
+// 点击穿透 + 不抢焦点，悬浮球才能继续收到悬停/拖动；球本身会 raise 到遮罩之上。
+class DimOverlayWidget : public QWidget
+{
+public:
+    explicit DimOverlayWidget(QWidget *parent = nullptr) : QWidget(parent)
+    {
+        setWindowFlags(Qt::FramelessWindowHint | Qt::WindowStaysOnTopHint
+                       | Qt::Tool | Qt::WindowTransparentForInput
+                       | Qt::WindowDoesNotAcceptFocus);
+        setAttribute(Qt::WA_TranslucentBackground);
+        setAttribute(Qt::WA_ShowWithoutActivating);
+        setAttribute(Qt::WA_TransparentForMouseEvents);
+        setFocusPolicy(Qt::NoFocus);
+    }
+
+    void setDimOpacity(qreal o)
+    {
+        this->m_opacity = qBound(0.0, o, 1.0);
+        this->update();
+    }
+
+protected:
+    void paintEvent(QPaintEvent *) override
+    {
+        QPainter p(this);
+        p.fillRect(this->rect(), QColor(0, 0, 0, int(qRound(this->m_opacity * 255.0))));
+    }
+
+private:
+    qreal m_opacity = 0.0;
+};
+
+
 // 注：X11 的混成检测 / sticky / 提层等平台代码已移到 linuxwindow.cpp
 // （popballLinuxCompositingMissing / popballLinuxMakeSticky / popballLinuxRaise），
 // 这里不再直接包含 Xlib，避免 Xlib 的宏(None/True/False)污染本文件。
@@ -196,6 +236,11 @@ Widget::Widget(QWidget *parent)
     this->hideTimer->setSingleShot(true);
     this->hideTimer->setInterval(250);
     connect(this->hideTimer, &QTimer::timeout, this, &Widget::onHideTimeout);
+
+    // 悬停跑环息屏：30ms 推进一帧进度环，只在倒计时期间运行（不常驻唤醒）
+    this->sleepTimer = new QTimer(this);
+    this->sleepTimer->setInterval(30);
+    connect(this->sleepTimer, &QTimer::timeout, this, &Widget::onSleepTick);
 
     // 轻量轮询：即使窗口/应用未激活（如 macOS 后台不投递 enter/move 事件），
     // 也靠全局光标坐标判断是否在球/面板上，从而在未激活时移上去也能弹出面板。
@@ -1033,6 +1078,7 @@ void Widget::mousePressEvent(QMouseEvent *event)
         this->dockWasVisibleOnPress = (this->popDock != nullptr && this->popDock->isVisible());
         this->pressMoved = false;
         this->cancelHidePopDock();
+        this->cancelSleepCountdown();   // 按下球（拖动/点击）时中断跑环倒计时
         this->isMousePressed = true;
         this->curWindowPos = event->pos();
         this->pressGlobalPos = event->globalPosition().toPoint();
@@ -1177,6 +1223,22 @@ void Widget::onHoverPoll()
                                   || this->popDock->targetRect().contains(gp)));
     const bool over = overBall || overDock;
 
+    // 悬停跑环息屏：仅球形形态可用；光标停在球上且面板未打开时，外圈进度环开始推进。
+    // 开启该功能后悬停不再自动划出面板（点击球仍可打开），避免两种悬停行为冲突。
+    const bool sleepEligible = this->config->getHoverSleep() == 1
+                               && this->config->getShape() == SHAPE_CIRCLE
+                               && this->config->getBallStyle() == 0;
+    if (!overBall)
+        this->sleepArmed = true;   // 离开球 → 允许下一次触发（唤醒后光标仍在球上时不会立刻再次息屏）
+    const bool canSleep = sleepEligible && overBall && !this->isMousePressed
+                          && !this->dragOpening && !this->popDock->isVisible();
+    if (canSleep) {
+        if (!this->sleepCountdownActive && this->sleepArmed)
+            this->startSleepCountdown();
+    } else {
+        this->cancelSleepCountdown();
+    }
+
     if (over == this->cursorOverUi)
         return;                                // 状态未变，避免重复重置 300ms 计时
     this->cursorOverUi = over;
@@ -1184,8 +1246,9 @@ void Widget::onHoverPoll()
     if (over) {
         this->cancelHidePopDock();
         if (!this->popDock->isVisible() && !this->isMousePressed) {
-            // 打开方式=点击 时不「划入」弹；全屏游戏/全屏应用激活时也不「划入」弹。
-            if (this->config->getDockTrigger() == 0 && !fullscreenAppActive())
+            // 打开方式=点击 时不「划入」弹；全屏游戏/全屏应用激活时也不「划入」弹；
+            // 悬停息屏开启时悬停已改用于跑环倒计时，同样不弹。
+            if (this->config->getDockTrigger() == 0 && !fullscreenAppActive() && !sleepEligible)
                 this->hoverTimer->start();     // 停留 300ms 才弹
         }
     } else {
@@ -1211,6 +1274,11 @@ void Widget::onOverlayRaise()
 void Widget::onHoverTimeout()
 {
     if (this->isMousePressed) return;          // 正在拖动小球时不弹
+    // 悬停息屏开启（且为球形）：悬停已用于跑环倒计时，不再划出面板
+    if (this->config->getHoverSleep() == 1
+        && this->config->getShape() == SHAPE_CIRCLE
+        && this->config->getBallStyle() == 0)
+        return;
     // 兜底再校验一次：300ms 内游戏可能刚好进入全屏，或触发方式改成了点击。
     if (this->config->getDockTrigger() != 0) return;   // 点击模式：划入不弹
     if (fullscreenAppActive()) return;                  // 全屏：划入不弹
@@ -1225,6 +1293,146 @@ void Widget::onHideTimeout()
     if (this->popDock->isInteractionLocked())
         return;
     this->popDock->hideAnimated();      // 离开球与面板 → 划入收起
+}
+
+// ---------------------------------------------------------------- 悬停跑环息屏
+void Widget::startSleepCountdown()
+{
+    if (this->sleepTimer == nullptr || this->sleepCountdownActive || !this->sleepArmed)
+        return;
+    this->sleepCountdownActive = true;
+    this->sleepProgress = 0.0;
+    this->sleepElapsed.start();
+    this->sleepTimer->start();
+    this->showDimOverlays(0.0);   // 全屏遮罩从全透明开始，随进度变暗
+    this->raise();          // 跑环期间把球顶到最上层，粒子效果不会被其他置顶窗口压住
+    this->update();
+}
+
+void Widget::cancelSleepCountdown()
+{
+    if (!this->sleepCountdownActive)
+        return;
+    this->sleepCountdownActive = false;
+    this->sleepProgress = 0.0;
+    if (this->sleepTimer != nullptr)
+        this->sleepTimer->stop();
+    this->hideDimOverlays();      // 中途移开/按下 → 立即恢复亮度
+    this->update();
+}
+
+void Widget::onSleepTick()
+{
+    if (!this->sleepCountdownActive)
+        return;
+    const qreal p = qBound(0.0,
+                           double(this->sleepElapsed.elapsed()) / double(kHoverSleepMs),
+                           1.0);
+    this->sleepProgress = p;
+    this->updateDimOverlays(p);   // 屏幕亮度跟随跑环进度逐渐变暗
+    if (p >= 1.0) {
+        // 跑满：先停掉动画（显示器的开关由系统接管），并"解除武装"，
+        // 直到光标离开球才允许再次触发，避免唤醒瞬间又马上息屏。
+        this->sleepCountdownActive = false;
+        this->sleepProgress = 0.0;
+        this->sleepTimer->stop();
+        this->sleepArmed = false;
+        this->update();
+        this->triggerScreenOff();
+        // 屏幕熄灭后遮罩已不可见；稍后撤掉，万一系统关屏失败也能自动恢复亮度
+        QTimer::singleShot(600, this, [this]() { this->hideDimOverlays(); });
+        return;
+    }
+    this->update();
+}
+
+// 全屏渐暗遮罩：每块屏幕一个黑色置顶窗口，点击穿透、不抢焦点，
+// 透明度跟随跑环进度。球本身随后 raise 到遮罩之上，保证进度环和火星仍然清晰。
+void Widget::showDimOverlays(qreal opacity)
+{
+#if defined(Q_OS_LINUX)
+    // 原生 Wayland：普通顶层窗口无法保证定位/层级，全屏遮罩还会盖住悬浮球，
+    // 因此只做熄屏、不做渐暗（不崩、不影响灭屏）。
+    if (popballLinuxIsWaylandNative())
+        return;
+    // Xorg 没开混成：带 alpha 的遮罩会被渲染成整块黑色，失去"渐暗"效果，直接跳过。
+    if (popballLinuxIsX11() && popballLinuxCompositingMissing())
+        return;
+#endif
+    const auto screens = QGuiApplication::screens();
+    if (screens.isEmpty())
+        return;
+    if (this->dimOverlays.size() != screens.size()) {
+        for (QWidget *w : this->dimOverlays) {
+            w->hide();
+            w->deleteLater();
+        }
+        this->dimOverlays.clear();
+        for (QScreen *screen : screens) {
+            QWidget *w = new DimOverlayWidget(nullptr);
+            w->setGeometry(screen->geometry());
+            this->dimOverlays.append(w);
+        }
+    } else {
+        // 屏幕布局可能变了，重新对齐
+        for (int i = 0; i < screens.size(); ++i)
+            this->dimOverlays[i]->setGeometry(screens[i]->geometry());
+    }
+    this->updateDimOverlays(opacity);
+    for (QWidget *w : this->dimOverlays)
+        w->show();
+    this->raise();      // 球压在遮罩之上
+}
+
+void Widget::updateDimOverlays(qreal opacity)
+{
+    const qreal o = qBound(0.0, opacity, 1.0);
+    for (QWidget *w : this->dimOverlays)
+        static_cast<DimOverlayWidget *>(w)->setDimOpacity(o);
+}
+
+void Widget::hideDimOverlays()
+{
+    for (QWidget *w : this->dimOverlays)
+        w->hide();
+}
+
+void Widget::triggerScreenOff()
+{
+    // 直接让显示器休眠（无光污染），鼠标/键盘活动由系统自动唤醒。
+#if defined(Q_OS_WIN)
+    popballWinScreenOff();
+#elif defined(Q_OS_MACOS)
+    QProcess::startDetached(QStringLiteral("/usr/bin/pmset"),
+                            QStringList{ QStringLiteral("displaysleepnow") });
+#elif defined(Q_OS_LINUX)
+    // Wayland 会话里真实显示器由合成器掌管，XWayland 上的 xset/DPMS 是无效的：
+    // 优先用各合成器自己的命令，其次走 freedesktop ScreenSaver 接口。
+    if (popballLinuxSessionIsWayland()) {
+        if (!qEnvironmentVariableIsEmpty("SWAYSOCK")
+            && QProcess::startDetached(QStringLiteral("swaymsg"),
+                QStringList{ QStringLiteral("output"), QStringLiteral("*"),
+                             QStringLiteral("dpms"), QStringLiteral("off") }))
+            return;
+        if (!qEnvironmentVariableIsEmpty("HYPRLAND_INSTANCE_SIGNATURE")
+            && QProcess::startDetached(QStringLiteral("hyprctl"),
+                QStringList{ QStringLiteral("dispatch"), QStringLiteral("dpms"),
+                             QStringLiteral("off") }))
+            return;
+        // GNOME / KDE 都提供 freedesktop ScreenSaver 接口：SetActive(true) 立即黑屏，
+        // 任意鼠标/键盘输入由合成器自动唤醒。
+        QProcess::startDetached(QStringLiteral("dbus-send"),
+            QStringList{ QStringLiteral("--session"),
+                         QStringLiteral("--dest=org.freedesktop.ScreenSaver"),
+                         QStringLiteral("--type=method_call"),
+                         QStringLiteral("/ScreenSaver"),
+                         QStringLiteral("org.freedesktop.ScreenSaver.SetActive"),
+                         QStringLiteral("boolean:true") });
+    }
+    // X11 / XWayland 兜底：DPMS 强制关屏（Xorg 下可靠；XWayland 下无效则无害）
+    QProcess::startDetached(QStringLiteral("xset"),
+        QStringList{ QStringLiteral("dpms"), QStringLiteral("force"), QStringLiteral("off") });
+#endif
 }
 
 void Widget::scheduleHidePopDock()
@@ -1820,6 +2028,8 @@ void Widget::onMenuSystemMonitor()
 // 设置保存后：把新颜色套到 LCD、按新的不透明度/显示项重刷界面
 void Widget::onSettingsApplied()
 {
+    // 形态或悬停息屏开关可能改了：正在跑的倒计时立即作废
+    this->cancelSleepCountdown();
     // 磁盘读写：设置里可能改了"统计哪块盘"
     this->sysInfo->setDiskSelection(config->getDiskIoMode(), config->getDiskIoName());
     // 先按新配置定窗口尺寸/定时器/蒙版（setFixedSize 在这里执行），
@@ -1858,6 +2068,7 @@ void Widget::quitApplication()
     // 先隐藏是为了避免退出瞬间在桌面上残留半透明窗口或黑框。
     if (this->updateDataTimer != nullptr) this->updateDataTimer->stop();
     if (this->updateUITimer   != nullptr) this->updateUITimer->stop();
+    if (this->sleepTimer      != nullptr) this->sleepTimer->stop();
     this->hide();
     QCoreApplication::quit();
 }
@@ -1941,6 +2152,54 @@ void Widget::paintEvent(QPaintEvent *)
         case 2:  painter.drawRect(shapeRect); break;                  // 直角方形
         case 3:  painter.drawRoundedRect(shapeRect, 4, 4); break;   // 长条形（小圆角）
         default: painter.drawEllipse(shapeRect); break;               // 球形（默认）
+        }
+
+        // 外圈内存占用比例环图：仅「球形」形态有效，其他形态的外圈不是圆环，不绘制。
+        // 环加粗并垫一圈中性色轨道：实心彩色弧 = 已占用，灰色轨道 = 空余，二者一眼可辨。
+        if (ballStyle == 0 && config->getRingMem() == 1
+            && this->sysInfo->isMemAvailable() && this->sysInfo->getMemTotal() > 0)
+        {
+            painter.save();
+            const double ratio = qBound(0.0,
+                                        double(this->sysInfo->getMemUsed())
+                                            / double(this->sysInfo->getMemTotal()),
+                                        1.0);
+            // 环宽度由设置项控制（默认 3px）
+            const qreal ringWidth = qMax<qreal>(2.0, config->getRingMemWidth());
+            const qreal inset = (ringWidth - main_border_width) / 2.0;
+            const QRectF ringRect = shapeRect.adjusted(inset, inset, -inset, -inset);
+
+            // 空余部分轨道：按球体背景明暗自动选半透明白/黑，任何主题下都有对比
+            const QColor ballBg(config->getMainColor());
+            const double bgLum = 0.2126 * ballBg.red()
+                               + 0.7152 * ballBg.green()
+                               + 0.0722 * ballBg.blue();
+            QColor trackColor = (bgLum < 128) ? QColor(255, 255, 255, 70)
+                                              : QColor(0, 0, 0, 60);
+            painter.setBrush(Qt::NoBrush);
+            painter.setPen(QPen(trackColor, ringWidth, Qt::SolidLine, Qt::FlatCap));
+            painter.drawEllipse(ringRect);
+
+            painter.setPen(QPen(QColor(config->getMemColor()), ringWidth,
+                                Qt::SolidLine, Qt::FlatCap));
+            // Qt 角度单位为 1/16 度：90° = 正上方，负 sweep = 顺时针
+            painter.drawArc(ringRect, 90 * 16, -qRound(ratio * 360.0 * 16));
+            painter.restore();
+        }
+
+        // 悬停跑环息屏进度：叠在同一个外圈位置，跑满即熄屏（仅球形形态）
+        if (ballStyle == 0 && this->sleepCountdownActive && this->sleepProgress > 0.0)
+        {
+            painter.save();
+            const qreal ringWidth = qMax<qreal>(3.0, main_border_width);
+            const qreal inset = (ringWidth - main_border_width) / 2.0;
+            const QRectF ringRect = shapeRect.adjusted(inset, inset, -inset, -inset);
+            painter.setBrush(Qt::NoBrush);
+            painter.setPen(QPen(QColor(config->getCpuUsageColor()), ringWidth,
+                                Qt::SolidLine, Qt::FlatCap));
+            painter.drawArc(ringRect, 90 * 16,
+                            -qRound(qBound(0.0, this->sleepProgress, 1.0) * 360.0 * 16));
+            painter.restore();
         }
 
         // clip（与背景形状一致，避免曲线/LCD 溢出形状边缘）
@@ -2111,9 +2370,11 @@ void Widget::paintEvent(QPaintEvent *)
         }
 
         // mem 曲线（长条模式下半透明叠加，避免盖住 swap / cpu）
-        quint64 mem_total = this->sysInfo->getMemTotal();
-        if (this->sysInfo->isMemAvailable() && mem_total > 0)
+        // 外圈已是内存占比环时不再画内存折线，避免同一数据重复展示、球内也显得干净
+        if (!(ballStyle == 0 && config->getRingMem() == 1)
+            && this->sysInfo->isMemAvailable() && this->sysInfo->getMemTotal() > 0)
         {
+            const quint64 mem_total = this->sysInfo->getMemTotal();
             QPainterPath memPath;
             memPath.moveTo(gLeft, gBase);
             const int memN = this->mem_data_history.size();
@@ -2375,6 +2636,38 @@ void Widget::paintEvent(QPaintEvent *)
         {
             if (!this->diskIoLCD->isHidden())
                 this->diskIoLCD->hide();
+        }
+
+        // 悬停跑环时的火星粒子：在所有内容之后绘制，保证处于最上层；
+        // 围绕进度环顺时针旋转，并随时间向外飘散、变暗熄灭，像一圈被甩出的火星。
+        if (this->sleepCountdownActive && this->sleepProgress > 0.0)
+        {
+            painter.save();
+            const QPointF c = shapeRect.center();
+            const qreal R = shapeRect.width() / 2.0;
+            const double t = double(this->sleepElapsed.elapsed()) / 1000.0;
+            constexpr int    kEmbers = 24;
+            constexpr double kCycle  = 0.9;   // 单颗粒子寿命（秒）
+            painter.setPen(Qt::NoPen);
+            for (int i = 0; i < kEmbers; ++i) {
+                double tick = (t + i * (kCycle / kEmbers)) / kCycle;
+                const double phase = tick - double(qFloor(tick));       // 0→1
+                const double ang = i * (360.0 / kEmbers) + t * 55.0;    // 顺时针转动
+                const double rad = R - 2.0 + phase * 6.0;               // 从环上向外飘
+                const double fade = 1.0 - phase;
+                const QPointF p(c.x() + qCos(qDegreesToRadians(ang)) * rad,
+                                c.y() + qSin(qDegreesToRadians(ang)) * rad);
+                const qreal core = 1.3 + 2.2 * fade;
+                QColor glow(255, 96, 16);
+                glow.setAlphaF(0.30 * fade);
+                painter.setBrush(glow);
+                painter.drawEllipse(p, core * 2.4, core * 2.4);
+                QColor hot(255, 214, 96);
+                hot.setAlphaF(0.55 + 0.45 * fade);
+                painter.setBrush(hot);
+                painter.drawEllipse(p, core, core);
+            }
+            painter.restore();
         }
 
         painter.end();

@@ -487,6 +487,52 @@
         <translation>Wide bar</translation>
     </message>
     <message>
+        <location filename="settingsdialog.cpp" line="579" />
+        <source>外圈显示为内存占用比例环图</source>
+        <translation>Show memory usage ring on outer edge</translation>
+    </message>
+    <message>
+        <location filename="settingsdialog.cpp" line="593" />
+        <source>外圈环宽度</source>
+        <translation>Ring width</translation>
+    </message>
+    <message>
+        <location filename="settingsdialog.cpp" line="551" />
+        <source>显示列</source>
+        <translation>Show columns</translation>
+    </message>
+    <message>
+        <location filename="settingsdialog.cpp" line="580" />
+        <source>开启后悬浮球外圈按内存占用比例绘制环图（从正上方顺时针填充）。
+仅「球形」形态有效，圆角矩形/直角方形/长条形下不显示。</source>
+        <translation>When enabled, the ball's outer ring shows memory usage as a gauge (filling clockwise from the top).
+Only applies to the Sphere shape; hidden for rounded rectangle, square, and wide bar.</translation>
+    </message>
+    <message>
+        <location filename="settingsdialog.cpp" line="583" />
+        <source>* 仅「球形」形态有效</source>
+        <translation>* Only applies to the Sphere shape</translation>
+    </message>
+    <message>
+        <location filename="settingsdialog.cpp" line="589" />
+        <source>鼠标悬停悬浮球跑环息屏</source>
+        <translation>Hover the ball to fill a ring and turn off the display</translation>
+    </message>
+    <message>
+        <location filename="settingsdialog.cpp" line="590" />
+        <source>开启后，鼠标停在悬浮球上约 3 秒，外圈进度环跑满即关闭显示器；
+移动鼠标（或按键盘）由系统自动唤醒。
+开启后悬停不再自动弹出中转站面板（点击悬浮球仍可打开）。</source>
+        <translation>After enabling, hovering over the ball for about 3 seconds fills the outer ring and turns off the display;
+moving the mouse (or pressing a key) wakes it via the system.
+Hover no longer opens the Dock panel automatically (clicking the ball still opens it).</translation>
+    </message>
+    <message>
+        <location filename="settingsdialog.cpp" line="594" />
+        <source>* 仅「球形」形态有效；悬停不再自动弹出面板（点击仍可打开）</source>
+        <translation>* Only applies to the Sphere shape; hover no longer opens the panel (click still opens it)</translation>
+    </message>
+    <message>
         <location filename="settingsdialog.cpp" line="434" />
         <source>不透明度</source>
         <translation>Opacity</translation>

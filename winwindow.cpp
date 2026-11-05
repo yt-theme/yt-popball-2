@@ -52,6 +52,12 @@ void popballPinToAllDesktops(unsigned long long wId)
     mgr->Release();
 }
 
+void popballWinScreenOff()
+{
+    // SC_MONITORPOWER + 2 = 关闭显示器；input 事件（鼠标移动/按键）由系统自动唤醒。
+    SendMessage(HWND_BROADCAST, WM_SYSCOMMAND, SC_MONITORPOWER, 2);
+}
+
 bool popballWinFullscreenAppActive()
 {
     HWND fg = GetForegroundWindow();

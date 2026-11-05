@@ -2812,7 +2812,7 @@ void PopDock::applyProcSettings(bool show, bool showCpu, bool showGpu, bool show
     m_procShowGpu   = showGpu;
     m_procShowMem   = showMem;
     m_procRefreshMs = qMax(500, refreshMs);
-    m_procMaxCount  = qMax(1, maxCount);
+    m_procMaxCount  = (maxCount <= 0) ? 0 : qMax(1, maxCount);   // 0 = 无限制
     m_procSort      = qBound(0, sort, 2);
 
     if (m_procTable != nullptr) {
@@ -2861,7 +2861,7 @@ void PopDock::onProcTick()
         return av > bv;
     });
 
-    if (list.size() > m_procMaxCount)
+    if (m_procMaxCount > 0 && list.size() > m_procMaxCount)
         list = list.mid(0, m_procMaxCount);
 
     // 首次采样/重置后的第一拍只建立基准，返回空列表：保留上一次的旧内容，

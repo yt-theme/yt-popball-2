@@ -67,6 +67,12 @@ private:
     qint32  dock_view_style;
     // 悬浮球形态（非贴边竖条时）：0=球形（默认） 1=圆角矩形 2=直角方形 3=长条形
     qint32  ball_style;
+    // 悬浮球外圈显示内存占用比例环图：1=开启 0=关闭（默认）。仅球形形态有效
+    qint32  ring_mem;
+    // 内存环宽度（px）：仅 ring_mem 开启时生效
+    qint32  ring_mem_width;
+    // 鼠标悬停悬浮球跑环息屏：1=开启 0=关闭（默认）。环跑满后关闭显示器，移动鼠标恢复
+    qint32  hover_sleep;
     // 数据中转站弹窗：尺寸 / 优先展示位置 / 内容密度
     qint32  dock_width;      // 弹窗宽度（px，默认 330）
     qint32  dock_height;     // 弹窗高度（px，默认 452）
@@ -153,6 +159,9 @@ public:
     // [ui]
     void setDockViewStyle(qint32 val);
     void setBallStyle(qint32 val);   // 悬浮球形态 0=球 1=圆角矩形 2=直角方形 3=长条形
+    void setRingMem(qint32 val);     // 外圈内存占用比例环图：1=开 0=关（仅球形有效）
+    void setRingMemWidth(qint32 val); // 内存环宽度（px）
+    void setHoverSleep(qint32 val);  // 悬停跑环息屏：1=开 0=关
     void setDockWidth(qint32 val);
     void setDockHeight(qint32 val);
     void setDockPosition(qint32 val);
@@ -222,6 +231,9 @@ public:
     // [ui]
     qint32 getDockViewStyle();
     qint32 getBallStyle();
+    qint32 getRingMem();
+    qint32 getRingMemWidth();
+    qint32 getHoverSleep();
     qint32 getDockWidth();
     qint32 getDockHeight();
     qint32 getDockPosition();

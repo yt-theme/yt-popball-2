@@ -4,7 +4,6 @@
 #include <QDialog>
 #include <QShowEvent>
 #include <QPushButton>
-#include <QCheckBox>
 #include <QSlider>
 #include <QLabel>
 #include <QSpinBox>
@@ -40,6 +39,33 @@ class SysInfo;
  *   应用 = 生效但不关窗口；确定 = 生效并关窗口；取消 = 不生效直接关
  *   恢复默认 = 二次确认后把默认值填回界面（仍需点应用/确定才生效）
  */
+#include <QAbstractButton>
+
+class QVariantAnimation;
+
+// iOS 风格开关：继承 QAbstractButton，沿用 checked/isChecked/toggled 语义，
+// 这样原来的勾选逻辑不需要改，只是外观变成滑动开关。
+class SwitchButton : public QAbstractButton
+{
+    Q_OBJECT
+public:
+    explicit SwitchButton(QWidget *parent = nullptr);
+    QSize sizeHint() const override;
+
+protected:
+    void paintEvent(QPaintEvent *e) override;
+    void showEvent(QShowEvent *e) override;
+    void enterEvent(QEnterEvent *e) override;
+    void leaveEvent(QEvent *e) override;
+
+private:
+    void animateTo(bool on);
+    qreal m_pos = 0.0;                 // 0=关 1=开（动画中为中间值）
+    bool  m_hover = false;
+    QColor m_onColor = QColor(0x2E, 0x7D, 0xD8);   // 与「确定」按钮同色
+    QVariantAnimation *m_anim = nullptr;
+};
+
 class SettingsDialog : public QDialog
 {
     Q_OBJECT
@@ -77,6 +103,10 @@ protected:
 private:
     void clampIntoScreen();
     void buildPresetRow(QVBoxLayout *parentLayout);
+    QWidget *makeSwitchRow(const QString &text, SwitchButton *&out,
+                           const QString &tooltip = QString(),
+                           bool labelWrap = false);
+
     QWidget *buildColorSection();
     QWidget *buildShowSection();
     QWidget *buildAppearanceSection();
@@ -104,11 +134,11 @@ private:
     // 避免 applyChanges 循环里被四个分项（预设白等）覆盖。
     bool textColorTouched = false;
 
-    QCheckBox *chkTemp = nullptr;
-    QCheckBox *chkFreq = nullptr;
-    QCheckBox *chkGpuTemp = nullptr;
-    QCheckBox *chkNet  = nullptr;
-    QCheckBox *chkDiskIo = nullptr;
+    SwitchButton *chkTemp = nullptr;
+    SwitchButton *chkFreq = nullptr;
+    SwitchButton *chkGpuTemp = nullptr;
+    SwitchButton *chkNet  = nullptr;
+    SwitchButton *chkDiskIo = nullptr;
 
     // 磁盘读写统计哪块盘
     QRadioButton *radDiskAuto    = nullptr;   // IO 最高的盘（默认）
@@ -118,6 +148,10 @@ private:
     QSlider *opacitySlider = nullptr;
     QLabel  *opacityLabel  = nullptr;
     QComboBox *comboBallStyle = nullptr;   // 悬浮球形态：0球 1圆角矩形 2直角方形 3长条形
+    SwitchButton *chkRingMem     = nullptr;   // 外圈显示内存占用比例环图（仅球形有效）
+    QWidget   *ringWidthRow   = nullptr;   // 内存环宽度行（仅启用内存环时显示）
+    QSpinBox  *spinRingWidth  = nullptr;   // 内存环宽度（px）
+    SwitchButton *chkHoverSleep  = nullptr;   // 鼠标悬停跑环息屏（仅球形有效）
     QComboBox *comboLanguage  = nullptr;   // 界面语言：0跟随系统 1简体中文 2English
     int       m_langApplied   = -1;   // 已应用的语言（用于“切换后重启生效”提示）
 
@@ -132,7 +166,7 @@ private:
     QComboBox *comboShapeMask  = nullptr;
 
     // 贴边竖条
-    QCheckBox *chkSnapEdge      = nullptr;
+    SwitchButton *chkSnapEdge      = nullptr;
     QSpinBox  *spinAsideWidth   = nullptr;
     QSpinBox  *spinAsideHeight  = nullptr;
     QSpinBox  *spinAsideRadius  = nullptr;
@@ -148,13 +182,13 @@ private:
     QComboBox *comboDockTrigger  = nullptr; // 打开方式：0划入（悬停） 1点击
     QSlider   *sliderDockOpacity = nullptr; // 弹窗背景不透明度（千分比 0~1000）
     QLabel    *lblDockOpacityVal = nullptr; // 当前百分比显示（如 87.1%）
-    QCheckBox *checkRememberScroll = nullptr; // 弹窗记住上次滚动位置（默认不记住）
+    SwitchButton *checkRememberScroll = nullptr; // 弹窗记住上次滚动位置（默认不记住）
 
     // 进程列表（弹窗底部）
-    QCheckBox *chkProcShow      = nullptr; // 显示进程列表
-    QCheckBox *chkProcCpu       = nullptr; // 显示 CPU 列
-    QCheckBox *chkProcGpu       = nullptr; // 显示 GPU 列
-    QCheckBox *chkProcMem       = nullptr; // 显示内存列
+    SwitchButton *chkProcShow      = nullptr; // 显示进程列表
+    SwitchButton *chkProcCpu       = nullptr; // 显示 CPU 列
+    SwitchButton *chkProcGpu       = nullptr; // 显示 GPU 列
+    SwitchButton *chkProcMem       = nullptr; // 显示内存列
     QComboBox *comboProcRefresh = nullptr; // 刷新间隔（1000/2000/3000/5000 ms）
     QComboBox *comboProcMax     = nullptr; // 最多显示条数
     QComboBox *comboProcSort    = nullptr; // 排序依据：0 CPU 1 GPU 2 内存

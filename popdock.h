@@ -527,7 +527,7 @@ private:
     bool           m_procShowGpu   = true;    // 显示 GPU 列（Linux/macOS 为估算）
     bool           m_procShowMem   = true;    // 显示内存列
     int            m_procRefreshMs = 3000;    // 刷新间隔（ms）
-    int            m_procMaxCount  = 10;      // 最多显示条数
+    int            m_procMaxCount  = 10;      // 最多显示条数（0 = 无限制）
     int            m_procSort      = 0;       // 排序依据：0=CPU 1=GPU 2=内存
 
     // 划出/划入动画

@@ -8,6 +8,9 @@
 // wId 传 WId(即 HWND)。失败静默降级 —— 不影响基本置顶功能。
 void popballPinToAllDesktops(unsigned long long wId);
 
+// 立即关闭显示器（等价于系统"关闭显示器"），任意鼠标/键盘活动由系统自动唤醒。
+void popballWinScreenOff();
+
 // 当前前台窗口是否处于全屏（全屏游戏 / 无边框窗口化 / 视频）。
 // 判定：GetForegroundWindow 的矩形铺满其所在显示器（含无边框全屏与独占全屏）。
 bool popballWinFullscreenAppActive();
