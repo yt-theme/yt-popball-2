@@ -74,6 +74,16 @@ private:
     qint32  dock_density;    // 0=紧凑 1=标准（默认） 2=宽松
     qint32  dock_opacity;    // 弹窗背景不透明度（千分比 0~1000，默认 871 = 87.1%）
     qint32  dock_remember_scroll; // 弹窗记住上次滚动位置：1=记住 0=不记住（默认，每次打开从顶部）
+    // 弹窗打开方式：0=鼠标划入（悬停）显示（默认） 1=仅点击显示
+    qint32  dock_trigger;
+    // 弹窗底部「进程列表」：显示开关 / 各列开关 / 刷新间隔 / 显示条数 / 排序依据
+    qint32  proc_show;         // 是否显示进程列表：1=显示（默认） 0=隐藏（关闭叉号可隐藏）
+    qint32  proc_show_cpu;     // 1=显示 CPU 列（默认）
+    qint32  proc_show_gpu;     // 1=显示 GPU 列（默认；Linux/macOS 为估算值）
+    qint32  proc_show_mem;     // 1=显示内存列（默认）
+    qint32  proc_refresh_ms;   // 刷新间隔（ms，默认 3000）
+    qint32  proc_max_count;    // 最多显示多少条（默认 10）
+    qint32  proc_sort;         // 排序依据：0=CPU（默认） 1=GPU 2=内存
     qint32  language;           // 界面语言：0=跟随系统（默认） 1=简体中文 2=English
 
     // [window]
@@ -149,6 +159,15 @@ public:
     void setDockDensity(qint32 val);
     void setDockOpacity(qint32 val);
     void setRememberScroll(bool on);
+    void setDockTrigger(qint32 val);
+    // 进程列表
+    void setProcShow(qint32 val);
+    void setProcShowCpu(qint32 val);
+    void setProcShowGpu(qint32 val);
+    void setProcShowMem(qint32 val);
+    void setProcRefreshMs(qint32 val);
+    void setProcMaxCount(qint32 val);
+    void setProcSort(qint32 val);
     void setLanguage(qint32 val);
 
     // [window]
@@ -209,6 +228,15 @@ public:
     qint32 getDockDensity();
     qint32 getDockOpacity();
     bool getRememberScroll();
+    qint32 getDockTrigger();
+    // 进程列表
+    qint32 getProcShow();
+    qint32 getProcShowCpu();
+    qint32 getProcShowGpu();
+    qint32 getProcShowMem();
+    qint32 getProcRefreshMs();
+    qint32 getProcMaxCount();
+    qint32 getProcSort();
     int getLanguage();
 
     // [window]

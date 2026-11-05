@@ -5,6 +5,7 @@
 #include <QGuiApplication>
 #include <QLibraryInfo>
 #include <QString>
+#include <cstring>
 
 #if defined(POPBALL_HAVE_X11)
 // Xlib 必须放在 Qt 头文件之后：它会把 None / True / False 定义成宏，
@@ -195,5 +196,61 @@ void popballLinuxRaise(unsigned long long winId)
     XRaiseWindow(dpy, static_cast<Window>(winId));
 #else
     Q_UNUSED(winId);
+#endif
+}
+
+// ---------------------------------------------------------------- 全屏检测
+bool popballLinuxFullscreenAppActive()
+{
+#if defined(POPBALL_HAVE_X11)
+    if (!popballLinuxIsX11())
+        return false;
+    Display *dpy = x11Display();
+    if (dpy == nullptr)
+        return false;
+
+    const Window root = DefaultRootWindow(dpy);
+    const Atom netActive     = XInternAtom(dpy, "_NET_ACTIVE_WINDOW", 0);
+    const Atom netWmState    = XInternAtom(dpy, "_NET_WM_STATE", 0);
+    const Atom netFullscreen = XInternAtom(dpy, "_NET_WM_STATE_FULLSCREEN", 0);
+    if (netActive == 0 || netWmState == 0 || netFullscreen == 0)
+        return false;
+
+    // 1) 读激活窗口（_NET_ACTIVE_WINDOW 是根窗口属性，值为 32 位窗口 XID）
+    Atom actType = 0;
+    int  actFmt  = 0;
+    unsigned long actN = 0, actAfter = 0;
+    unsigned char *actData = nullptr;
+    if (XGetWindowProperty(dpy, root, netActive, 0, 1, 0, XA_WINDOW,
+                           &actType, &actFmt, &actN, &actAfter, &actData) != Success
+        || actData == nullptr || actN == 0)
+        return false;
+    unsigned int activeXid = 0;
+    memcpy(&activeXid, actData, sizeof(activeXid));     // 只取 32 位（属性即 32 位）
+    XFree(actData);
+    if (activeXid == 0)
+        return false;
+
+    // 2) 读该窗口的 _NET_WM_STATE（值为 atom 列表），找 FULLSCREEN
+    Atom stType = 0;
+    int  stFmt  = 0;
+    unsigned long stN = 0, stAfter = 0;
+    unsigned char *stData = nullptr;
+    bool fullscreen = false;
+    if (XGetWindowProperty(dpy, static_cast<Window>(activeXid), netWmState, 0, 1024, 0,
+                           XA_ATOM, &stType, &stFmt, &stN, &stAfter, &stData) == Success
+        && stData != nullptr)
+    {
+        const unsigned int full = static_cast<unsigned int>(netFullscreen);
+        for (unsigned long i = 0; i < stN; ++i) {
+            unsigned int a = 0;
+            memcpy(&a, stData + i * sizeof(a), sizeof(a));
+            if (a == full) { fullscreen = true; break; }
+        }
+        XFree(stData);
+    }
+    return fullscreen;
+#else
+    return false;
 #endif
 }

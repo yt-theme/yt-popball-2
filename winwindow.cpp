@@ -52,4 +52,29 @@ void popballPinToAllDesktops(unsigned long long wId)
     mgr->Release();
 }
 
+bool popballWinFullscreenAppActive()
+{
+    HWND fg = GetForegroundWindow();
+    if (fg == nullptr || !IsWindow(fg))
+        return false;
+    // 桌面 / Shell 这类"前景"窗口不算全屏应用
+    if (fg == GetShellWindow() || fg == GetDesktopWindow())
+        return false;
+
+    RECT r;
+    if (!GetWindowRect(fg, &r))
+        return false;
+
+    HMONITOR mon = MonitorFromWindow(fg, MONITOR_DEFAULTTONEAREST);
+    MONITORINFO mi;
+    mi.cbSize = sizeof(mi);
+    if (!GetMonitorInfo(mon, &mi))
+        return false;
+
+    // 窗口铺满整个显示器（含无边框窗口化游戏、独占全屏）即视为全屏
+    const RECT &m = mi.rcMonitor;
+    return r.left <= m.left && r.top <= m.top
+        && r.right >= m.right && r.bottom >= m.bottom;
+}
+
 #endif // Q_OS_WIN

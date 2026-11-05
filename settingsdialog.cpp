@@ -424,6 +424,73 @@ QWidget *SettingsDialog::buildShowSection()
         comboDiskName->setEnabled(on);
     });
 
+    // ---------------- 进程列表（弹窗底部） ----------------
+    auto *pg = new QLabel(tr("进程列表"), box);
+    pg->setProperty("section", "group");
+    v->addWidget(pg);
+
+    // 显示开关
+    auto *pShow = new QHBoxLayout();
+    pShow->setSpacing(10);
+    chkProcShow = new QCheckBox(tr("显示进程列表"), box);
+    chkProcShow->setObjectName("procShow");
+    chkProcShow->setToolTip(tr("在弹窗底部显示按占用从高到低排序的进程列表。\n"
+                               "也可直接点列表右上角的 × 临时隐藏。"));
+    pShow->addWidget(chkProcShow);
+    pShow->addStretch(1);
+    v->addLayout(pShow);
+
+    // 三列开关
+    auto *pCols = new QHBoxLayout();
+    pCols->setSpacing(10);
+    chkProcCpu = new QCheckBox(tr("CPU"), box);   chkProcCpu->setObjectName("procCpu");
+    chkProcGpu = new QCheckBox(tr("GPU"), box);   chkProcGpu->setObjectName("procGpu");
+    chkProcMem = new QCheckBox(tr("内存"), box);  chkProcMem->setObjectName("procMem");
+    chkProcGpu->setToolTip(tr("每进程 GPU 占用：Windows 精确；Linux/macOS 为按 CPU 权重估算值"));
+    auto *colsLbl = new QLabel(tr("显示列："), box);
+    pCols->addWidget(colsLbl);
+    pCols->addWidget(chkProcCpu);
+    pCols->addWidget(chkProcGpu);
+    pCols->addWidget(chkProcMem);
+    pCols->addStretch(1);
+    v->addLayout(pCols);
+
+    // 刷新间隔
+    auto *pRefresh = new QHBoxLayout();
+    pRefresh->setSpacing(10);
+    pRefresh->addWidget(new QLabel(tr("刷新间隔"), box));
+    comboProcRefresh = new QComboBox(box); comboProcRefresh->setObjectName("procRefresh");
+    comboProcRefresh->addItem(tr("1 秒"), 1000);
+    comboProcRefresh->addItem(tr("2 秒"), 2000);
+    comboProcRefresh->addItem(tr("3 秒"), 3000);
+    comboProcRefresh->addItem(tr("5 秒"), 5000);
+    pRefresh->addWidget(comboProcRefresh, 1);
+    v->addLayout(pRefresh);
+
+    // 显示条数
+    auto *pMax = new QHBoxLayout();
+    pMax->setSpacing(10);
+    pMax->addWidget(new QLabel(tr("最多显示"), box));
+    comboProcMax = new QComboBox(box); comboProcMax->setObjectName("procMax");
+    comboProcMax->addItem(tr("5 条"), 5);
+    comboProcMax->addItem(tr("8 条"), 8);
+    comboProcMax->addItem(tr("10 条"), 10);
+    comboProcMax->addItem(tr("15 条"), 15);
+    comboProcMax->addItem(tr("20 条"), 20);
+    pMax->addWidget(comboProcMax, 1);
+    v->addLayout(pMax);
+
+    // 排序依据
+    auto *pSort = new QHBoxLayout();
+    pSort->setSpacing(10);
+    pSort->addWidget(new QLabel(tr("排序依据"), box));
+    comboProcSort = new QComboBox(box); comboProcSort->setObjectName("procSort");
+    comboProcSort->addItem(tr("CPU 占用"), 0);
+    comboProcSort->addItem(tr("GPU 占用"), 1);
+    comboProcSort->addItem(tr("内存占用"), 2);
+    pSort->addWidget(comboProcSort, 1);
+    v->addLayout(pSort);
+
     return box;
 }
 
@@ -776,6 +843,20 @@ QWidget *SettingsDialog::buildDockSection()
     pos->addWidget(comboDockPosition, 1);
     v->addLayout(pos);
 
+    // 打开方式：划入（悬停）显示 / 仅点击显示
+    auto *trig = new QHBoxLayout();
+    trig->setSpacing(10);
+    trig->addWidget(new QLabel(tr("打开方式"), box));
+    comboDockTrigger = new QComboBox(box); comboDockTrigger->setObjectName("dockTrigger");
+    comboDockTrigger->addItem(tr("鼠标划入（悬停）"), 0);
+    comboDockTrigger->addItem(tr("点击悬浮球"), 1);
+    comboDockTrigger->setToolTip(tr("决定中转站弹窗如何打开：\n"
+                                    "· 鼠标划入：鼠标移到悬浮球上停留片刻即弹出（默认）\n"
+                                    "· 点击悬浮球：单击悬浮球开关弹窗\n"
+                                    "注：全屏游戏 / 全屏应用激活时，划入不会自动弹出（点击仍可打开）。"));
+    trig->addWidget(comboDockTrigger, 1);
+    v->addLayout(trig);
+
     // 内容密度
     auto *den = new QHBoxLayout();
     den->setSpacing(10);
@@ -1035,8 +1116,27 @@ void SettingsDialog::loadFromConfig()
     comboDockPosition->setCurrentIndex((dpos >= 0 && dpos <= 3) ? dpos : 0);
     const int dden = cfg->getDockDensity();
     comboDockDensity->setCurrentIndex((dden >= 0 && dden <= 2) ? dden : 1);
+    const int dtrig = cfg->getDockTrigger();
+    comboDockTrigger->setCurrentIndex((dtrig == 1) ? 1 : 0);
     sliderDockOpacity->setValue(qBound(0, cfg->getDockOpacity(), 1000));
     checkRememberScroll->setChecked(cfg->getRememberScroll());
+
+    // 进程列表
+    chkProcShow->setChecked(cfg->getProcShow() != 0);
+    chkProcCpu->setChecked(cfg->getProcShowCpu() != 0);
+    chkProcGpu->setChecked(cfg->getProcShowGpu() != 0);
+    chkProcMem->setChecked(cfg->getProcShowMem() != 0);
+    {
+        const int r = cfg->getProcRefreshMs();
+        int ri = comboProcRefresh->findData(r);
+        comboProcRefresh->setCurrentIndex(ri >= 0 ? ri : comboProcRefresh->findData(3000));
+    }
+    {
+        const int mx = cfg->getProcMaxCount();
+        int mi = comboProcMax->findData(mx);
+        comboProcMax->setCurrentIndex(mi >= 0 ? mi : comboProcMax->findData(10));
+    }
+    comboProcSort->setCurrentIndex((cfg->getProcSort() >= 0 && cfg->getProcSort() <= 2) ? cfg->getProcSort() : 0);
 }
 
 // 从内置默认值把【所有】设置项填回界面。
@@ -1112,8 +1212,18 @@ void SettingsDialog::loadDefaults()
     spinDockHeight->setValue(452);
     comboDockPosition->setCurrentIndex(0);
     comboDockDensity->setCurrentIndex(1);
+    comboDockTrigger->setCurrentIndex(0);    // 打开方式：默认鼠标划入（悬停）
     sliderDockOpacity->setValue(871);
     checkRememberScroll->setChecked(false);   // 记住上次滚动位置：默认不记住
+
+    // 进程列表默认值
+    chkProcShow->setChecked(true);
+    chkProcCpu->setChecked(true);
+    chkProcGpu->setChecked(true);
+    chkProcMem->setChecked(true);
+    comboProcRefresh->setCurrentIndex(comboProcRefresh->findData(3000));
+    comboProcMax->setCurrentIndex(comboProcMax->findData(10));
+    comboProcSort->setCurrentIndex(0);
 }
 
 // ---------------------------------------------------------------- 色块样式
@@ -1234,8 +1344,18 @@ void SettingsDialog::applyChanges()
     cfg->setDockHeight(spinDockHeight->value());
     cfg->setDockPosition(comboDockPosition->currentData().toInt());
     cfg->setDockDensity(comboDockDensity->currentData().toInt());
+    cfg->setDockTrigger(comboDockTrigger->currentData().toInt());
     cfg->setDockOpacity(sliderDockOpacity->value());
     cfg->setRememberScroll(checkRememberScroll->isChecked());
+
+    // 进程列表
+    cfg->setProcShow(chkProcShow->isChecked() ? 1 : 0);
+    cfg->setProcShowCpu(chkProcCpu->isChecked() ? 1 : 0);
+    cfg->setProcShowGpu(chkProcGpu->isChecked() ? 1 : 0);
+    cfg->setProcShowMem(chkProcMem->isChecked() ? 1 : 0);
+    cfg->setProcRefreshMs(comboProcRefresh->currentData().toInt());
+    cfg->setProcMaxCount(comboProcMax->currentData().toInt());
+    cfg->setProcSort(comboProcSort->currentData().toInt());
 
     // 界面语言切换需重启生效（QTranslator 在应用启动时加载）。
     // 不弹"重启生效"提示框：切换形态/语言后界面按新配置即时刷新，

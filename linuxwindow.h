@@ -54,4 +54,9 @@ void popballLinuxMakeSticky(unsigned long long winId);
 // 把自己提到层叠最上面（对 override-redirect 窗口同样有效）
 void popballLinuxRaise(unsigned long long winId);
 
+// 当前激活窗口是否处于全屏（全屏游戏 / 视频 / 全屏应用）。
+// 依据 EWMH：根窗口 _NET_ACTIVE_WINDOW → 该窗口 _NET_WM_STATE 里的
+// _NET_WM_STATE_FULLSCREEN。XWayland 下同样可用（游戏经 XWayland 也会置该属性）。
+bool popballLinuxFullscreenAppActive();
+
 #endif // LINUXWINDOW_H

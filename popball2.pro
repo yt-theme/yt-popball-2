@@ -47,6 +47,7 @@ SOURCES += \
     clipstore.cpp \
     config.cpp \
     main.cpp \
+    proclist.cpp \
     settingsdialog.cpp \
     sysInfo.cpp \
     widget.cpp \
@@ -56,6 +57,7 @@ HEADERS += \
     clipstore.h \
     config.h \
     macro_def.h \
+    proclist.h \
     settingsdialog.h \
     struct_def.h \
     sysInfo.h \

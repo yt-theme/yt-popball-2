@@ -63,6 +63,12 @@
 #include <QTextLayout>
 #include <QTextOption>
 #include <QSignalBlocker>
+#include <QTableWidget>
+#include <QHeaderView>
+#include <QPalette>
+#include <algorithm>
+
+#include "sysInfo.h"
 
 #ifdef POPBALL2_HAVE_QT_MULTIMEDIA
 #include <QMediaPlayer>
@@ -148,6 +154,12 @@ QString sourceToggleQss(const QColor &accent)
 }
 
 } // namespace
+
+// 进程表格的列下标（名称 / CPU / GPU / 内存）
+static constexpr int kProcColName = 0;
+static constexpr int kProcColCpu  = 1;
+static constexpr int kProcColGpu  = 2;
+static constexpr int kProcColMem  = 3;
 
 // ---------------- 小工具：人类可读的文件大小 ----------------
 static QString humanSize(qint64 bytes)
@@ -2698,6 +2710,25 @@ QIcon PopDock::settingsIcon(const QColor &accent)
     return ic.isNull() ? QIcon(QStringLiteral(":/icons/settings.svg")) : ic;
 }
 
+// 右上角"关闭"按钮图标：自绘 ×（中性灰，与标题文字 #d7dbe0 一致），
+// 不需要 SVG 资源、也不跟随主题色 —— 关闭按钮保持中性的观感。
+QIcon PopDock::closeIcon()
+{
+    const int s = 40;
+    QPixmap pm(s, s);
+    pm.fill(Qt::transparent);
+    QPainter p(&pm);
+    p.setRenderHint(QPainter::Antialiasing, true);
+    QPen pen(QColor(0xd7, 0xdb, 0xe0));
+    pen.setWidthF(4.0);
+    pen.setCapStyle(Qt::RoundCap);
+    p.setPen(pen);
+    const int m = 13;                          // 边距：让 × 居中、留出圆角帽的呼吸空间
+    p.drawLine(QPoint(m, m), QPoint(s - m, s - m));
+    p.drawLine(QPoint(s - m, m), QPoint(m, s - m));
+    return QIcon(pm);
+}
+
 // ---------------- 划出 / 划入动画 ----------------
 
 // 时长与位移幅度：170ms 够看出"划出来"，又不会拖沓；
@@ -2764,6 +2795,112 @@ void PopDock::setDockOpacity(int permille)
 void PopDock::setRememberScroll(bool on)
 {
     m_rememberScroll = on;
+}
+
+// ---------------- 进程列表 ----------------
+
+void PopDock::setSysInfo(SysInfo *sysInfo)
+{
+    m_sysInfo = sysInfo;
+}
+
+void PopDock::applyProcSettings(bool show, bool showCpu, bool showGpu, bool showMem,
+                                int refreshMs, int maxCount, int sort)
+{
+    m_procShow      = show;
+    m_procShowCpu   = showCpu;
+    m_procShowGpu   = showGpu;
+    m_procShowMem   = showMem;
+    m_procRefreshMs = qMax(500, refreshMs);
+    m_procMaxCount  = qMax(1, maxCount);
+    m_procSort      = qBound(0, sort, 2);
+
+    if (m_procTable != nullptr) {
+        m_procTable->setColumnHidden(kProcColCpu, !m_procShowCpu);
+        m_procTable->setColumnHidden(kProcColGpu, !m_procShowGpu);
+        m_procTable->setColumnHidden(kProcColMem, !m_procShowMem);
+    }
+    if (m_procTimer != nullptr)
+        m_procTimer->setInterval(m_procRefreshMs);
+    if (m_procPanel != nullptr)
+        m_procPanel->setVisible(m_procShow);
+
+    // 重置增量基准，避免用陈旧基准第一次就弹出异常瞬时值。
+    // 注意：不在这里清空表格——重采样后的第一拍只建基准（返回空），
+    // onProcTick 会保留上一次的旧内容，避免每次应用设置都空白等待加载。
+    m_procSampler.reset();
+
+    // 已经显示中 → 立即（重）开始采样；尚未显示 → 交给 showEvent 启动。
+    if (m_procShow && isVisible() && m_procTimer != nullptr)
+        m_procTimer->start();
+    else if (!m_procShow && m_procTimer != nullptr)
+        m_procTimer->stop();
+}
+
+void PopDock::onProcTick()
+{
+    if (m_procTable == nullptr)
+        return;
+
+    // 整机 GPU 占用：拿得到就按 CPU 权重分摊成每进程估算值，拿不到（返回 <0）则列显 "—"
+    const double wholeGpu = (m_sysInfo != nullptr && m_sysInfo->isGpuUsageAvailable())
+                                ? m_sysInfo->getGpuUsage()
+                                : -1.0;
+
+    QList<ProcSample> list = m_procSampler.sample(wholeGpu);
+
+    // 排序：0=CPU（默认） 1=GPU 2=内存，都是从高到低
+    const int key = m_procSort;
+    std::sort(list.begin(), list.end(), [key](const ProcSample &a, const ProcSample &b) {
+        double av, bv;
+        switch (key) {
+            case 1:  av = a.gpuPercent; bv = b.gpuPercent; break;
+            case 2:  av = a.memMb;      bv = b.memMb;      break;
+            default: av = a.cpuPercent; bv = b.cpuPercent; break;
+        }
+        return av > bv;
+    });
+
+    if (list.size() > m_procMaxCount)
+        list = list.mid(0, m_procMaxCount);
+
+    // 首次采样/重置后的第一拍只建立基准，返回空列表：保留上一次的旧内容，
+    // 不清空表格、不等加载。
+    if (list.isEmpty())
+        return;
+
+    if (m_procTable->rowCount() != list.size())
+        m_procTable->setRowCount(list.size());
+
+    // 原地更新单元格文本，避免每次 tick 重建行造成闪烁/清空感。
+    auto updCell = [this](int row, int col, const QString &text,
+                          Qt::Alignment align) {
+        QTableWidgetItem *it = m_procTable->item(row, col);
+        if (it == nullptr) {
+            it = new QTableWidgetItem;
+            it->setForeground(QColor(0xe8, 0xea, 0xed));
+            m_procTable->setItem(row, col, it);
+        }
+        it->setText(text);
+        it->setTextAlignment(align);
+    };
+    for (int i = 0; i < list.size(); ++i) {
+        const ProcSample &s = list.at(i);
+        updCell(i, kProcColName, s.name, Qt::AlignLeft | Qt::AlignVCenter);
+        updCell(i, kProcColCpu, QString::number(s.cpuPercent, 'f', 1),
+                Qt::AlignRight | Qt::AlignVCenter);
+        updCell(i, kProcColGpu,
+                s.gpuPercent < 0.0 ? QStringLiteral("—")
+                                   : QString::number(s.gpuPercent, 'f', 1),
+                Qt::AlignRight | Qt::AlignVCenter);
+        const QString memText = (s.memMb >= 1024.0)
+                                    ? QStringLiteral("%1 GB").arg(s.memMb / 1024.0, 0, 'f', 2)
+                                    : QStringLiteral("%1 MB").arg(s.memMb, 0, 'f', 0);
+        updCell(i, kProcColMem, memText, Qt::AlignRight | Qt::AlignVCenter);
+    }
+
+    if (m_procCountLbl != nullptr)
+        m_procCountLbl->setText(tr("%1 条").arg(list.size()));
 }
 
 void PopDock::showAnimated(const QPoint &targetPos, const QRect &ballRect)
@@ -2929,6 +3066,21 @@ PopDock::PopDock(QWidget *parent)
         hl->addWidget(m_settingsBtn);
         hl->addWidget(m_monitorBtn);
         hl->addWidget(m_powerBtn);
+
+        // 最右：关闭按钮（×），与其它头部按钮同款样式，点击直接划入收起面板
+        m_closeBtn = new QToolButton(header);
+        m_closeBtn->setObjectName(QStringLiteral("popDockCloseBtn"));
+        m_closeBtn->setIcon(closeIcon());
+        m_closeBtn->setIconSize(QSize(21, 21));
+        m_closeBtn->setFixedSize(30, 30);
+        m_closeBtn->setCursor(Qt::PointingHandCursor);
+        m_closeBtn->setToolTip(tr("关闭"));
+        m_closeBtn->setStyleSheet(QStringLiteral(
+            "QToolButton{background:transparent;border:none;border-radius:6px;}"
+            "QToolButton:hover{background:rgba(255,255,255,0.18);}"
+            "QToolButton:pressed{background:rgba(255,255,255,0.30);}"));
+        connect(m_closeBtn, &QToolButton::clicked, this, [this] { this->hideAnimated(); });
+        hl->addWidget(m_closeBtn);
         root->addWidget(header, 0);
     }
 
@@ -3141,6 +3293,106 @@ PopDock::PopDock(QWidget *parent)
         "QToolButton:hover{background:rgba(255,255,255,0.12);}"));
     footer->addWidget(m_addNoteBtn, 0, Qt::AlignRight | Qt::AlignVCenter);
     root->addLayout(footer, 0);
+
+    // ---------- 弹窗底部「进程列表」：小标题（左「进程」+ 右上 N 条 + ×）+ 表格 ----------
+    m_procPanel = new QWidget(this);
+    m_procPanel->setObjectName(QStringLiteral("procPanel"));
+    m_procPanel->setStyleSheet(QStringLiteral(
+        "QWidget#procPanel{background:transparent;border-top:1px solid rgba(255,255,255,0.10);}"));
+    {
+        auto *pv = new QVBoxLayout(m_procPanel);
+        pv->setContentsMargins(2, 4, 2, 0);
+        pv->setSpacing(2);
+
+        auto *procHeader = new QWidget(m_procPanel);
+        procHeader->setStyleSheet(QStringLiteral("background:transparent;"));
+        auto *ph = new QHBoxLayout(procHeader);
+        ph->setContentsMargins(0, 0, 0, 0);
+        ph->setSpacing(6);
+
+        auto *procTitle = new QLabel(tr("进程"), procHeader);
+        procTitle->setStyleSheet(QStringLiteral("background:transparent;color:#d7dbe0;"));
+        { QFont f = procTitle->font(); f.setPixelSize(12); f.setBold(true); procTitle->setFont(f); }
+        ph->addWidget(procTitle);
+        ph->addStretch(1);
+
+        m_procCountLbl = new QLabel(procHeader);
+        m_procCountLbl->setStyleSheet(QStringLiteral("background:transparent;color:#8b9199;"));
+        { QFont f = m_procCountLbl->font(); f.setPixelSize(11); m_procCountLbl->setFont(f); }
+        ph->addWidget(m_procCountLbl);
+
+        // × 隐藏整个进程列表（不是关闭某一行进程）
+        m_procCloseBtn = new QToolButton(procHeader);
+        m_procCloseBtn->setObjectName(QStringLiteral("procCloseBtn"));
+        m_procCloseBtn->setIcon(closeIcon());
+        m_procCloseBtn->setIconSize(QSize(15, 15));
+        m_procCloseBtn->setFixedSize(22, 22);
+        m_procCloseBtn->setCursor(Qt::PointingHandCursor);
+        m_procCloseBtn->setToolTip(tr("隐藏进程列表"));
+        m_procCloseBtn->setStyleSheet(QStringLiteral(
+            "QToolButton{background:transparent;border:none;border-radius:6px;}"
+            "QToolButton:hover{background:rgba(255,255,255,0.18);}"));
+        connect(m_procCloseBtn, &QToolButton::clicked, this, [this] {
+            m_procShow = false;
+            m_procPanel->hide();
+            if (m_procTimer != nullptr)
+                m_procTimer->stop();
+            m_procSampler.reset();
+            emit procListCloseRequested();          // Widget 负责把 proc_show 持久化为 0
+        });
+        ph->addWidget(m_procCloseBtn);
+        pv->addWidget(procHeader);
+
+        m_procTable = new QTableWidget(m_procPanel);
+        m_procTable->setObjectName(QStringLiteral("procTable"));
+        m_procTable->setColumnCount(4);
+        m_procTable->setHorizontalHeaderLabels({ tr("名称"), tr("CPU %"), tr("GPU %"), tr("内存") });
+        m_procTable->verticalHeader()->setVisible(false);
+        m_procTable->verticalHeader()->setDefaultSectionSize(18);
+        m_procTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
+        m_procTable->setSelectionMode(QAbstractItemView::NoSelection);
+        m_procTable->setFocusPolicy(Qt::NoFocus);
+        m_procTable->setShowGrid(false);
+        m_procTable->setFrameShape(QFrame::NoFrame);
+        QHeaderView *hh = m_procTable->horizontalHeader();
+        hh->setHighlightSections(false);
+        hh->setMinimumSectionSize(34);
+        hh->setSectionResizeMode(kProcColName, QHeaderView::Stretch);
+        hh->setSectionResizeMode(kProcColCpu,  QHeaderView::ResizeToContents);
+        hh->setSectionResizeMode(kProcColGpu,  QHeaderView::ResizeToContents);
+        hh->setSectionResizeMode(kProcColMem,  QHeaderView::ResizeToContents);
+        hh->setStretchLastSection(false);
+        // 与深色半透明弹窗融为一体：表格/视口/行/选区全部透明，只保留浅色文字与细分隔线。
+        // 注意 QSS 影响不到表格内部视口，必须再关掉视口自绘背景并把 Base 置透明，
+        // 否则会按系统浅色调画出不透明白底，和弹窗背景不搭（用户反馈的问题）。
+        m_procTable->setStyleSheet(QStringLiteral(
+            "QTableWidget{background:transparent;border:none;}"
+            "QTableWidget::item{background:transparent;color:#e8eaed;padding:0 6px;border:none;}"
+            "QTableWidget::item:selected{background:transparent;color:#e8eaed;}"
+            "QHeaderView{background:transparent;border:none;}"
+            "QHeaderView::section{background:transparent;color:#8b9199;border:none;"
+            "border-bottom:1px solid rgba(255,255,255,0.10);padding:2px 6px;font-size:11px;}"
+            "QScrollBar:vertical{background:transparent;width:6px;margin:0;}"
+            "QScrollBar::handle:vertical{background:rgba(255,255,255,0.22);"
+            "border-radius:3px;min-height:20px;}"
+            "QScrollBar::handle:vertical:hover{background:rgba(255,255,255,0.34);}"
+            "QScrollBar::add-line:vertical,QScrollBar::sub-line:vertical{height:0;}"
+            "QScrollBar::add-page:vertical,QScrollBar::sub-page:vertical{background:transparent;}"));
+        m_procTable->setAutoFillBackground(false);
+        m_procTable->viewport()->setAutoFillBackground(false);
+        QPalette vpPalette = m_procTable->viewport()->palette();
+        vpPalette.setColor(QPalette::Base, Qt::transparent);
+        vpPalette.setColor(QPalette::Window, Qt::transparent);
+        m_procTable->viewport()->setPalette(vpPalette);
+        pv->addWidget(m_procTable, 1);
+    }
+    m_procPanel->setFixedHeight(164);   // 固定高度：表格多余行内部滚动，不挤压中转站
+    m_procPanel->hide();                // 默认隐藏，Widget 构造后按配置 applyProcSettings 决定
+    root->addWidget(m_procPanel, 0);
+
+    m_procTimer = new QTimer(this);
+    m_procTimer->setInterval(3000);
+    connect(m_procTimer, &QTimer::timeout, this, &PopDock::onProcTick);
 
     connect(viewGroup, &QButtonGroup::idClicked, this, [this](int id) {
         m_station->setViewStyle(TransferStation::ViewStyle(id));
@@ -3593,6 +3845,27 @@ void PopDock::showEvent(QShowEvent *event)
     else
         m_station->scrollToTop();
     m_station->setFocus();          // 拿到焦点，Ctrl/Cmd+V 粘贴才生效
+    // 进程列表：显示中且开启 → 重置基准并开始采样。
+    // - 首次（表格还没有内容）：立即采样并渲染，列表马上就有数据，不必等一个刷新周期。
+    // - 再次打开（已有旧内容）：保留旧内容立即可见，只建立基准，下一拍原地刷新。
+    if (m_procShow && m_procTimer != nullptr) {
+        const bool hadContent = (m_procTable != nullptr && m_procTable->rowCount() > 0);
+        m_procSampler.reset();
+        m_procTimer->start(m_procRefreshMs);
+        QTimer::singleShot(0, this, [this, hadContent]() {
+            if (!m_procShow || !isVisible())
+                return;
+            if (hadContent) {
+                // 仅建基准（首拍返回 CPU=0 的列表，丢弃即可），保留旧内容
+                const double wg = (m_sysInfo != nullptr && m_sysInfo->isGpuUsageAvailable())
+                                      ? m_sysInfo->getGpuUsage() : -1.0;
+                m_procSampler.sample(wg);
+            } else {
+                // 首次立即渲染：首拍返回进程名/内存（CPU 暂 0），马上填表
+                onProcTick();
+            }
+        });
+    }
 }
 
 void PopDock::hideEvent(QHideEvent *event)
@@ -3601,6 +3874,8 @@ void PopDock::hideEvent(QHideEvent *event)
     hidePreview();                  // 面板收起时预览气泡一并收起
     if (m_rememberScroll)
         m_station->saveScrollPosition();   // 记住滚动位置：关闭时保存当前滚动值
+    if (m_procTimer != nullptr)
+        m_procTimer->stop();        // 面板隐藏时停止进程采样，省 CPU
 }
 
 void PopDock::addFiles(const QStringList &paths)

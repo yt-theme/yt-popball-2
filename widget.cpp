@@ -33,6 +33,21 @@
 
 namespace {
 
+// 当前是否有"全屏"窗口处于激活态（全屏游戏 / 全屏视频 / 全屏应用 Space）。
+// 全屏时「划入」不弹面板（点球仍可开关），避免游戏里误触。
+bool fullscreenAppActive()
+{
+#if defined(Q_OS_LINUX)
+    return popballLinuxFullscreenAppActive();
+#elif defined(Q_OS_WIN)
+    return popballWinFullscreenAppActive();
+#elif defined(Q_OS_MACOS)
+    return popballMacFullscreenAppActive();
+#else
+    return false;
+#endif
+}
+
 // 网速自适应格式化。
 // 输入字节/秒，输出固定 4 字符宽的字段（含单位字母），例如：
 //     1.23K   12.3K   123K   1.23M   12.3M   123M   1.23G
@@ -219,6 +234,20 @@ Widget::Widget(QWidget *parent)
     this->popDock->setRememberScroll(this->config->getRememberScroll());
     // 面板内"激活/选中"样式跟随主题强调色（main_border_color）
     this->popDock->setAccentColor(QColor(this->config->getCpuUsageColor()));
+    // 弹窗底部「进程列表」：数据源 + 配置回填
+    this->popDock->setSysInfo(this->sysInfo);
+    this->popDock->applyProcSettings(this->config->getProcShow() != 0,
+                                     this->config->getProcShowCpu() != 0,
+                                     this->config->getProcShowGpu() != 0,
+                                     this->config->getProcShowMem() != 0,
+                                     this->config->getProcRefreshMs(),
+                                     this->config->getProcMaxCount(),
+                                     this->config->getProcSort());
+    // 用户点进程列表 × 隐藏整个列表 → 持久化 proc_show=0
+    connect(this->popDock, &PopDock::procListCloseRequested, this, [this] {
+        if (this->config != nullptr)
+            this->config->setProcShow(0);
+    });
     // 面板右上角"操作"菜单（设置 / 系统监视器 / 退出）→ 原悬浮球右键菜单的动作
     connect(this->popDock, &PopDock::settingsRequested, this, &Widget::onMenuSettings);
     connect(this->popDock, &PopDock::systemMonitorRequested, this, &Widget::onMenuSystemMonitor);
@@ -1154,8 +1183,11 @@ void Widget::onHoverPoll()
 
     if (over) {
         this->cancelHidePopDock();
-        if (!this->popDock->isVisible() && !this->isMousePressed)
-            this->hoverTimer->start();         // 停留 300ms 才弹
+        if (!this->popDock->isVisible() && !this->isMousePressed) {
+            // 打开方式=点击 时不「划入」弹；全屏游戏/全屏应用激活时也不「划入」弹。
+            if (this->config->getDockTrigger() == 0 && !fullscreenAppActive())
+                this->hoverTimer->start();     // 停留 300ms 才弹
+        }
     } else {
         this->hoverTimer->stop();
         if (this->popDock->isVisible())
@@ -1179,6 +1211,9 @@ void Widget::onOverlayRaise()
 void Widget::onHoverTimeout()
 {
     if (this->isMousePressed) return;          // 正在拖动小球时不弹
+    // 兜底再校验一次：300ms 内游戏可能刚好进入全屏，或触发方式改成了点击。
+    if (this->config->getDockTrigger() != 0) return;   // 点击模式：划入不弹
+    if (fullscreenAppActive()) return;                  // 全屏：划入不弹
     this->showPopDock();
 }
 
@@ -1802,6 +1837,14 @@ void Widget::onSettingsApplied()
     this->popDock->setDockOpacity(this->config->getDockOpacity());
     // 滚动位置记忆开关：下次打开弹窗时按新规则（默认不记住 → 顶部）
     this->popDock->setRememberScroll(this->config->getRememberScroll());
+    // 进程列表配置可能改了 → 立即应用（关/列/刷新间隔/条数/排序）
+    this->popDock->applyProcSettings(this->config->getProcShow() != 0,
+                                     this->config->getProcShowCpu() != 0,
+                                     this->config->getProcShowGpu() != 0,
+                                     this->config->getProcShowMem() != 0,
+                                     this->config->getProcRefreshMs(),
+                                     this->config->getProcMaxCount(),
+                                     this->config->getProcSort());
     if (this->popDock->isVisible()) {
         const QPoint target = this->popDockTargetPos();   // 内部已按新尺寸 setFixedSize
         this->popDock->move(target);                      // 直接落位，不重播滑入动画

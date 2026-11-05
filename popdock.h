@@ -21,9 +21,12 @@
 #include <QColor>
 
 #include "clipstore.h"
+#include "proclist.h"
 
 class TransferStation;
 class TsItemDelegate;
+class SysInfo;
+class QTableWidget;
 class QPropertyAnimation;
 class QParallelAnimationGroup;
 class QVariantAnimation;
@@ -383,6 +386,14 @@ public:
     // 弹窗是否记住上次滚动位置：true=关闭再打开回到上次滚动处；false=每次打开从顶部开始（默认）
     void setRememberScroll(bool on);
     bool rememberScroll() const { return m_rememberScroll; }
+
+    // ---------- 弹窗底部「进程列表」 ----------
+    // 设置系统信息源（取整机 GPU 占用做每进程 GPU 估算）；不持有所有权。
+    void setSysInfo(SysInfo *sysInfo);
+    // 应用进程列表配置：是否显示 / 各列开关 / 刷新间隔(ms) / 最多条数 / 排序(0=CPU 1=GPU 2=内存)。
+    // 由 Widget 在构造与设置保存后调用。
+    void applyProcSettings(bool show, bool showCpu, bool showGpu, bool showMem,
+                           int refreshMs, int maxCount, int sort);
     // 当前首选尺寸（默认 = 静态常量；applyDockSettings 后跟随配置）
     int preferredWidth()  const { return m_prefWidth; }
     int preferredHeight() const { return m_prefHeight; }
@@ -413,6 +424,8 @@ signals:
     void quitRequested();
     // 用户拖拽弹窗边缘调整大小后发出（Widget 负责写入配置持久化；本对象同步首选尺寸）
     void sizeEdited(int width, int height);
+    // 用户点进程列表右上角的 × ：隐藏整个进程列表（Widget 负责把 proc_show 持久化为 0）
+    void procListCloseRequested();
 
 protected:
     void showEvent(QShowEvent *event) override;
@@ -433,6 +446,7 @@ private slots:
     void onPreviewHideRequested();
     void onClipboardChanged();      // 剪贴板变了（防抖后真正抓取）
     void captureClipboard();        // 把当前剪贴板内容收进中转站 + 入库
+    void onProcTick();              // 定期采样进程并刷新进程表格
 
 private:
     void installDockTracking(QObject *obj);   // 递归安装事件过滤器，稳定捕获进出
@@ -451,6 +465,7 @@ private:
     static QIcon settingsIcon(const QColor &accent);  // 右上角"设置"：用户 SVG（齿轮）形状 + 主题色
     static QIcon monitorIcon(const QColor &accent);   // 右上角"系统监视器"：用户 SVG（性能统计）+ 主题色
     static QIcon powerIcon(const QColor &accent);     // 右上角"退出"：用户 SVG（电源开关）+ 主题色
+    static QIcon closeIcon();                      // 右上角"关闭"：自绘 ×（中性灰，无 SVG 资源）
     // 读内嵌 SVG 资源并把原图 #515151 灰替换为主题强调色后渲染；缺 QtSvg 返回空 QIcon。
     static QIcon svgThemeIcon(const QString &resPath, const QColor &accent);
 
@@ -460,6 +475,7 @@ private:
     QToolButton     *m_settingsBtn = nullptr; // 标题区右："设置"（齿轮）按钮
     QToolButton     *m_monitorBtn  = nullptr; // 标题区右："系统监视器"（柱状图）按钮
     QToolButton     *m_powerBtn    = nullptr; // 标题区最右："退出"（电源）按钮
+    QToolButton     *m_closeBtn    = nullptr; // 标题区最右：关闭面板（×）
     QToolButton     *m_addNoteBtn = nullptr;  // 底栏右：新建记事
     QWidget         *m_noteRow    = nullptr;  // 记事编辑行（输入框 + 确认按钮）
     QLineEdit       *m_noteEdit   = nullptr;  // 新建记事时的输入框
@@ -497,6 +513,22 @@ private:
     bool             m_historyLoaded = false; // 历史是否已回填
     QTimer          *m_clipTimer  = nullptr;  // 剪贴板变化防抖
     int              m_interactionLock = 0;   // >0 = 正在菜单/拖拽里操作，别自动收起
+
+    // 弹窗底部「进程列表」
+    QWidget       *m_procPanel    = nullptr;  // 进程列表容器（标题栏 + 表格）
+    QLabel        *m_procCountLbl = nullptr;  // 面板右上角行数（如 "10 条"）
+    QToolButton   *m_procCloseBtn = nullptr;  // 面板右上角 ×（隐藏整个列表）
+    QTableWidget  *m_procTable    = nullptr;  // 进程表格
+    QTimer        *m_procTimer    = nullptr;  // 采样刷新定时器
+    ProcessSampler m_procSampler;             // 进程采样器（维护 CPU 增量基准）
+    SysInfo       *m_sysInfo      = nullptr;  // 取整机 GPU 占用（不持有所有权）
+    bool           m_procShow      = false;   // 是否显示进程列表
+    bool           m_procShowCpu   = true;    // 显示 CPU 列
+    bool           m_procShowGpu   = true;    // 显示 GPU 列（Linux/macOS 为估算）
+    bool           m_procShowMem   = true;    // 显示内存列
+    int            m_procRefreshMs = 3000;    // 刷新间隔（ms）
+    int            m_procMaxCount  = 10;      // 最多显示条数
+    int            m_procSort      = 0;       // 排序依据：0=CPU 1=GPU 2=内存
 
     // 划出/划入动画
     QPropertyAnimation      *m_slide = nullptr;

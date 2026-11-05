@@ -145,9 +145,19 @@ private:
     QPushButton *btnDockSizeReset = nullptr; // 弹窗恢复默认尺寸（330×452）
     QComboBox *comboDockPosition = nullptr; // 优先展示位置：0自动 1右侧 2左侧 3屏幕居中
     QComboBox *comboDockDensity  = nullptr; // 内容密度：0紧凑 1标准 2宽松
+    QComboBox *comboDockTrigger  = nullptr; // 打开方式：0划入（悬停） 1点击
     QSlider   *sliderDockOpacity = nullptr; // 弹窗背景不透明度（千分比 0~1000）
     QLabel    *lblDockOpacityVal = nullptr; // 当前百分比显示（如 87.1%）
     QCheckBox *checkRememberScroll = nullptr; // 弹窗记住上次滚动位置（默认不记住）
+
+    // 进程列表（弹窗底部）
+    QCheckBox *chkProcShow      = nullptr; // 显示进程列表
+    QCheckBox *chkProcCpu       = nullptr; // 显示 CPU 列
+    QCheckBox *chkProcGpu       = nullptr; // 显示 GPU 列
+    QCheckBox *chkProcMem       = nullptr; // 显示内存列
+    QComboBox *comboProcRefresh = nullptr; // 刷新间隔（1000/2000/3000/5000 ms）
+    QComboBox *comboProcMax     = nullptr; // 最多显示条数
+    QComboBox *comboProcSort    = nullptr; // 排序依据：0 CPU 1 GPU 2 内存
 
     QPushButton *btnRestore = nullptr;
     QPushButton *btnCancel  = nullptr;

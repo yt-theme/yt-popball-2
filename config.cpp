@@ -122,6 +122,16 @@ void Config::readConfig()
     this->dock_opacity          = this->settingsObj->value("/ui/dock_opacity", 871).toInt();
     // 磨砂玻璃背景：默认开启（悬浮球与弹窗共用）
     this->dock_remember_scroll  = this->settingsObj->value("/ui/dock_remember_scroll", 0).toInt();
+    // 弹窗打开方式：0=划入（悬停）显示（默认） 1=仅点击显示（后加的键，老配置给默认值）
+    this->dock_trigger          = this->settingsObj->value("/ui/dock_trigger", 0).toInt();
+    // 弹窗底部「进程列表」配置（后加的键，老配置给默认值）
+    this->proc_show         = this->settingsObj->value("/ui/proc_show", 1).toInt();
+    this->proc_show_cpu     = this->settingsObj->value("/ui/proc_show_cpu", 1).toInt();
+    this->proc_show_gpu     = this->settingsObj->value("/ui/proc_show_gpu", 1).toInt();
+    this->proc_show_mem     = this->settingsObj->value("/ui/proc_show_mem", 1).toInt();
+    this->proc_refresh_ms   = this->settingsObj->value("/ui/proc_refresh_ms", 3000).toInt();
+    this->proc_max_count    = this->settingsObj->value("/ui/proc_max_count", 10).toInt();
+    this->proc_sort         = this->settingsObj->value("/ui/proc_sort", 0).toInt();
     this->language              = this->settingsObj->value("/ui/language", 0).toInt();
 
     // [window]
@@ -401,6 +411,49 @@ void Config::setRememberScroll(bool on)
     this->dock_remember_scroll = on ? 1 : 0;
 }
 
+void Config::setDockTrigger(qint32 val)
+{
+    this->settingsObj->setValue("/ui/dock_trigger", val);
+    this->dock_trigger = val;
+}
+
+// 进程列表
+void Config::setProcShow(qint32 val)
+{
+    this->settingsObj->setValue("/ui/proc_show", val);
+    this->proc_show = val;
+}
+void Config::setProcShowCpu(qint32 val)
+{
+    this->settingsObj->setValue("/ui/proc_show_cpu", val);
+    this->proc_show_cpu = val;
+}
+void Config::setProcShowGpu(qint32 val)
+{
+    this->settingsObj->setValue("/ui/proc_show_gpu", val);
+    this->proc_show_gpu = val;
+}
+void Config::setProcShowMem(qint32 val)
+{
+    this->settingsObj->setValue("/ui/proc_show_mem", val);
+    this->proc_show_mem = val;
+}
+void Config::setProcRefreshMs(qint32 val)
+{
+    this->settingsObj->setValue("/ui/proc_refresh_ms", val);
+    this->proc_refresh_ms = val;
+}
+void Config::setProcMaxCount(qint32 val)
+{
+    this->settingsObj->setValue("/ui/proc_max_count", val);
+    this->proc_max_count = val;
+}
+void Config::setProcSort(qint32 val)
+{
+    this->settingsObj->setValue("/ui/proc_sort", val);
+    this->proc_sort = val;
+}
+
 // [window]
 void Config::setShapeMask(qint32 val)
 {
@@ -621,6 +674,19 @@ bool Config::getRememberScroll()
 {
     return this->dock_remember_scroll != 0;
 }
+
+qint32 Config::getDockTrigger()
+{
+    return this->dock_trigger;
+}
+
+qint32 Config::getProcShow()   { return this->proc_show; }
+qint32 Config::getProcShowCpu(){ return this->proc_show_cpu; }
+qint32 Config::getProcShowGpu(){ return this->proc_show_gpu; }
+qint32 Config::getProcShowMem(){ return this->proc_show_mem; }
+qint32 Config::getProcRefreshMs() { return this->proc_refresh_ms; }
+qint32 Config::getProcMaxCount()  { return this->proc_max_count; }
+qint32 Config::getProcSort()      { return this->proc_sort; }
 
 void Config::setLanguage(qint32 val)
 {

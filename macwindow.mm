@@ -3,6 +3,7 @@
 #if defined(Q_OS_MACOS)
 
 #import <Cocoa/Cocoa.h>
+#import <CoreGraphics/CoreGraphics.h>
 #include <cstdint>
 #include <vector>
 
@@ -40,6 +41,65 @@ void popballHideFromDock()
     //   * 但窗口仍可正常显示在最上层
     // 相比在 Info.plist 里写 LSUIElement，这种方式对开发期直接跑二进制也生效。
     [NSApp setActivationPolicy:NSApplicationActivationPolicyAccessory];
+}
+
+// 从 CGWindowList 的窗口信息字典里取窗口矩形（kCGWindowBounds 是 X/Y/Width/Height 字典）。
+static bool popballDictCGRect(CFDictionaryRef win, CGRect *outRect)
+{
+    CFDictionaryRef b = (CFDictionaryRef)CFDictionaryGetValue(win, kCGWindowBounds);
+    if (b == nullptr)
+        return false;
+    return CGRectMakeWithDictionaryRepresentation(b, outRect);
+}
+
+bool popballMacFullscreenAppActive()
+{
+    @autoreleasepool {
+        NSRunningApplication *front = [[NSWorkspace sharedWorkspace] frontmostApplication];
+        if (front == nil)
+            return false;
+        const int frontPid = (int)front.processIdentifier;
+
+        const CGRect screen = CGDisplayBounds(CGMainDisplayID());
+        CFArrayRef list = CGWindowListCopyWindowInfo(kCGWindowListOptionOnScreenOnly,
+                                                     kCGNullWindowID);
+        if (list == nullptr)
+            return false;
+
+        bool fullscreen = false;
+        const CFIndex n = CFArrayGetCount(list);
+        for (CFIndex i = 0; i < n && !fullscreen; ++i) {
+            CFDictionaryRef win = (CFDictionaryRef)CFArrayGetValueAtIndex(list, i);
+
+            int pid = 0;
+            CFNumberRef pidRef = (CFNumberRef)CFDictionaryGetValue(win, kCGWindowOwnerPID);
+            if (pidRef != nullptr)
+                CFNumberGetValue(pidRef, kCFNumberIntType, &pid);
+            if (pid != frontPid)
+                continue;
+
+            // 只关心普通窗口层（0 层）：菜单栏/状态栏/悬浮条等更高层窗口不算
+            int layer = 0;
+            CFNumberRef layerRef = (CFNumberRef)CFDictionaryGetValue(win, kCGWindowLayer);
+            if (layerRef != nullptr)
+                CFNumberGetValue(layerRef, kCFNumberIntType, &layer);
+            if (layer != 0)
+                continue;
+
+            CGRect bounds = CGRectZero;
+            if (!popballDictCGRect(win, &bounds))
+                continue;
+
+            // 铺满主屏（留几像素容差，兼容不同分辨率缩放导致的小数误差）
+            if (bounds.size.width  >= screen.size.width  - 16.0
+                && bounds.size.height >= screen.size.height - 16.0)
+            {
+                fullscreen = true;
+            }
+        }
+        CFRelease(list);
+        return fullscreen;
+    }
 }
 
 #endif // Q_OS_MACOS

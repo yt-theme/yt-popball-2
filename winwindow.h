@@ -7,6 +7,10 @@
 // Windows：让悬浮球跟随所有虚拟桌面(Win+Ctrl+D 新建的桌面都能看到)。
 // wId 传 WId(即 HWND)。失败静默降级 —— 不影响基本置顶功能。
 void popballPinToAllDesktops(unsigned long long wId);
+
+// 当前前台窗口是否处于全屏（全屏游戏 / 无边框窗口化 / 视频）。
+// 判定：GetForegroundWindow 的矩形铺满其所在显示器（含无边框全屏与独占全屏）。
+bool popballWinFullscreenAppActive();
 #endif
 
 #endif // WINWINDOW_H

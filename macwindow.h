@@ -15,6 +15,10 @@ void popballApplyMacWindowBehavior(unsigned long long wId);
 // 但窗口照常显示在最上层 —— 这正是 360 悬浮球那类桌面挂件的行为。
 // 建议在 QApplication 构造之后尽快调用。
 void popballHideFromDock();
+
+// 当前前台应用是否处于全屏（全屏游戏 / 视频 / 全屏 Space）。
+// 判定：前台应用在屏幕上存在一个铺满主屏的普通窗口（0 层窗口）。
+bool popballMacFullscreenAppActive();
 #endif
 
 #endif // MACWINDOW_H
