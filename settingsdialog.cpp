@@ -1567,11 +1567,11 @@ void SettingsDialog::loadDefaults()
     textColorTouched = false;   // 恢复默认：总项与分项一致，无需联动
     // 颜色（顺序必须与 kColors 一致）
     static const struct { const char *key; const char *val; } kColorDefs[kColorCount] = {
-        { "main_color",        "#13191C" },
-        { "main_border_color", "#41B0DD" },
-        { "mem_color",         "#2E6FC4" },
-        { "swap_color",        "#8C2A5E93" },
-        { "cpu_usage_color",   "#4FB7DDFF" },
+        { "main_color",        "#150F1E" },
+        { "main_border_color", "#A78BFA" },
+        { "mem_color",         "#7C3AED" },
+        { "swap_color",        "#8C2E1065" },
+        { "cpu_usage_color",   "#59E879F9" },
         { "gpu_usage_color",   "#FFC084FC" },
         { "shadow_color",      "#000000" },
         { "text_color",        "#fff" },
@@ -1600,10 +1600,10 @@ void SettingsDialog::loadDefaults()
 
     // 窗口
     comboBallStyle->setCurrentIndex(0);   // 悬浮球形态：球形（默认）
-    chkRingMem->setChecked(false);        // 外圈内存比例环图：默认关闭
+    chkRingMem->setChecked(true);         // 外圈内存比例环图：默认开启
     chkRingMem->setEnabled(true);         // 默认球形形态下可用
     spinRingWidth->setValue(3);           // 默认环宽度 3px
-    ringWidthRow->setVisible(false);      // 未启用内存环 → 隐藏宽度设置
+    ringWidthRow->setVisible(true);       // 已启用内存环 → 显示宽度设置
     chkHoverSleep->setChecked(false);     // 悬停跑环息屏：默认关闭
     chkHoverSleep->setEnabled(true);
     comboLanguage->setCurrentIndex(0);   // 界面语言：跟随系统（默认）

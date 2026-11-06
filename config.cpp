@@ -103,12 +103,12 @@ void Config::readConfig()
     // 新增键：老配置文件里可能没有，必须给默认值，否则读出来是空/0
     this->shadow_color          = this->settingsObj->value("/appearance/shadow_color", "#000000").toString();
     this->shape                 = this->settingsObj->value("/appearance/shape", 0).toInt();
-    this->main_color            = this->settingsObj->value("/appearance/main_color", "#13191C").toString();
-    this->main_border_color     = this->settingsObj->value("/appearance/main_border_color", "#41B0DD").toString();
+    this->main_color            = this->settingsObj->value("/appearance/main_color", "#150F1E").toString();
+    this->main_border_color     = this->settingsObj->value("/appearance/main_border_color", "#A78BFA").toString();
     this->main_border_width     = this->settingsObj->value("/appearance/main_border_width", 2).toInt();
-    this->mem_color             = this->settingsObj->value("/appearance/mem_color", "#2E6FC4").toString();
-    this->swap_color            = this->settingsObj->value("/appearance/swap_color", "#8C2A5E93").toString();
-    this->cpu_usage_color       = this->settingsObj->value("/appearance/cpu_usage_color", "#4FB7DDFF").toString();
+    this->mem_color             = this->settingsObj->value("/appearance/mem_color", "#7C3AED").toString();
+    this->swap_color            = this->settingsObj->value("/appearance/swap_color", "#8C2E1065").toString();
+    this->cpu_usage_color       = this->settingsObj->value("/appearance/cpu_usage_color", "#59E879F9").toString();
     this->gpu_usage_color       = this->settingsObj->value("/appearance/gpu_usage_color", "#FFC084FC").toString();
     this->cpu_usage_width       = this->settingsObj->value("/appearance/cpu_usage_width", 1.1).toDouble();
     this->cpu_freq_color        = this->settingsObj->value("/appearance/cpu_freq_color", "#fff").toString();
@@ -142,8 +142,8 @@ void Config::readConfig()
     this->dock_view_style       = this->settingsObj->value("/ui/dock_view_style", 1).toInt();
     // 悬浮球形态：0=球形（默认）1=圆角矩形 2=直角方形 3=长条形
     this->ball_style            = this->settingsObj->value("/ui/ball_style", 0).toInt();
-    // 外圈内存占用比例环图：1=开启 0=关闭（默认）；仅球形形态有效
-    this->ring_mem              = this->settingsObj->value("/ui/ring_mem", 0).toInt();
+    // 外圈内存占用比例环图：1=开启（默认） 0=关闭；仅球形形态有效
+    this->ring_mem              = this->settingsObj->value("/ui/ring_mem", 1).toInt();
     // 内存环宽度（px），默认 3
     this->ring_mem_width        = qBound(2, this->settingsObj->value("/ui/ring_mem_width", 3).toInt(), 16);
     // 悬停跑环息屏：1=开启 0=关闭（默认）
