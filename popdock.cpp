@@ -3247,17 +3247,22 @@ void PopDock::onProcSampled(const QList<ProcSample> &raw)
         m_procTable->setRowCount(list.size());
 
     // 原地更新单元格文本，避免每次 tick 重建行造成闪烁/清空感。
+    // 文本没变就不写（setText 会触发 dataChanged + 重绘）；对齐只在建 item 时设置一次。
     auto updCell = [this](int row, int col, const QString &text,
                           Qt::Alignment align) {
         QTableWidgetItem *it = m_procTable->item(row, col);
         if (it == nullptr) {
             it = new QTableWidgetItem;
             it->setForeground(QColor(0xe8, 0xea, 0xed));
+            it->setTextAlignment(align);
             m_procTable->setItem(row, col, it);
+            it->setText(text);      // 新建后再写，避免上面 setItem 时先触发一次空文本变更
+            return;
         }
-        it->setText(text);
-        it->setTextAlignment(align);
+        if (it->text() != text)
+            it->setText(text);
     };
+    m_procTable->setUpdatesEnabled(false);   // 整批写完再一次性重绘
     for (int i = 0; i < list.size(); ++i) {
         const ProcSample &s = list.at(i);
         updCell(i, kProcColName, s.name, Qt::AlignLeft | Qt::AlignVCenter);
@@ -3272,6 +3277,7 @@ void PopDock::onProcSampled(const QList<ProcSample> &raw)
                                     : QStringLiteral("%1 MB").arg(s.memMb, 0, 'f', 0);
         updCell(i, kProcColMem, memText, Qt::AlignRight | Qt::AlignVCenter);
     }
+    m_procTable->setUpdatesEnabled(true);
 
     if (m_procCountLbl != nullptr)
         m_procCountLbl->setText(tr("%1 条").arg(list.size()));
@@ -3794,9 +3800,18 @@ PopDock::PopDock(QWidget *parent)
         hh->setHighlightSections(false);
         hh->setMinimumSectionSize(34);
         hh->setSectionResizeMode(kProcColName, QHeaderView::Stretch);
-        hh->setSectionResizeMode(kProcColCpu,  QHeaderView::ResizeToContents);
-        hh->setSectionResizeMode(kProcColGpu,  QHeaderView::ResizeToContents);
-        hh->setSectionResizeMode(kProcColMem,  QHeaderView::ResizeToContents);
+        // CPU/GPU/内存三列用固定宽度。
+        // 不能用 ResizeToContents：它会在每次单元格文本变化时按「全部行」重新计算列宽，
+        // 行数上千时一次刷新能卡住几百毫秒到几秒（实测 1000 行首次填充 80s+），
+        // 而进程采样本身只要 2~4ms。这里按最宽文本量一次算好即可。
+        const QFontMetrics fm(m_procTable->font());
+        const int wPct = fm.horizontalAdvance(QStringLiteral("9999.9")) + 16;
+        const int wMem = fm.horizontalAdvance(QStringLiteral("9999.9 GB")) + 16;
+        for (int c = 1; c < 4; ++c)
+            hh->setSectionResizeMode(c, QHeaderView::Fixed);
+        m_procTable->setColumnWidth(kProcColCpu, wPct);
+        m_procTable->setColumnWidth(kProcColGpu, wPct);
+        m_procTable->setColumnWidth(kProcColMem, wMem);
         hh->setStretchLastSection(false);
         // 与深色半透明弹窗融为一体：表格/视口/行/选区全部透明，只保留浅色文字与细分隔线。
         // 注意 QSS 影响不到表格内部视口，必须再关掉视口自绘背景并把 Base 置透明，
