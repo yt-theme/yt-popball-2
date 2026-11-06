@@ -83,9 +83,13 @@
 #include <QTableWidget>
 #include <QHeaderView>
 #include <QPalette>
+#include <QJsonArray>
+#include <QJsonObject>
+#include <QJsonDocument>
 #include <algorithm>
 
 #include "sysInfo.h"
+#include "aipanel.h"
 
 #ifdef POPBALL2_HAVE_QT_MULTIMEDIA
 #include <QMediaPlayer>
@@ -1003,7 +1007,8 @@ TransferStation::TransferStation(QWidget *parent)
 
     rebuildStyleSheet();   // 选中底色跟随主题强调色（见 setAccentColor）
 
-    setViewStyle(IconView);
+    // 默认「列表」布局（配置会再回填一次，见 Widget 启动流程）
+    setViewStyle(ListView);
 }
 
 // 依当前强调色重建列表样式：选中条目底色 = 主题色半透明。
@@ -3121,14 +3126,20 @@ void PopDock::ensureAnimations()
 void PopDock::resizeEvent(QResizeEvent *e)
 {
     QWidget::resizeEvent(e);
-    // macOS 对无边框窗口的边缘拖拽走"原生缩放"（WindowServer 直接改窗口尺寸），
-    // Qt 的 mouseMoveEvent 收不到事件，也收不到 press（mouseButtons() 不可靠）。
-    // 所以这里以 resizeEvent 的最终尺寸为准：尺寸一旦变化就同步配置（内存+落盘）。
-    // 程序主动 resize（applyDockSettings / 显示定位）用的是 m_prefWidth，
-    // 与 e->size() 相等时为幂等，不会误写；仅小屏收缩场景会写收缩值（可接受）。
+    // 右侧 AI 区域展开时，窗口宽度 = 左列宽度 + AI 宽度；配置里只记左列宽度，
+    // 否则一次展开就会把 dock_width 永久撑大。
+    const int aiExtra = aiExtraWidth();
+    // 程序主动设置尺寸（setMinimumSize 会立刻把窗口撑到最小尺寸、随后 resize 再改一次）
+    // 期间收到的 resizeEvent 不能当成"用户拖边缘"回写首选尺寸，否则会被中间值污染
+    // （典型表现：重新展开 AI 区时窗口只恢复到最小宽度）。
+    if (m_sizeSyncing) {
+        QWidget::resizeEvent(e);
+        return;
+    }
     const QSize s = e->size();
-    if (s.width() != m_prefWidth || s.height() != m_prefHeight) {
-        m_prefWidth  = s.width();
+    const int leftWidth = qMax(kMinDockWidth, s.width() - aiExtra);
+    if (leftWidth != m_prefWidth || s.height() != m_prefHeight) {
+        m_prefWidth  = leftWidth;
         m_prefHeight = s.height();
         emit sizeEdited(m_prefWidth, m_prefHeight);
     }
@@ -3138,10 +3149,161 @@ void PopDock::applyDockSettings(int width, int height, int density)
 {
     m_prefWidth  = qMax(kMinDockWidth,  width);
     m_prefHeight = qMax(kMinDockHeight, height);
-    setMinimumSize(kMinDockWidth, kMinDockHeight);
-    resize(m_prefWidth, m_prefHeight);
+    const int extra = aiExtraWidth();
+    m_sizeSyncing = true;
+    setMinimumSize(kMinDockWidth + extra, kMinDockHeight);
+    resize(m_prefWidth + extra, m_prefHeight);
+    m_sizeSyncing = false;
     if (m_station != nullptr)
         m_station->setDensity(density);
+}
+
+// ---------------- 右侧 AI 助手区域 ----------------
+
+bool PopDock::aiVisible() const
+{
+    // 注意：不能用 m_aiPanel->isVisible() —— 弹窗本身没显示时，子控件的
+    // isVisible() 恒为 false，会把"已展开"误判成"已收起"（宽度也算成 0）。
+    return m_aiOn;
+}
+
+int PopDock::aiExtraWidth() const
+{
+    if (m_aiPanel == nullptr || !m_aiOn)
+        return 0;
+    return qBound(280, m_aiSettings.width, 620) + 8;   // 8 = 外层左右分栏的间距
+}
+
+void PopDock::applyAiSettings(const AiSettings &s, bool show)
+{
+    m_aiSettings = s;
+    if (m_aiPanel != nullptr)
+        m_aiPanel->setSettings(s);
+
+    if (show != aiVisible()) {
+        setAiVisible(show);
+        return;
+    }
+    // 显隐没变，但宽度可能变了：按新宽度调整窗口
+    const int extra = aiExtraWidth();
+    m_sizeSyncing = true;
+    setMinimumSize(kMinDockWidth + extra, kMinDockHeight);
+    if (isVisible())
+        resize(m_prefWidth + extra, height());
+    else
+        resize(m_prefWidth + extra, m_prefHeight);
+    m_sizeSyncing = false;
+}
+
+void PopDock::setAiVisible(bool on)
+{
+    if (m_aiPanel == nullptr)
+        return;
+    if (m_aiBtn != nullptr)
+        m_aiBtn->setChecked(on);
+    if (m_aiOn == on)
+        return;
+
+    m_aiOn = on;
+    m_aiPanel->setVisible(on);
+    const int extra = aiExtraWidth();
+    m_sizeSyncing = true;
+    setMinimumSize(kMinDockWidth + extra, kMinDockHeight);
+    // 展开/收起时窗口在右侧伸缩，位置由 Widget 监听 aiGeometryChanged 重新计算
+    resize(m_prefWidth + extra, qMax(m_prefHeight, height()));
+    m_sizeSyncing = false;
+    emit aiVisibleChanged(on);
+    emit aiGeometryChanged();
+}
+
+QString PopDock::runAiTool(const QString &name, const QJsonObject &args)
+{
+    if (m_station == nullptr)
+        return QStringLiteral("错误：中转站还没准备好。");
+
+    if (name == QLatin1String("list_items")) {
+        QJsonArray items;
+        for (int i = 0; i < m_station->count(); ++i) {
+            QListWidgetItem *it = m_station->item(i);
+            if (it == nullptr)
+                continue;
+            const QVariantMap d = TransferStation::dataOf(it);
+            QJsonObject o;
+            o.insert(QStringLiteral("index"), i);
+            const TsType t = TsType(d.value(QStringLiteral("type")).toInt());
+            QString type = QStringLiteral("file");
+            if (t == TsType::Text)  type = QStringLiteral("text");
+            if (t == TsType::Image) type = QStringLiteral("image");
+            if (t == TsType::Video) type = QStringLiteral("video");
+            o.insert(QStringLiteral("type"), type);
+            o.insert(QStringLiteral("name"), d.value(QStringLiteral("name")).toString());
+            if (it->isHidden())
+                o.insert(QStringLiteral("hidden_by_filter"), true);
+            if (t == TsType::Text) {
+                QString s = d.value(QStringLiteral("text")).toString();
+                s.replace(QLatin1Char('\n'), QLatin1Char(' '));
+                o.insert(QStringLiteral("summary"), s.left(120));
+            } else {
+                o.insert(QStringLiteral("path"), d.value(QStringLiteral("path")).toString());
+            }
+            items.append(o);
+        }
+        QJsonObject root;
+        root.insert(QStringLiteral("count"), m_station->count());
+        root.insert(QStringLiteral("items"), items);
+        return QString::fromUtf8(QJsonDocument(root).toJson(QJsonDocument::Compact));
+    }
+
+    if (name == QLatin1String("read_item")) {
+        const int index = args.value(QStringLiteral("index")).toInt(-1);
+        if (index < 0 || index >= m_station->count())
+            return QStringLiteral("错误：没有第 %1 个条目。").arg(index);
+        QListWidgetItem *it = m_station->item(index);
+        const QVariantMap d = TransferStation::dataOf(it);
+        const TsType t = TsType(d.value(QStringLiteral("type")).toInt());
+        if (t == TsType::Text) {
+            QString text = d.value(QStringLiteral("text")).toString();
+            if (text.size() > 262144)
+                text = text.left(262144) + QStringLiteral("\n…（已截断）");
+            return text;
+        }
+        const QString path = d.value(QStringLiteral("path")).toString();
+        const QFileInfo fi(path);
+        if (t == TsType::File && fi.exists() && fi.isFile()
+            && TransferStation::isDocFile(path) && fi.size() <= 262144) {
+            QFile f(path);
+            if (f.open(QIODevice::ReadOnly))
+                return QString::fromUtf8(f.readAll());
+        }
+        return QStringLiteral("条目 %1：类型 %2，名称 %3，路径 %4，大小 %5 字节。"
+                              "（这类内容不是纯文本，无法直接读取）")
+            .arg(index)
+            .arg(t == TsType::Image ? QStringLiteral("图片")
+                 : t == TsType::Video ? QStringLiteral("视频")
+                 : QStringLiteral("文件"))
+            .arg(d.value(QStringLiteral("name")).toString())
+            .arg(path)
+            .arg(fi.exists() ? fi.size() : 0);
+    }
+
+    if (name == QLatin1String("copy_to_clipboard")) {
+        const QString text = args.value(QStringLiteral("text")).toString();
+        if (text.isEmpty())
+            return QStringLiteral("错误：text 为空。");
+        if (QClipboard *cb = QApplication::clipboard())
+            cb->setText(text);
+        return QStringLiteral("已写入剪贴板（%1 字符）。").arg(text.size());
+    }
+
+    if (name == QLatin1String("add_note")) {
+        const QString text = args.value(QStringLiteral("text")).toString();
+        if (text.isEmpty())
+            return QStringLiteral("错误：text 为空。");
+        m_station->addTextItem(text);
+        return QStringLiteral("已加入中转站。");
+    }
+
+    return QStringLiteral("错误：没有名为 %1 的工具。").arg(name);
 }
 
 void PopDock::setDockOpacity(int permille)
@@ -3162,6 +3324,47 @@ void PopDock::setSysInfo(SysInfo *sysInfo)
     m_sysInfo = sysInfo;
 }
 
+// 分配进程列表的列宽：CPU/GPU/内存三列只按文本实际需要的宽度固定住，
+// 名称列（Stretch）吃掉全部剩余空间——弹窗再拉宽也不会变成数值列里的空白。
+// 只在表格尺寸变化时算一次，不随单元格文本变化，避免大行数时的重排开销。
+void PopDock::layoutProcColumns()
+{
+    if (m_procTable == nullptr)
+        return;
+    QHeaderView *hh = m_procTable->horizontalHeader();
+    const int total = m_procTable->viewport()->width();
+    if (hh == nullptr || total <= 0)
+        return;
+
+    // 表格文字样式里设了 11px（见下面的 QSS），列宽也要用同一字号来量文本，
+    // 否则按 13px 算出来的宽度会偏大、把名称列挤窄。
+    QFont cellFont = m_procTable->font();
+    cellFont.setPixelSize(11);
+    const QFontMetrics fm(cellFont);
+    // 数值列按「实际会出现的最大文本」量宽：CPU 可能四位数（2548.2），
+    // GPU 百分比最多三位（100.0），内存最多 "99.99 GB"。只留 2px 内边距 + 委托
+    // 边距的余量，数值列就不会留出大块空白，省下的宽度全给名称列。
+    // GPU 列还要放得下表头「GPU %」（表头有 6px 内边距），否则右对齐的表头会被裁成「3PU %」。
+    const int minPct = fm.horizontalAdvance(QStringLiteral("9999.9")) + 16;
+    const int minGpu = qMax(fm.horizontalAdvance(QStringLiteral("100.0")) + 16,
+                            fm.horizontalAdvance(tr("GPU %")) + 14);
+    const int minMem = fm.horizontalAdvance(QStringLiteral("99.99 GB")) + 12;
+
+    // 数值列只占够用的宽度，余下全部留给名称列（名称更长、更容易被省略）。
+    // 表格窄到放不下时由 QHeaderView 的 minimumSectionSize 兜底，出现横向滚动即可。
+    struct ColumnWidth { int col; int width; };
+    const ColumnWidth vals[] = {
+        { kProcColCpu, minPct },
+        { kProcColGpu, minGpu },
+        { kProcColMem, minMem },
+    };
+    for (const ColumnWidth &v : vals) {
+        if (m_procTable->isColumnHidden(v.col))
+            continue;
+        m_procTable->setColumnWidth(v.col, v.width);
+    }
+}
+
 void PopDock::applyProcSettings(bool show, bool showCpu, bool showGpu, bool showMem,
                                 int refreshMs, int maxCount, int sort)
 {
@@ -3177,6 +3380,7 @@ void PopDock::applyProcSettings(bool show, bool showCpu, bool showGpu, bool show
         m_procTable->setColumnHidden(kProcColCpu, !m_procShowCpu);
         m_procTable->setColumnHidden(kProcColGpu, !m_procShowGpu);
         m_procTable->setColumnHidden(kProcColMem, !m_procShowMem);
+        layoutProcColumns();   // 显隐变化后重新分配剩余列宽
     }
     if (m_procTimer != nullptr)
         m_procTimer->setInterval(m_procRefreshMs);
@@ -3425,9 +3629,15 @@ PopDock::PopDock(QWidget *parent)
     setMinimumSize(kMinDockWidth, kMinDockHeight);
     resize(kPreferredWidth, kPreferredHeight);
 
-    auto *root = new QVBoxLayout(this);
-    root->setContentsMargins(12, 10, 12, 12);        // 统一的窗口内边距
+    // 外层左右分栏：左侧 = 原来的整个面板内容；右侧 = 可关闭的 AI 助手区域。
+    auto *outerRow = new QHBoxLayout(this);
+    outerRow->setContentsMargins(12, 10, 12, 12);    // 统一的窗口内边距
+    outerRow->setSpacing(8);
+
+    auto *root = new QVBoxLayout;                    // 左列（原面板内容，宽度随配置）
+    root->setContentsMargins(0, 0, 0, 0);
     root->setSpacing(8);
+    outerRow->addLayout(root, 1);
 
     // ---------- 标题区（小）：数据中转站 + 条目数 ----------
     {
@@ -3722,6 +3932,26 @@ PopDock::PopDock(QWidget *parent)
     }
     footer->addStretch(1);
 
+    // AI 助手开关（面板关闭时用它重新打开）
+    m_aiBtn = new QToolButton(this);
+    m_aiBtn->setObjectName(QStringLiteral("popDockAiBtn"));
+    m_aiBtn->setText(QStringLiteral("AI"));
+    m_aiBtn->setCheckable(true);
+    m_aiBtn->setFocusPolicy(Qt::NoFocus);
+    m_aiBtn->setCursor(Qt::PointingHandCursor);
+    m_aiBtn->setFixedHeight(26);
+    m_aiBtn->setMinimumWidth(34);
+    m_aiBtn->setToolTip(tr("AI 助手：打开 / 关闭右侧对话区域"));
+    {
+        QFont bf = m_aiBtn->font();
+        bf.setPixelSize(11);
+        bf.setBold(true);
+        m_aiBtn->setFont(bf);
+    }
+    m_aiBtn->setStyleSheet(toolButtonQss(m_accentColor, 6, QStringLiteral("1px 7px")));
+    connect(m_aiBtn, &QToolButton::clicked, this, [this](bool on) { setAiVisible(on); });
+    footer->addWidget(m_aiBtn);
+
     m_addNoteBtn = new QToolButton(this);
     m_addNoteBtn->setObjectName(QStringLiteral("popDockAddNote"));
     m_addNoteBtn->setIcon(noteAddIcon(m_accentColor));
@@ -3789,6 +4019,14 @@ PopDock::PopDock(QWidget *parent)
         m_procTable->setObjectName(QStringLiteral("procTable"));
         m_procTable->setColumnCount(4);
         m_procTable->setHorizontalHeaderLabels({ tr("名称"), tr("CPU %"), tr("GPU %"), tr("内存") });
+        // 数值列的表头与数据同向右对齐，避免表头贴左、数值贴右造成"错位"的视觉空隙；
+        // 名称列的表头与数据同向左对齐（默认是居中，会显得名称列左侧空一块）。
+        if (QTableWidgetItem *it = m_procTable->horizontalHeaderItem(kProcColName))
+            it->setTextAlignment(Qt::AlignLeft | Qt::AlignVCenter);
+        for (int c = kProcColCpu; c <= kProcColMem; ++c) {
+            if (QTableWidgetItem *it = m_procTable->horizontalHeaderItem(c))
+                it->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
+        }
         m_procTable->verticalHeader()->setVisible(false);
         m_procTable->verticalHeader()->setDefaultSectionSize(18);
         m_procTable->setEditTriggers(QAbstractItemView::NoEditTriggers);
@@ -3800,25 +4038,20 @@ PopDock::PopDock(QWidget *parent)
         hh->setHighlightSections(false);
         hh->setMinimumSectionSize(34);
         hh->setSectionResizeMode(kProcColName, QHeaderView::Stretch);
-        // CPU/GPU/内存三列用固定宽度。
-        // 不能用 ResizeToContents：它会在每次单元格文本变化时按「全部行」重新计算列宽，
-        // 行数上千时一次刷新能卡住几百毫秒到几秒（实测 1000 行首次填充 80s+），
-        // 而进程采样本身只要 2~4ms。这里按最宽文本量一次算好即可。
-        const QFontMetrics fm(m_procTable->font());
-        const int wPct = fm.horizontalAdvance(QStringLiteral("9999.9")) + 16;
-        const int wMem = fm.horizontalAdvance(QStringLiteral("9999.9 GB")) + 16;
+        // CPU/GPU/内存三列仍用固定宽度（不能用 ResizeToContents：它会在每次单元格文本
+        // 变化时按「全部行」重新计算列宽，行数上千时一次刷新能卡住几百毫秒到几秒），
+        // 但具体宽度改由 layoutProcColumns() 按文本实际需要定宽，
+        // 名称列（Stretch）吃满剩余宽度，数值列里不会留出大块空白。
         for (int c = 1; c < 4; ++c)
             hh->setSectionResizeMode(c, QHeaderView::Fixed);
-        m_procTable->setColumnWidth(kProcColCpu, wPct);
-        m_procTable->setColumnWidth(kProcColGpu, wPct);
-        m_procTable->setColumnWidth(kProcColMem, wMem);
         hh->setStretchLastSection(false);
         // 与深色半透明弹窗融为一体：表格/视口/行/选区全部透明，只保留浅色文字与细分隔线。
         // 注意 QSS 影响不到表格内部视口，必须再关掉视口自绘背景并把 Base 置透明，
         // 否则会按系统浅色调画出不透明白底，和弹窗背景不搭（用户反馈的问题）。
         m_procTable->setStyleSheet(QStringLiteral(
-            "QTableWidget{background:transparent;border:none;}"
-            "QTableWidget::item{background:transparent;color:#e8eaed;padding:0 6px;border:none;}"
+            "QTableWidget{background:transparent;border:none;font-size:11px;}"
+            // 左右只留 2px：数值列本来就不宽，6px 的内边距会把 5 位数值挤成「25…」
+            "QTableWidget::item{background:transparent;color:#e8eaed;padding:0 2px;border:none;}"
             "QTableWidget::item:selected{background:transparent;color:#e8eaed;}"
             "QHeaderView{background:transparent;border:none;}"
             "QHeaderView::section{background:transparent;color:#8b9199;border:none;"
@@ -3912,6 +4145,29 @@ PopDock::PopDock(QWidget *parent)
     connect(m_clipTimer, &QTimer::timeout, this, &PopDock::captureClipboard);
     if (QClipboard *cb = QApplication::clipboard())
         connect(cb, &QClipboard::dataChanged, this, &PopDock::onClipboardChanged);
+
+    // ---------- 右侧 AI 助手区域（可关闭） ----------
+    m_aiPanel = new AiPanel(this);
+    m_aiPanel->setAccentColor(m_accentColor);
+    m_aiPanel->setToolExecutor([this](const QString &name, const QJsonObject &args) {
+        return this->runAiTool(name, args);
+    });
+    m_aiPanel->hide();
+    connect(m_aiPanel, &AiPanel::closeRequested, this, [this] { this->setAiVisible(false); });
+    // 「配置」→ 交给 Widget 打开主设置窗口（直接切到 AI 分类）
+    connect(m_aiPanel, &AiPanel::settingsRequested,
+            this, &PopDock::aiSettingsRequested);
+    // 用户正在面板里输入 / 正在生成时，鼠标移开也不自动收起
+    connect(m_aiPanel, &AiPanel::panelActiveChanged, this, [this](bool active) {
+        if (active && !m_aiLock) {
+            m_aiLock = true;
+            beginInteraction();
+        } else if (!active && m_aiLock) {
+            m_aiLock = false;
+            endInteraction();
+        }
+    });
+    outerRow->addWidget(m_aiPanel, 0);
 
     refreshCount();
     installDockTracking(this);
@@ -4007,7 +4263,7 @@ void PopDock::setViewStyle(int style)
 
 int PopDock::viewStyle() const
 {
-    return m_station != nullptr ? int(m_station->viewStyle()) : 0;
+    return m_station != nullptr ? int(m_station->viewStyle()) : 1;   // 默认列表
 }
 
 // 主题强调色变化 → 刷新面板内所有"激活/选中"样式：
@@ -4022,6 +4278,10 @@ void PopDock::setAccentColor(const QColor &color)
         m_station->setAccentColor(color);
     if (m_textEditor != nullptr)
         m_textEditor->setAccentColor(color);
+    if (m_aiPanel != nullptr)
+        m_aiPanel->setAccentColor(color);
+    if (m_aiBtn != nullptr)
+        m_aiBtn->setStyleSheet(toolButtonQss(color, 6, QStringLiteral("1px 7px")));
     for (int i = 0; i < 3; ++i) {
         if (m_tabBtns[i] != nullptr)
             m_tabBtns[i]->setStyleSheet(toolButtonQss(color, 5, QStringLiteral("1px 8px")));
@@ -4254,14 +4514,15 @@ void PopDock::mouseMoveEvent(QMouseEvent *event)
                          ? (event->position().toPoint() - m_resizePressLocal)
                          : (event->globalPosition().toPoint() - m_resizePressPos);
         QRect g = m_resizeStart;
+        const int aiExtra = aiExtraWidth();   // AI 区域展开时，这部分宽度不归左列
         if (m_resizeEdges & kResizeR)
-            g.setWidth(qMax(kMinDockWidth, m_resizeStart.width() + d.x()));
+            g.setWidth(qMax(kMinDockWidth + aiExtra, m_resizeStart.width() + d.x()));
         if (m_resizeEdges & kResizeB)
             g.setHeight(qMax(kMinDockHeight, m_resizeStart.height() + d.y()));
         if (m_resizeEdges & kResizeL) {
             int newLeft = m_resizeStart.left() + d.x();
-            if (m_resizeStart.right() - newLeft + 1 < kMinDockWidth)
-                newLeft = m_resizeStart.right() - kMinDockWidth + 1;
+            if (m_resizeStart.right() - newLeft + 1 < kMinDockWidth + aiExtra)
+                newLeft = m_resizeStart.right() - (kMinDockWidth + aiExtra) + 1;
             g.setLeft(newLeft);
         }
         if (m_resizeEdges & kResizeT) {
@@ -4275,8 +4536,10 @@ void PopDock::mouseMoveEvent(QMouseEvent *event)
         // 不依赖松手时的释放事件（释放事件可能因弹窗被收起等原因丢失），
         // 也不依赖 width() 的同步时机——macOS 顶级窗口 setGeometry 可能异步生效，
         // 直接用本次拖拽的请求尺寸 g（用户鼠标拖到的目标）落盘。
-        if (g.width() != m_prefWidth || g.height() != m_prefHeight) {
-            m_prefWidth  = g.width();
+        // 配置里只记左列宽度（AI 区域宽度单独存），否则一次拖拽会把 dock_width 永久撑大。
+        const int leftWidth = qMax(kMinDockWidth, g.width() - aiExtra);
+        if (leftWidth != m_prefWidth || g.height() != m_prefHeight) {
+            m_prefWidth  = leftWidth;
             m_prefHeight = g.height();
             emit sizeEdited(m_prefWidth, m_prefHeight);
         }
@@ -4312,6 +4575,14 @@ void PopDock::leaveEvent(QEvent *event)
 
 bool PopDock::eventFilter(QObject *watched, QEvent *e)
 {
+    // 进程表格/视口尺寸变化（弹窗拖宽、滚动条出现、首次显示）→ 重新分配列宽。
+    // 延到事件循环里算：此刻父布局可能还没把最终宽度传递下来，立即算会用到旧的宽度。
+    if (this->m_procTable != nullptr &&
+        (e->type() == QEvent::Resize || e->type() == QEvent::Show) &&
+        (watched == this->m_procTable || watched == this->m_procTable->viewport())) {
+        QTimer::singleShot(0, this, &PopDock::layoutProcColumns);
+    }
+
     // 进程列表名称列被省略成「…」时，悬停显示完整名称
     if (e->type() == QEvent::ToolTip && this->m_procTable != nullptr &&
         watched == this->m_procTable->viewport()) {
@@ -4408,6 +4679,12 @@ void PopDock::hideEvent(QHideEvent *event)
 {
     QWidget::hideEvent(event);
     hidePreview();                  // 面板收起时预览气泡一并收起
+    // AI 面板收起后释放它持有的交互锁，避免下一次弹出被"永不放行"的锁挡住
+    if (m_aiLock) {
+        m_aiLock = false;
+        if (m_interactionLock > 0)
+            --m_interactionLock;
+    }
     if (m_rememberScroll)
         m_station->saveScrollPosition();   // 记住滚动位置：关闭时保存当前滚动值
     if (m_procTimer != nullptr)
@@ -4568,13 +4845,18 @@ void PopDock::onPreviewRequested(const QVariantMap &data, const QPoint &globalCe
         scr = QGuiApplication::primaryScreen();
     const QRect sr = scr->availableGeometry();
     const QRect me = this->geometry();
+    // 右侧 AI 面板展开时，窗口右半边是 AI 区域，不算"内容区"：预览窗要贴着左列显示，
+    // 叠在 AI 面板上层（预览本身是置顶 ToolTip 窗口），否则会被推到 AI 面板右侧、
+    // 离所悬停的条目很远。
+    const int contentW = qMax(0, me.width() - aiExtraWidth());
+    const int contentRight = me.left() + contentW;
     const int pw = m_preview->width();
     const int ph = m_preview->height();
 
     const bool preferRight = (me.center().x() <= sr.center().x());
-    int x = preferRight ? (me.right() + 8) : (me.left() - 8 - pw);
+    int x = preferRight ? (contentRight + 8) : (me.left() - 8 - pw);
     if (x < sr.left() || x + pw > sr.right())
-        x = preferRight ? (me.left() - 8 - pw) : (me.right() + 8);
+        x = preferRight ? (me.left() - 8 - pw) : (contentRight + 8);
     x = qBound(sr.left(), x, qMax(sr.left(), sr.right() - pw));
 
     const int y = qBound(sr.top(), globalCenter.y() - ph / 2,

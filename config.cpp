@@ -138,7 +138,8 @@ void Config::readConfig()
     this->disk_io_name          = this->settingsObj->value("/disk/disk_io_name", "").toString();
 
     // [ui] 数据中转站面板的展示布局（0=图标 1=列表 2=详细）
-    this->dock_view_style       = this->settingsObj->value("/ui/dock_view_style", 0).toInt();
+    // 默认「列表」：条目名和类型一眼可读，比图标网格更实用
+    this->dock_view_style       = this->settingsObj->value("/ui/dock_view_style", 1).toInt();
     // 悬浮球形态：0=球形（默认）1=圆角矩形 2=直角方形 3=长条形
     this->ball_style            = this->settingsObj->value("/ui/ball_style", 0).toInt();
     // 外圈内存占用比例环图：1=开启 0=关闭（默认）；仅球形形态有效
@@ -166,6 +167,17 @@ void Config::readConfig()
     this->proc_max_count    = this->settingsObj->value("/ui/proc_max_count", 10).toInt();
     this->proc_sort         = this->settingsObj->value("/ui/proc_sort", 0).toInt();
     this->language              = this->settingsObj->value("/ui/language", 0).toInt();
+
+    // [ai] 右侧 AI 助手区域（后加的键，老配置里没有必须给默认值）
+    this->ai_show           = this->settingsObj->value("/ai/show", 1).toInt();
+    this->ai_width          = qBound(280, this->settingsObj->value("/ai/width", 360).toInt(), 620);
+    this->ai_protocol       = qBound(0, this->settingsObj->value("/ai/protocol", 0).toInt(), 2);
+    this->ai_base_url       = this->settingsObj->value("/ai/base_url", "").toString();
+    this->ai_api_key        = this->settingsObj->value("/ai/api_key", "").toString();
+    this->ai_model          = this->settingsObj->value("/ai/model", "").toString();
+    this->ai_system_prompt  = this->settingsObj->value("/ai/system_prompt", "").toString();
+    this->ai_temperature    = qBound(0.0, this->settingsObj->value("/ai/temperature", 0.7).toDouble(), 2.0);
+    this->ai_max_tokens     = qMax(0, this->settingsObj->value("/ai/max_tokens", 0).toInt());
 
     // [window]
     this->shape_mask            = this->settingsObj->value("/window/shape_mask", 0).toInt();
@@ -754,6 +766,65 @@ qint32 Config::getProcShowMem(){ return this->proc_show_mem; }
 qint32 Config::getProcRefreshMs() { return this->proc_refresh_ms; }
 qint32 Config::getProcMaxCount()  { return this->proc_max_count; }
 qint32 Config::getProcSort()      { return this->proc_sort; }
+
+qint32  Config::getAiShow()           { return this->ai_show; }
+qint32  Config::getAiWidth()          { return this->ai_width; }
+qint32  Config::getAiProtocol()       { return this->ai_protocol; }
+QString Config::getAiBaseUrl()        { return this->ai_base_url; }
+QString Config::getAiApiKey()         { return this->ai_api_key; }
+QString Config::getAiModel()          { return this->ai_model; }
+QString Config::getAiSystemPrompt()   { return this->ai_system_prompt; }
+double  Config::getAiTemperature()    { return this->ai_temperature; }
+qint32  Config::getAiMaxTokens()      { return this->ai_max_tokens; }
+
+// ---------------- [ai] 右侧 AI 助手区域 ----------------
+void Config::setAiShow(qint32 val)
+{
+    this->settingsObj->setValue("/ai/show", val);
+    this->settingsObj->sync();   // 显隐立即落盘：下次启动保持用户选择
+    this->ai_show = val;
+}
+void Config::setAiWidth(qint32 val)
+{
+    this->settingsObj->setValue("/ai/width", val);
+    this->settingsObj->sync();
+    this->ai_width = val;
+}
+void Config::setAiProtocol(qint32 val)
+{
+    this->settingsObj->setValue("/ai/protocol", val);
+    this->ai_protocol = val;
+}
+void Config::setAiBaseUrl(QString val)
+{
+    this->settingsObj->setValue("/ai/base_url", val);
+    this->ai_base_url = val;
+}
+void Config::setAiApiKey(QString val)
+{
+    this->settingsObj->setValue("/ai/api_key", val);
+    this->ai_api_key = val;
+}
+void Config::setAiModel(QString val)
+{
+    this->settingsObj->setValue("/ai/model", val);
+    this->ai_model = val;
+}
+void Config::setAiSystemPrompt(QString val)
+{
+    this->settingsObj->setValue("/ai/system_prompt", val);
+    this->ai_system_prompt = val;
+}
+void Config::setAiTemperature(double val)
+{
+    this->settingsObj->setValue("/ai/temperature", val);
+    this->ai_temperature = val;
+}
+void Config::setAiMaxTokens(qint32 val)
+{
+    this->settingsObj->setValue("/ai/max_tokens", val);
+    this->ai_max_tokens = val;
+}
 
 void Config::setLanguage(qint32 val)
 {

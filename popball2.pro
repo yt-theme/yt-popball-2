@@ -27,6 +27,10 @@ qtHaveModule(svg) {
     DEFINES += POPBALL2_HAVE_QT_SVG
 }
 
+# 右侧 AI 助手用 QtNetwork 发流式 HTTP 请求（SSE）。
+# network 属于 Qt 基础模块（qtbase），所有平台都随 Qt 一起安装。
+QT += network
+
 CONFIG += c++17
 
 # 版本号：自动从 package.json 读取（单一来源，改 package.json 即全局生效）。
@@ -44,6 +48,8 @@ isEmpty(VERSION): VERSION = 0.0.0
 #DEFINES += QT_DISABLE_DEPRECATED_BEFORE=0x060000    # disables all the APIs deprecated before Qt 6.0.0
 
 SOURCES += \
+    aiagent.cpp \
+    aipanel.cpp \
     clipstore.cpp \
     config.cpp \
     main.cpp \
@@ -54,6 +60,8 @@ SOURCES += \
     popdock.cpp
 
 HEADERS += \
+    aiagent.h \
+    aipanel.h \
     clipstore.h \
     config.h \
     macro_def.h \

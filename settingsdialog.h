@@ -16,6 +16,8 @@
 
 class QVBoxLayout;
 class QRadioButton;
+class QPlainTextEdit;
+class QListWidget;
 class SysInfo;
 
 /*
@@ -74,6 +76,8 @@ public:
 
     // 从当前配置重新载入（显示前调用，保证内容是最新的）
     void loadFromConfig();
+    // 直接切到某个分类页（AI 面板的「配置」按钮用它跳转到 AI 分类）
+    void selectCategory(int row);
 
 signals:
     void settingsApplied();   // 保存成功后发出，让挂件刷新界面
@@ -119,11 +123,13 @@ private:
     QWidget *buildMonitorSection();
     QWidget *buildBackupSection();
     QWidget *buildDockSection();
+    QWidget *buildAiSection();
     QWidget *buildGeneralSection();
 
     void loadDefaults();
     void applyPreset(int index);
     void refreshRowStyle(ColorRow &row);
+    void refreshAiProtocolHint();
     bool confirmRestore();
 
     QString configColor(const QString &key) const;
@@ -132,6 +138,7 @@ private:
 
     Config  *cfg     = nullptr;
     SysInfo *sysInfo = nullptr;   // 用于取磁盘名列表（可能为空）
+    QListWidget *m_nav = nullptr; // 左侧分类导航（selectCategory 用）
     QList<ColorRow> rows;
     // 「悬浮球文字」总项是否被用户本次改动过：仅在改动时才四色同设，
     // 避免 applyChanges 循环里被四个分项（预设白等）覆盖。
@@ -195,6 +202,18 @@ private:
     QComboBox *comboProcRefresh = nullptr; // 刷新间隔（1000/2000/3000/5000 ms）
     QComboBox *comboProcMax     = nullptr; // 最多显示条数
     QComboBox *comboProcSort    = nullptr; // 排序依据：0 CPU 1 GPU 2 内存
+
+    // AI 助手（弹窗右侧可关闭区域）
+    SwitchButton   *chkAiShow        = nullptr; // 是否显示 AI 区域
+    QSpinBox       *spinAiWidth      = nullptr; // 面板宽度（px）
+    QComboBox      *comboAiProtocol  = nullptr; // 0=OpenAI 兼容 1=Anthropic 2=Gemini
+    QLabel         *lblAiProtocolHint = nullptr; // 协议说明
+    QLineEdit      *editAiBaseUrl    = nullptr; // 服务地址（留空用协议默认）
+    QLineEdit      *editAiApiKey     = nullptr; // API Key
+    QLineEdit      *editAiModel      = nullptr; // 模型名（留空用协议默认）
+    QPlainTextEdit *editAiPrompt     = nullptr; // 系统提示词
+    QDoubleSpinBox *spinAiTemp       = nullptr; // 温度 0~2
+    QSpinBox       *spinAiMaxTokens  = nullptr; // 最大输出 tokens（0=不指定）
 
     QPushButton *btnRestore = nullptr;
     QPushButton *btnCancel  = nullptr;

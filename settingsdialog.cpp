@@ -28,7 +28,9 @@
 #include <QRadioButton>
 #include <QListWidget>
 #include <QStackedWidget>
+#include <QPlainTextEdit>
 #include "sysInfo.h"
+#include "aiagent.h"
 
 // ---------------------------------------------------------------- 配置项定义
 namespace {
@@ -339,6 +341,7 @@ void SettingsDialog::buildUi()
     nav->setObjectName(QStringLiteral("nav"));
     nav->setFixedWidth(148);
     nav->setFocusPolicy(Qt::NoFocus);
+    m_nav = nav;
 
     auto *stack = new QStackedWidget(body);
 
@@ -382,12 +385,14 @@ void SettingsDialog::buildUi()
     stack->addWidget(makePage({ buildShowSection() }));
     // 4 数据中转站
     stack->addWidget(makePage({ buildDockSection() }));
-    // 5 通用：语言 + 配置备份 + 高级 + 系统监视器
+    // 5 AI 助手：显隐 + 面板宽度 + 模型协议/地址/Key/模型/提示词/采样参数
+    stack->addWidget(makePage({ buildAiSection() }));
+    // 6 通用：语言 + 配置备份 + 高级 + 系统监视器
     stack->addWidget(makePage({ buildGeneralSection(), buildBackupSection(),
                                 buildAdvancedSection(), buildMonitorSection() }));
 
     const QStringList cats = {
-        tr("外观"), tr("悬浮球"), tr("监控项"), tr("数据中转站"), tr("通用") };
+        tr("外观"), tr("悬浮球"), tr("监控项"), tr("数据中转站"), tr("AI"), tr("通用") };
     for (const QString &t : cats)
         nav->addItem(new QListWidgetItem(t, nav));
     nav->setCurrentRow(0);
@@ -1063,6 +1068,128 @@ QWidget *SettingsDialog::buildDockSection()
     return box;
 }
 
+QWidget *SettingsDialog::buildAiSection()
+{
+    auto *box = new QWidget(this);
+    auto *v = new QVBoxLayout(box);
+    v->setContentsMargins(0, 0, 0, 0);
+    v->setSpacing(8);
+
+    auto *g = new QLabel(tr("AI 助手"), box);
+    g->setProperty("section", "group");
+    v->addWidget(g);
+
+    v->addWidget(makeSwitchRow(tr("在弹窗右侧显示 AI 助手"), chkAiShow,
+        tr("开启后数据中转站弹窗右侧展开 AI 对话区域；\n"
+           "也可以随时用弹窗底栏的「AI」按钮或面板右上角的「×」临时收起/展开")));
+    chkAiShow->setObjectName("aiShow");
+
+    // 面板宽度
+    auto *wr = new QHBoxLayout();
+    wr->setSpacing(10);
+    wr->addWidget(new QLabel(tr("面板宽度"), box));
+    spinAiWidth = new QSpinBox(box);
+    spinAiWidth->setObjectName("aiWidth");
+    spinAiWidth->setRange(280, 620);
+    spinAiWidth->setSingleStep(10);
+    spinAiWidth->setSuffix(tr(" px"));
+    spinAiWidth->setToolTip(tr("AI 区域单独占用的宽度（不含左侧中转站内容）"));
+    wr->addWidget(spinAiWidth, 1);
+    v->addLayout(wr);
+
+    // 模型协议
+    auto *pr = new QHBoxLayout();
+    pr->setSpacing(10);
+    pr->addWidget(new QLabel(tr("模型协议"), box));
+    comboAiProtocol = new QComboBox(box);
+    comboAiProtocol->setObjectName("aiProtocol");
+    comboAiProtocol->addItem(tr("OpenAI 兼容"), 0);
+    comboAiProtocol->addItem(tr("Anthropic (Claude)"), 1);
+    comboAiProtocol->addItem(tr("Google Gemini"), 2);
+    comboAiProtocol->setToolTip(tr("OpenAI 兼容覆盖绝大多数服务（OpenAI / Azure / DeepSeek / Kimi /\n"
+                                   "通义 / 智谱 / 硅基流动 / OpenRouter / Ollama / vLLM / one-api 等）"));
+    pr->addWidget(comboAiProtocol, 1);
+    v->addLayout(pr);
+
+    lblAiProtocolHint = new QLabel(box);
+    lblAiProtocolHint->setProperty("role", "hint");
+    lblAiProtocolHint->setWordWrap(true);
+    v->addWidget(lblAiProtocolHint);
+
+    // 服务地址
+    auto *ur = new QHBoxLayout();
+    ur->setSpacing(10);
+    ur->addWidget(new QLabel(tr("服务地址"), box));
+    editAiBaseUrl = new QLineEdit(box);
+    editAiBaseUrl->setObjectName("aiBaseUrl");
+    editAiBaseUrl->setClearButtonEnabled(true);
+    ur->addWidget(editAiBaseUrl, 1);
+    v->addLayout(ur);
+
+    // API Key
+    auto *kr = new QHBoxLayout();
+    kr->setSpacing(10);
+    kr->addWidget(new QLabel(tr("API Key"), box));
+    editAiApiKey = new QLineEdit(box);
+    editAiApiKey->setObjectName("aiApiKey");
+    editAiApiKey->setEchoMode(QLineEdit::Password);
+    editAiApiKey->setClearButtonEnabled(true);
+    editAiApiKey->setPlaceholderText(tr("API Key / Token，只保存在本机配置"));
+    kr->addWidget(editAiApiKey, 1);
+    v->addLayout(kr);
+
+    // 模型名
+    auto *mr = new QHBoxLayout();
+    mr->setSpacing(10);
+    mr->addWidget(new QLabel(tr("模型名"), box));
+    editAiModel = new QLineEdit(box);
+    editAiModel->setObjectName("aiModel");
+    editAiModel->setClearButtonEnabled(true);
+    mr->addWidget(editAiModel, 1);
+    v->addLayout(mr);
+
+    // 系统提示词
+    v->addWidget(new QLabel(tr("系统提示词"), box));
+    editAiPrompt = new QPlainTextEdit(box);
+    editAiPrompt->setObjectName("aiPrompt");
+    editAiPrompt->setFixedHeight(64);
+    editAiPrompt->setPlaceholderText(tr("可选：给 AI 的角色设定，例如「回答尽量简短」"));
+    v->addWidget(editAiPrompt);
+
+    // 温度 / 最大输出 tokens
+    auto *sr = new QHBoxLayout();
+    sr->setSpacing(10);
+    sr->addWidget(new QLabel(tr("温度"), box));
+    spinAiTemp = new QDoubleSpinBox(box);
+    spinAiTemp->setObjectName("aiTemperature");
+    spinAiTemp->setRange(0.0, 2.0);
+    spinAiTemp->setSingleStep(0.1);
+    spinAiTemp->setDecimals(2);
+    spinAiTemp->setToolTip(tr("0 更稳定、2 更发散（默认 0.70）"));
+    sr->addWidget(spinAiTemp, 1);
+    sr->addSpacing(12);
+    sr->addWidget(new QLabel(tr("最大输出"), box));
+    spinAiMaxTokens = new QSpinBox(box);
+    spinAiMaxTokens->setObjectName("aiMaxTokens");
+    spinAiMaxTokens->setRange(0, 32768);
+    spinAiMaxTokens->setSingleStep(256);
+    spinAiMaxTokens->setSpecialValueText(tr("不指定"));
+    spinAiMaxTokens->setToolTip(tr("0 = 不指定（Anthropic 协议内部按 4096 兜底）"));
+    sr->addWidget(spinAiMaxTokens, 1);
+    v->addLayout(sr);
+
+    // 协议切换 → 更新占位提示（留空即用默认地址/模型）
+    connect(comboAiProtocol, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, [this](int) { refreshAiProtocolHint(); });
+
+    auto *hint = new QLabel(tr("留空的服务地址 / 模型名会按协议使用默认值；面板右上角「配置」与这里共用同一套设置。"), box);
+    hint->setProperty("role", "hint");
+    hint->setWordWrap(true);
+    v->addWidget(hint);
+
+    return box;
+}
+
 QWidget *SettingsDialog::buildBackupSection()
 {
     auto *box = new QWidget(this);
@@ -1316,6 +1443,13 @@ void SettingsDialog::setConfigColor(const QString &key, const QString &value)
 }
 
 // ---------------------------------------------------------------- 载入
+void SettingsDialog::selectCategory(int row)
+{
+    if (m_nav == nullptr || row < 0 || row >= m_nav->count())
+        return;
+    m_nav->setCurrentRow(row);
+}
+
 void SettingsDialog::loadFromConfig()
 {
     textColorTouched = false;   // 重新载入后总项不自动联动，等用户改动
@@ -1408,6 +1542,19 @@ void SettingsDialog::loadFromConfig()
         comboProcMax->setCurrentIndex(mi >= 0 ? mi : comboProcMax->findData(10));
     }
     comboProcSort->setCurrentIndex((cfg->getProcSort() >= 0 && cfg->getProcSort() <= 2) ? cfg->getProcSort() : 0);
+
+    // AI 助手
+    chkAiShow->setChecked(cfg->getAiShow() != 0);
+    spinAiWidth->setValue(qBound(spinAiWidth->minimum(), cfg->getAiWidth(), spinAiWidth->maximum()));
+    const int aiProto = cfg->getAiProtocol();
+    comboAiProtocol->setCurrentIndex((aiProto >= 0 && aiProto <= 2) ? aiProto : 0);
+    editAiBaseUrl->setText(cfg->getAiBaseUrl());
+    editAiApiKey->setText(cfg->getAiApiKey());
+    editAiModel->setText(cfg->getAiModel());
+    editAiPrompt->setPlainText(cfg->getAiSystemPrompt());
+    spinAiTemp->setValue(qBound(0.0, cfg->getAiTemperature(), 2.0));
+    spinAiMaxTokens->setValue(qBound(0, cfg->getAiMaxTokens(), spinAiMaxTokens->maximum()));
+    refreshAiProtocolHint();
 }
 
 // 从内置默认值把【所有】设置项填回界面。
@@ -1501,6 +1648,29 @@ void SettingsDialog::loadDefaults()
     comboProcRefresh->setCurrentIndex(comboProcRefresh->findData(3000));
     comboProcMax->setCurrentIndex(comboProcMax->findData(10));
     comboProcSort->setCurrentIndex(0);
+
+    // AI 助手（默认：显示 / 360px / OpenAI 兼容 / 地址与模型留空用默认 / 温度 0.70）
+    chkAiShow->setChecked(true);
+    spinAiWidth->setValue(360);
+    comboAiProtocol->setCurrentIndex(0);
+    editAiBaseUrl->clear();
+    editAiApiKey->clear();
+    editAiModel->clear();
+    editAiPrompt->clear();
+    spinAiTemp->setValue(0.7);
+    spinAiMaxTokens->setValue(0);
+    refreshAiProtocolHint();
+}
+
+// 协议切换 / 载入配置后更新默认地址、默认模型与协议说明
+void SettingsDialog::refreshAiProtocolHint()
+{
+    if (comboAiProtocol == nullptr || editAiBaseUrl == nullptr)
+        return;
+    const int p = comboAiProtocol->currentData().toInt();
+    editAiBaseUrl->setPlaceholderText(tr("留空使用默认：%1").arg(aiDefaultBaseUrl(p)));
+    editAiModel->setPlaceholderText(tr("留空使用默认：%1").arg(aiDefaultModel(p)));
+    lblAiProtocolHint->setText(aiProtocolHint(p));
 }
 
 // ---------------------------------------------------------------- 色块样式
@@ -1636,6 +1806,17 @@ void SettingsDialog::applyChanges()
     cfg->setProcRefreshMs(comboProcRefresh->currentData().toInt());
     cfg->setProcMaxCount(comboProcMax->currentData().toInt());
     cfg->setProcSort(comboProcSort->currentData().toInt());
+
+    // AI 助手：显隐 / 面板宽度 / 协议 / 地址 / Key / 模型 / 提示词 / 采样参数
+    cfg->setAiShow(chkAiShow->isChecked() ? 1 : 0);
+    cfg->setAiWidth(spinAiWidth->value());
+    cfg->setAiProtocol(comboAiProtocol->currentData().toInt());
+    cfg->setAiBaseUrl(editAiBaseUrl->text().trimmed());
+    cfg->setAiApiKey(editAiApiKey->text().trimmed());
+    cfg->setAiModel(editAiModel->text().trimmed());
+    cfg->setAiSystemPrompt(editAiPrompt->toPlainText());
+    cfg->setAiTemperature(spinAiTemp->value());
+    cfg->setAiMaxTokens(spinAiMaxTokens->value());
 
     // 界面语言切换需重启生效（QTranslator 在应用启动时加载）。
     // 不弹"重启生效"提示框：切换形态/语言后界面按新配置即时刷新，

@@ -23,7 +23,9 @@
 
 #include "clipstore.h"
 #include "proclist.h"
+#include "aiagent.h"
 
+class AiPanel;
 class TransferStation;
 class TsItemDelegate;
 class SysInfo;
@@ -252,7 +254,7 @@ private:
     // 主题色变化后，把已有文本条目的图标重新着色（文本图标是自绘的，需跟随主题）
     void recolorTextIcons();
 
-    ViewStyle       m_viewStyle  = IconView;
+    ViewStyle       m_viewStyle  = ListView;  // 默认列表布局
     TypeFilter      m_filter     = AllItems;  // 当前类型筛选
     int             m_sourceFilter = 0;       // 来源筛选：0=全部 1=仅剪贴板 2=仅中转站
     int             m_density    = 1;        // 0=紧凑 1=标准 2=宽松
@@ -427,8 +429,17 @@ public:
     // 由 Widget 在构造与设置保存后调用。
     void applyProcSettings(bool show, bool showCpu, bool showGpu, bool showMem,
                            int refreshMs, int maxCount, int sort);
-    // 当前首选尺寸（默认 = 静态常量；applyDockSettings 后跟随配置）
-    int preferredWidth()  const { return m_prefWidth; }
+    // ---------- 右侧 AI 助手区域（可关闭） ----------
+    // 应用 AI 配置（协议 / 地址 / 密钥 / 模型 / 面板宽度）并决定是否展开右侧区域。
+    // 由 Widget 在构造与设置保存后调用。
+    void applyAiSettings(const AiSettings &s, bool show);
+    bool aiVisible() const;
+    void setAiVisible(bool on);
+    AiSettings aiSettings() const { return m_aiSettings; }
+
+    // 当前首选尺寸（默认 = 静态常量；applyDockSettings 后跟随配置）。
+    // 宽度包含右侧 AI 区域（展开时）。
+    int preferredWidth()  const { return m_prefWidth + aiExtraWidth(); }
     int preferredHeight() const { return m_prefHeight; }
 
     // 文本小编辑器窗口（懒创建；空闲时为 nullptr）。返回 QWidget* 便于无头自检定位子控件。
@@ -460,6 +471,13 @@ signals:
     // 用户点进程列表右上角的 × ：隐藏整个进程列表（Widget 负责把 proc_show 持久化为 0）
     void procListCloseRequested();
 
+    // AI 区域被展开 / 收起（Widget 负责把 ai_show 持久化并重新定位窗口）
+    void aiVisibleChanged(bool on);
+    // AI 面板宽度变化导致窗口尺寸变了：Widget 重新计算落点
+    void aiGeometryChanged();
+    // AI 面板点「配置」：打开主设置窗口并跳到 AI 分类（Widget 负责弹窗）
+    void aiSettingsRequested();
+
     // 进程采样请求：投递到独立采样线程（结果通过 ProcSamplerWorker::sampled 返回）
     void requestProcReset();
     void requestProcSample(double wholeGpuPercent);
@@ -490,6 +508,7 @@ private slots:
 
 private:
     void installDockTracking(QObject *obj);   // 递归安装事件过滤器，稳定捕获进出
+    void layoutProcColumns();                 // 进程列表列宽按表格实际宽度按比例铺满
     void ensureHistoryLoaded();               // 首次用面板时回填历史
     void openHistoryStore();                  // 打开剪贴板历史库
     void refreshCount();                      // 刷新标题区右侧的条目数
@@ -500,6 +519,9 @@ private:
     void ensureAnimations();                  // 懒创建划出/划入动画
     void beginInteraction();                  // 交互锁 +1（右键菜单 / 拖拽开始时）
     void endInteraction();                    // 交互锁 -1
+    int  aiExtraWidth() const;                // AI 区域占用的额外宽度（收起时为 0）
+    QString runAiTool(const QString &name, const QJsonObject &args);   // 给 AI 的本地工具
+
     static QIcon noteAddIcon(const QColor &accent);   // 右下角"铅笔+加号"图标
     static QIcon noteOkIcon(const QColor &accent);    // 记事输入框右侧的"确认"图标
     static QIcon settingsIcon(const QColor &accent);  // 右上角"设置"：用户 SVG（齿轮）形状 + 主题色
@@ -517,6 +539,12 @@ private:
     QToolButton     *m_powerBtn    = nullptr; // 标题区最右："退出"（电源）按钮
     QToolButton     *m_closeBtn    = nullptr; // 标题区最右：关闭面板（×）
     QToolButton     *m_addNoteBtn = nullptr;  // 底栏右：新建记事
+    QToolButton     *m_aiBtn     = nullptr;   // 底栏：AI 助手开关
+    AiPanel         *m_aiPanel   = nullptr;   // 右侧 AI 助手区域（可关闭）
+    AiSettings       m_aiSettings;            // AI 配置缓存（宽度等）
+    bool             m_aiOn      = false;     // AI 区域是否展开（不能用 isVisible：父窗口未显示时恒为 false）
+    bool             m_aiLock    = false;     // AI 面板正在被使用时持有交互锁
+    bool             m_sizeSyncing = false;   // 正在程序性地调整尺寸（resizeEvent 不要回写首选尺寸）
     QWidget         *m_noteRow    = nullptr;  // 记事编辑行（输入框 + 确认按钮）
     QLineEdit       *m_noteEdit   = nullptr;  // 新建记事时的输入框
     QToolButton     *m_noteOkBtn  = nullptr;  // 确认保存（中文输入法下回车常被用于确认候选词）

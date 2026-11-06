@@ -93,6 +93,17 @@ private:
     qint32  proc_sort;         // 排序依据：0=CPU（默认） 1=GPU 2=内存
     qint32  language;           // 界面语言：0=跟随系统（默认） 1=简体中文 2=English
 
+    // [ai] 右侧 AI 助手区域（可关闭）
+    qint32  ai_show;             // 1=展开 0=收起
+    qint32  ai_width;            // 面板宽度（px）
+    qint32  ai_protocol;         // 0=OpenAI 兼容 1=Anthropic 2=Gemini
+    QString ai_base_url;
+    QString ai_api_key;
+    QString ai_model;
+    QString ai_system_prompt;
+    double  ai_temperature;
+    qint32  ai_max_tokens;
+
     // [window]
     // 形状蒙版：桌面没开混成(compositing)时，半透明窗口会露出黑色矩形底，
     // 这时需要用圆形蒙版把窗口裁成圆的。
@@ -186,6 +197,17 @@ public:
     void setProcSort(qint32 val);
     void setLanguage(qint32 val);
 
+    // [ai] 右侧 AI 助手区域
+    void setAiShow(qint32 val);
+    void setAiWidth(qint32 val);
+    void setAiProtocol(qint32 val);
+    void setAiBaseUrl(QString val);
+    void setAiApiKey(QString val);
+    void setAiModel(QString val);
+    void setAiSystemPrompt(QString val);
+    void setAiTemperature(double val);
+    void setAiMaxTokens(qint32 val);
+
     // [window]
     void setShapeMask(qint32 val);
 
@@ -257,6 +279,17 @@ public:
     qint32 getProcMaxCount();
     qint32 getProcSort();
     int getLanguage();
+
+    // [ai]
+    qint32  getAiShow();
+    qint32  getAiWidth();
+    qint32  getAiProtocol();
+    QString getAiBaseUrl();
+    QString getAiApiKey();
+    QString getAiModel();
+    QString getAiSystemPrompt();
+    double  getAiTemperature();
+    qint32  getAiMaxTokens();
 
     // [window]
     qint32 getShapeMask();

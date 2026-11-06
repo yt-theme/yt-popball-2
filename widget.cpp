@@ -33,6 +33,8 @@
 #  include "macwindow.h"
 #endif
 
+static AiSettings aiSettingsOfConfig(Config *c);   // 定义见 popDockTargetPos 之前
+
 namespace {
 
 // 当前是否有"全屏"窗口处于激活态（全屏游戏 / 全屏视频 / 全屏应用 Space）。
@@ -293,8 +295,21 @@ Widget::Widget(QWidget *parent)
         if (this->config != nullptr)
             this->config->setProcShow(0);
     });
+    // 右侧 AI 助手区域：按配置回填；面板里改配置 / 展开收起 → 落盘并重新定位
+    this->popDock->applyAiSettings(aiSettingsOfConfig(this->config),
+                                   this->config->getAiShow() != 0);
+    connect(this->popDock, &PopDock::aiVisibleChanged, this, [this](bool on) {
+        if (this->config != nullptr)
+            this->config->setAiShow(on ? 1 : 0);
+    });
+    connect(this->popDock, &PopDock::aiGeometryChanged, this, [this] {
+        if (this->popDock->isVisible())
+            this->popDock->move(this->popDockTargetPos());
+    });
     // 面板右上角"操作"菜单（设置 / 系统监视器 / 退出）→ 原悬浮球右键菜单的动作
     connect(this->popDock, &PopDock::settingsRequested, this, &Widget::onMenuSettings);
+    // AI 面板的「配置」→ 主设置窗口，直接停在「AI」分类（第 5 页，下标 4）
+    connect(this->popDock, &PopDock::aiSettingsRequested, this, [this] { showSettings(4); });
     connect(this->popDock, &PopDock::systemMonitorRequested, this, &Widget::onMenuSystemMonitor);
     // 用户拖弹窗边缘调整大小 → 写配置持久化（下次打开/设置窗回显都按新尺寸）
     connect(this->popDock, &PopDock::sizeEdited, this, [this](int w, int h) {
@@ -1468,6 +1483,23 @@ void Widget::showPopDock()
     this->popDock->activateWindow();                    // 拿到焦点，Ctrl+V 粘贴才生效
 }
 
+// 配置 → AI 面板设置（构造与设置保存后共用）
+static AiSettings aiSettingsOfConfig(Config *c)
+{
+    AiSettings s;
+    if (c == nullptr)
+        return s;
+    s.protocol     = c->getAiProtocol();
+    s.baseUrl      = c->getAiBaseUrl();
+    s.apiKey       = c->getAiApiKey();
+    s.model        = c->getAiModel();
+    s.systemPrompt = c->getAiSystemPrompt();
+    s.temperature  = c->getAiTemperature();
+    s.maxTokens    = c->getAiMaxTokens();
+    s.width        = c->getAiWidth();
+    return s;
+}
+
 // 面板落点：按人机工程学摆放 ——
 //   1) 用 availableGeometry（自动避开菜单栏 / Dock / 任务栏）并留安全边距；
 //   2) 横向优先放在"空间更大的一侧"，保证不压住悬浮球；两侧都放不下时选更宽的一侧；
@@ -1491,8 +1523,12 @@ QPoint Widget::popDockTargetPos()
     const int prefH = this->popDock->preferredHeight();
     int pw = qMin(prefW, qMax(240, sr.width()  - margin * 2));
     int ph = qMin(prefH, qMax(260, sr.height() - margin * 2));
-    if (this->popDock != nullptr)
+    if (this->popDock != nullptr) {
+        // 右侧 AI 区域展开时，最小宽度会变大：不能被上面的"屏幕装不下就收缩"压回去
+        pw = qMax(pw, this->popDock->minimumWidth());
+        ph = qMax(ph, this->popDock->minimumHeight());
         this->popDock->resize(pw, ph);   // 只调整尺寸，不再固定：用户可拖边缘改大小
+    }
 
     // ---- 展示位置：0=自动 1=悬浮球右侧 2=悬浮球左侧 3=屏幕居中 ----
     const int posMode = (this->config != nullptr) ? this->config->getDockPosition() : 0;
@@ -1585,6 +1621,11 @@ void Widget::dropEvent(QDropEvent *event)
 
 void Widget::onMenuSettings()
 {
+    showSettings(-1);
+}
+
+void Widget::showSettings(int categoryRow)
+{
     // 打开扁平化风格的设置窗口（非模态，方便边改边看小球效果）
     if (this->settingsDialog == nullptr) {
         this->settingsDialog = new SettingsDialog(this->config, this->sysInfo, this);
@@ -1592,6 +1633,8 @@ void Widget::onMenuSettings()
                 this, &Widget::onSettingsApplied);
     }
     this->settingsDialog->loadFromConfig();
+    if (categoryRow >= 0)
+        this->settingsDialog->selectCategory(categoryRow);
     this->settingsDialog->show();
     this->settingsDialog->raise();
     this->settingsDialog->activateWindow();
@@ -2052,6 +2095,10 @@ void Widget::onSettingsApplied()
     this->applyLcdStyle();
     // 主题色可能改了 → 数据中转站里的激活/选中样式跟随刷新
     this->popDock->setAccentColor(QColor(this->config->getCpuUsageColor()));
+    // 右侧 AI 区域：协议/密钥/模型/宽度/显隐都可能改了 → 先应用 AI 配置（含面板宽度），
+    // 再按新的弹窗宽高重摆（applyDockSettings 会算上 AI 占用的额外宽度）
+    this->popDock->applyAiSettings(aiSettingsOfConfig(this->config),
+                                   this->config->getAiShow() != 0);
     // 弹窗尺寸 / 内容密度 / 背景不透明度可能改了 → 立即应用；若弹窗正开着就按新尺寸/位置重摆
     this->popDock->applyDockSettings(this->config->getDockWidth(),
                                      this->config->getDockHeight(),

@@ -186,6 +186,8 @@ private slots:
 
     // 中转站面板右上角"操作"菜单（设置 / 系统监视器 / 退出）的动作
     void onMenuSettings();
+    // 打开设置窗口；categoryRow >= 0 时直接切到该分类（AI 面板的「配置」用）
+    void showSettings(int categoryRow);
     void onMenuSystemMonitor();
     void onMenuQuit();
     // 设置保存后刷新界面
