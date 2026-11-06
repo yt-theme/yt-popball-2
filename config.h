@@ -103,6 +103,8 @@ private:
     QString ai_system_prompt;
     double  ai_temperature;
     qint32  ai_max_tokens;
+    QString ai_proxy;            // HTTP/SOCKS5 代理；空=跟随系统
+    QString ai_headers;          // 额外请求头，每行 "Name: Value"
 
     // [window]
     // 形状蒙版：桌面没开混成(compositing)时，半透明窗口会露出黑色矩形底，
@@ -207,6 +209,8 @@ public:
     void setAiSystemPrompt(QString val);
     void setAiTemperature(double val);
     void setAiMaxTokens(qint32 val);
+    void setAiProxy(QString val);
+    void setAiHeaders(QString val);
 
     // [window]
     void setShapeMask(qint32 val);
@@ -290,6 +294,8 @@ public:
     QString getAiSystemPrompt();
     double  getAiTemperature();
     qint32  getAiMaxTokens();
+    QString getAiProxy();
+    QString getAiHeaders();
 
     // [window]
     qint32 getShapeMask();

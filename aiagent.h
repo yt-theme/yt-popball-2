@@ -28,7 +28,14 @@ struct AiSettings {
     double  temperature  = 0.7;
     int     maxTokens    = 0;        // 0 = 不指定（Anthropic 必填，按 4096 兜底）
     int     width        = 360;      // 右侧面板宽度（px）
+    QString proxy;                   // HTTP/SOCKS5 代理；空 = 跟随系统设置
+    QString headers;                 // 额外请求头，每行 "Name: Value"
 };
+
+// 用一次最小请求验证 AI 配置是否可用（不写入对话历史，不影响界面状态）。
+// done(ok, message)：message 为成功时的延迟摘要或失败时的具体错误。
+void testAiConnection(const AiSettings &s, QObject *context,
+                      std::function<void(bool ok, const QString &message)> done);
 
 QString aiProtocolName(int protocol);
 QString aiDefaultBaseUrl(int protocol);

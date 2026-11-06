@@ -1497,6 +1497,8 @@ static AiSettings aiSettingsOfConfig(Config *c)
     s.temperature  = c->getAiTemperature();
     s.maxTokens    = c->getAiMaxTokens();
     s.width        = c->getAiWidth();
+    s.proxy        = c->getAiProxy();
+    s.headers      = c->getAiHeaders();
     return s;
 }
 

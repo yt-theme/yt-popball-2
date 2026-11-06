@@ -122,6 +122,18 @@ void AiPanel::buildUi()
     m_modelLbl->setStyleSheet(QStringLiteral("background:transparent;color:#8b9199;"));
     header->addWidget(m_modelLbl, 1);
 
+    m_clearBtn = new QToolButton(this);
+    m_clearBtn->setObjectName(QStringLiteral("aiClearBtn"));
+    m_clearBtn->setText(tr("清空"));
+    m_clearBtn->setCursor(Qt::PointingHandCursor);
+    m_clearBtn->setFocusPolicy(Qt::NoFocus);
+    m_clearBtn->setToolTip(tr("清空当前对话（气泡与上下文都会清掉）"));
+    m_clearBtn->setStyleSheet(QStringLiteral(
+        "QToolButton{background:transparent;border:none;border-radius:5px;color:#9aa0a6;"
+        "padding:1px 6px;font-size:11px;}"
+        "QToolButton:hover{background:rgba(255,255,255,0.12);color:#e8eaed;}"));
+    header->addWidget(m_clearBtn);
+
     m_cfgBtn = new QToolButton(this);
     m_cfgBtn->setObjectName(QStringLiteral("aiCfgBtn"));
     m_cfgBtn->setText(tr("配置"));
@@ -250,6 +262,7 @@ void AiPanel::buildUi()
 
     connect(m_closeBtn, &QToolButton::clicked, this, &AiPanel::closeRequested);
     connect(m_cfgBtn, &QToolButton::clicked, this, &AiPanel::requestSettings);
+    connect(m_clearBtn, &QToolButton::clicked, this, &AiPanel::clearChat);
     connect(m_sendBtn, &QToolButton::clicked, this, [this] {
         if (m_chat->busy()) {
             m_chat->cancel();
@@ -526,6 +539,33 @@ void AiPanel::appendError(const QString &text)
 {
     m_streamLbl = nullptr;
     addBubble(text, false, true);
+    scrollToEnd(true);
+}
+
+void AiPanel::clearChat()
+{
+    if (m_chatLayout == nullptr)
+        return;
+
+    // 先停掉正在进行的请求（m_gotDelta 置真，避免 finished 回调再补一条「没有返回内容」），
+    // 然后清上下文和所有气泡，只留下末尾的弹簧。
+    if (m_chat->busy()) {
+        m_gotDelta = true;
+        m_chat->cancel();
+    }
+    m_chat->clearHistory();
+    m_streamLbl = nullptr;
+    m_gotDelta = true;
+
+    while (m_chatLayout->count() > 1) {
+        QLayoutItem *item = m_chatLayout->takeAt(0);
+        if (QWidget *w = item->widget())
+            w->deleteLater();
+        delete item;
+    }
+
+    appendHint(tr("对话已清空，可以开始新的提问。"));
+    m_stickBottom = true;
     scrollToEnd(true);
 }
 

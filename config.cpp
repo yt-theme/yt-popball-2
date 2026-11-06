@@ -1,4 +1,13 @@
 #include "config.h"
+#include "keychain.h"
+
+#if defined(Q_OS_MACOS)
+namespace {
+// API Key 在系统钥匙串里的定位（service / account）
+const char *kKeychainService = "PopBall2";
+const char *kKeychainAccount = "ai_api_key";
+}
+#endif
 
 Config::Config()
 {
@@ -178,6 +187,24 @@ void Config::readConfig()
     this->ai_system_prompt  = this->settingsObj->value("/ai/system_prompt", "").toString();
     this->ai_temperature    = qBound(0.0, this->settingsObj->value("/ai/temperature", 0.7).toDouble(), 2.0);
     this->ai_max_tokens     = qMax(0, this->settingsObj->value("/ai/max_tokens", 0).toInt());
+    this->ai_proxy          = this->settingsObj->value("/ai/proxy", "").toString().trimmed();
+    this->ai_headers        = this->settingsObj->value("/ai/headers", "").toString();
+
+#if defined(Q_OS_MACOS)
+    // API Key 改存系统钥匙串：优先用钥匙串里的值；老配置里留着的明文 Key
+    // 首次启动自动迁移过去，成功后把 ini 里的明文清掉（迁移只做一次）。
+    {
+        const QString fromKeychain = Keychain::readSecret(kKeychainService, kKeychainAccount);
+        if (!fromKeychain.isEmpty()) {
+            this->ai_api_key = fromKeychain;
+        } else if (!this->ai_api_key.isEmpty()) {
+            if (Keychain::writeSecret(kKeychainService, kKeychainAccount, this->ai_api_key)) {
+                this->settingsObj->setValue("/ai/api_key", QString());
+                this->settingsObj->sync();
+            }
+        }
+    }
+#endif
 
     // [window]
     this->shape_mask            = this->settingsObj->value("/window/shape_mask", 0).toInt();
@@ -776,6 +803,8 @@ QString Config::getAiModel()          { return this->ai_model; }
 QString Config::getAiSystemPrompt()   { return this->ai_system_prompt; }
 double  Config::getAiTemperature()    { return this->ai_temperature; }
 qint32  Config::getAiMaxTokens()      { return this->ai_max_tokens; }
+QString Config::getAiProxy()          { return this->ai_proxy; }
+QString Config::getAiHeaders()        { return this->ai_headers; }
 
 // ---------------- [ai] 右侧 AI 助手区域 ----------------
 void Config::setAiShow(qint32 val)
@@ -802,7 +831,14 @@ void Config::setAiBaseUrl(QString val)
 }
 void Config::setAiApiKey(QString val)
 {
+#if defined(Q_OS_MACOS)
+    // macOS：Key 写系统钥匙串，配置文件里不再保留明文
+    Keychain::writeSecret(kKeychainService, kKeychainAccount, val);
+    this->settingsObj->setValue("/ai/api_key", QString());
+#else
     this->settingsObj->setValue("/ai/api_key", val);
+#endif
+    this->settingsObj->sync();
     this->ai_api_key = val;
 }
 void Config::setAiModel(QString val)
@@ -824,6 +860,16 @@ void Config::setAiMaxTokens(qint32 val)
 {
     this->settingsObj->setValue("/ai/max_tokens", val);
     this->ai_max_tokens = val;
+}
+void Config::setAiProxy(QString val)
+{
+    this->settingsObj->setValue("/ai/proxy", val);
+    this->ai_proxy = val;
+}
+void Config::setAiHeaders(QString val)
+{
+    this->settingsObj->setValue("/ai/headers", val);
+    this->ai_headers = val;
 }
 
 void Config::setLanguage(qint32 val)

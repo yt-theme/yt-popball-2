@@ -13,6 +13,7 @@
 #include <QColor>
 #include <QList>
 #include "config.h"
+#include "aiagent.h"
 
 class QVBoxLayout;
 class QRadioButton;
@@ -125,11 +126,14 @@ private:
     QWidget *buildDockSection();
     QWidget *buildAiSection();
     QWidget *buildGeneralSection();
+    QWidget *buildAboutSection();
 
     void loadDefaults();
     void applyPreset(int index);
     void refreshRowStyle(ColorRow &row);
     void refreshAiProtocolHint();
+    // 用界面上的当前值拼出 AiSettings（测试连接与写回配置共用）
+    AiSettings currentAiSettings() const;
     bool confirmRestore();
 
     QString configColor(const QString &key) const;
@@ -214,6 +218,10 @@ private:
     QPlainTextEdit *editAiPrompt     = nullptr; // 系统提示词
     QDoubleSpinBox *spinAiTemp       = nullptr; // 温度 0~2
     QSpinBox       *spinAiMaxTokens  = nullptr; // 最大输出 tokens（0=不指定）
+    QLineEdit      *editAiProxy      = nullptr; // 代理地址（空=跟随系统）
+    QPlainTextEdit *editAiHeaders    = nullptr; // 额外请求头（每行 Name: Value）
+    QPushButton    *btnAiTest        = nullptr; // 测试连接
+    QLabel         *lblAiTestResult  = nullptr; // 测试结果
 
     QPushButton *btnRestore = nullptr;
     QPushButton *btnCancel  = nullptr;

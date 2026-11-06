@@ -43,6 +43,9 @@ isEmpty(VERSION) {
 }
 isEmpty(VERSION): VERSION = 0.0.0
 
+# 把版本号传给 C++（设置窗口「关于」页显示）
+DEFINES += APP_VERSION=\\\"$$VERSION\\\"
+
 # You can make your code fail to compile if it uses deprecated APIs.
 # In order to do so, uncomment the following line.
 #DEFINES += QT_DISABLE_DEPRECATED_BEFORE=0x060000    # disables all the APIs deprecated before Qt 6.0.0
@@ -52,6 +55,7 @@ SOURCES += \
     aipanel.cpp \
     clipstore.cpp \
     config.cpp \
+    keychain.cpp \
     main.cpp \
     proclist.cpp \
     settingsdialog.cpp \
@@ -64,6 +68,7 @@ HEADERS += \
     aipanel.h \
     clipstore.h \
     config.h \
+    keychain.h \
     macro_def.h \
     proclist.h \
     settingsdialog.h \
@@ -94,7 +99,8 @@ DISTFILES +=
 # ---------------- 平台相关 ----------------
 
 # macOS：AppleSMC(CPU 温度) 需要 IOKit；桌面窗口行为用一小段 Objective-C++
-macx: LIBS += -framework IOKit
+# Security.framework 用于把 AI 的 API Key 存进系统钥匙串（见 keychain.cpp）
+macx: LIBS += -framework IOKit -framework Security
 macx: OBJECTIVE_SOURCES += macwindow.mm
 macx: HEADERS += macwindow.h
 

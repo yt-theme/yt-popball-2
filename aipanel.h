@@ -56,6 +56,7 @@ private:
     void appendStreamText(const QString &text);
     void appendError(const QString &text);
     void appendHint(const QString &text);
+    void clearChat();
     void scrollToEnd(bool force);
     // 气泡最大宽度 = 聊天区宽度 - 头像/边距（面板改宽或窗口缩放时重算）
     int  bubbleMaxWidth() const;
@@ -70,6 +71,7 @@ private:
     QLabel         *m_streamLbl = nullptr;   // 正在流式输出的那条 AI 气泡
     QPlainTextEdit *m_input = nullptr;
     QToolButton    *m_sendBtn = nullptr;
+    QToolButton    *m_clearBtn = nullptr;
     QToolButton    *m_cfgBtn = nullptr;
     QToolButton    *m_closeBtn = nullptr;
     QLabel         *m_modelLbl = nullptr;

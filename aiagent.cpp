@@ -2,9 +2,12 @@
 
 #include <QJsonDocument>
 #include <QJsonParseError>
+#include <QCoreApplication>
 #include <QNetworkAccessManager>
+#include <QNetworkProxy>
 #include <QNetworkReply>
 #include <QNetworkRequest>
+#include <QElapsedTimer>
 #include <QUrl>
 #include <QUrlQuery>
 #include <QDebug>
@@ -193,6 +196,93 @@ QString modelOrDefault(const AiSettings &s)
     return m.isEmpty() ? aiDefaultModel(s.protocol) : m;
 }
 
+// 各协议的最终请求地址（测试连接与正式对话共用，避免两套拼接逻辑走样）
+QUrl endpointFor(const AiSettings &s)
+{
+    QString base = normalizedBase(s);
+
+    if (s.protocol == 1) {
+        if (!base.contains(QLatin1String("/messages")))
+            base += base.endsWith(QLatin1String("/v1"))
+                        ? QStringLiteral("/messages")
+                        : QStringLiteral("/v1/messages");
+        return QUrl(base);
+    }
+
+    if (s.protocol == 2) {
+        if (base.contains(QLatin1String(":streamGenerateContent")))
+            return QUrl(base);
+        if (!base.contains(QLatin1String("/v1beta")) && !base.endsWith(QLatin1String("/v1")))
+            base += QStringLiteral("/v1beta");
+        base += QStringLiteral("/models/") + modelOrDefault(s)
+                + QStringLiteral(":streamGenerateContent?alt=sse");
+        return QUrl(base);
+    }
+
+    // OpenAI 兼容：用户可以直接填完整的 chat/completions 地址
+    if (!base.contains(QLatin1String("/chat/completions")))
+        base += QStringLiteral("/chat/completions");
+    return QUrl(base);
+}
+
+// 默认鉴权头 + 用户自定义的额外请求头（自定义的放最后，允许覆盖默认值）
+void applyHeadersFor(QNetworkRequest &req, const AiSettings &s)
+{
+    req.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
+    const QString key = s.apiKey.trimmed();
+
+    if (s.protocol == 1) {
+        req.setRawHeader("x-api-key", key.toUtf8());
+        req.setRawHeader("anthropic-version", "2023-06-01");
+    } else if (s.protocol == 2) {
+        req.setRawHeader("x-goog-api-key", key.toUtf8());
+    } else if (req.url().query().contains(QLatin1String("api-version"))) {
+        // Azure OpenAI 用的是 api-key + api-version 查询参数，其余都是 Bearer
+        req.setRawHeader("api-key", key.toUtf8());
+    } else {
+        req.setRawHeader("Authorization", "Bearer " + key.toUtf8());
+    }
+
+    const QStringList lines = s.headers.split(QLatin1Char('\n'));
+    for (const QString &raw : lines) {
+        const QString line = raw.trimmed();
+        if (line.isEmpty() || line.startsWith(QLatin1Char('#')))
+            continue;
+        const int colon = line.indexOf(QLatin1Char(':'));
+        if (colon <= 0)
+            continue;
+        req.setRawHeader(line.left(colon).trimmed().toUtf8(),
+                         line.mid(colon + 1).trimmed().toUtf8());
+    }
+}
+
+// 设定代理：空 = 跟随系统/应用代理；支持 http://host:port 与 socks5://host:port
+void applyProxyFor(QNetworkAccessManager *nam, const AiSettings &s)
+{
+    const QString p = s.proxy.trimmed();
+    if (p.isEmpty()) {
+        nam->setProxy(QNetworkProxy::DefaultProxy);
+        return;
+    }
+
+    const QString withScheme = p.contains(QLatin1String("://"))
+                                   ? p
+                                   : QStringLiteral("http://") + p;
+    const QUrl u(withScheme);
+    QNetworkProxy proxy;
+    const QString scheme = u.scheme().toLower();
+    proxy.setType(scheme.startsWith(QLatin1String("socks"))
+                      ? QNetworkProxy::Socks5Proxy
+                      : QNetworkProxy::HttpProxy);
+    proxy.setHostName(u.host());
+    proxy.setPort(quint16(u.port(8080)));
+    if (!u.userName().isEmpty()) {
+        proxy.setUser(u.userName());
+        proxy.setPassword(u.password());
+    }
+    nam->setProxy(proxy);
+}
+
 } // namespace
 
 // =====================================================================================
@@ -237,51 +327,12 @@ void AiChat::cancel()
 
 QUrl AiChat::endpointUrl() const
 {
-    QString base = normalizedBase(m_settings);
-
-    if (m_settings.protocol == 1) {
-        if (!base.contains(QLatin1String("/messages")))
-            base += base.endsWith(QLatin1String("/v1"))
-                        ? QStringLiteral("/messages")
-                        : QStringLiteral("/v1/messages");
-        return QUrl(base);
-    }
-
-    if (m_settings.protocol == 2) {
-        if (base.contains(QLatin1String(":streamGenerateContent")))
-            return QUrl(base);
-        if (!base.contains(QLatin1String("/v1beta")) && !base.endsWith(QLatin1String("/v1")))
-            base += QStringLiteral("/v1beta");
-        base += QStringLiteral("/models/") + modelOrDefault(m_settings)
-                + QStringLiteral(":streamGenerateContent?alt=sse");
-        return QUrl(base);
-    }
-
-    // OpenAI 兼容：用户可以直接填完整的 chat/completions 地址
-    if (!base.contains(QLatin1String("/chat/completions")))
-        base += QStringLiteral("/chat/completions");
-    return QUrl(base);
+    return endpointFor(m_settings);
 }
 
 void AiChat::applyHeaders(QNetworkRequest &req) const
 {
-    req.setHeader(QNetworkRequest::ContentTypeHeader, QStringLiteral("application/json"));
-    const QString key = m_settings.apiKey.trimmed();
-
-    if (m_settings.protocol == 1) {
-        req.setRawHeader("x-api-key", key.toUtf8());
-        req.setRawHeader("anthropic-version", "2023-06-01");
-        return;
-    }
-    if (m_settings.protocol == 2) {
-        req.setRawHeader("x-goog-api-key", key.toUtf8());
-        return;
-    }
-    // Azure OpenAI 用的是 api-key + api-version 查询参数，其余都是 Bearer
-    if (req.url().query().contains(QLatin1String("api-version")))
-        req.setRawHeader("api-key", key.toUtf8());
-    else
-        req.setRawHeader("Authorization", "Bearer " + key.toUtf8());
+    applyHeadersFor(req, m_settings);
 }
 
 QJsonArray AiChat::buildMessages() const
@@ -396,6 +447,8 @@ void AiChat::startRequest(const QJsonArray &messages)
     QNetworkRequest req(endpointUrl());
     applyHeaders(req);
     req.setTransferTimeout(180000);
+    // 每次请求前同步代理设置（改配置后无需重建 AiChat 也生效）
+    applyProxyFor(m_nam, m_settings);
 
     const QByteArray payload =
         QJsonDocument(buildBody(messages)).toJson(QJsonDocument::Compact);
@@ -818,4 +871,120 @@ void AiChat::fail(const QString &message)
     }
     m_busy = false;
     emit failed(message);
+}
+
+// =====================================================================================
+//  配置连通性测试
+// =====================================================================================
+void testAiConnection(const AiSettings &s, QObject *context,
+                      std::function<void(bool ok, const QString &message)> done)
+{
+    QNetworkAccessManager *nam = new QNetworkAccessManager(context);
+    applyProxyFor(nam, s);
+
+    QNetworkRequest req(endpointFor(s));
+    applyHeadersFor(req, s);
+    req.setTransferTimeout(20000);
+
+    // 最小请求：一句话、只要 1 个 token、非流式 —— 只为确认地址/Key/模型可用，
+    // 不做真正的对话，也不写进对话历史。
+    QJsonObject body;
+    body.insert(QStringLiteral("model"), modelOrDefault(s));
+    QJsonArray messages;
+    QJsonObject msg;
+    msg.insert(QStringLiteral("role"), QStringLiteral("user"));
+    msg.insert(QStringLiteral("content"), QStringLiteral("ping"));
+    messages.append(msg);
+
+    if (s.protocol == 1) {
+        body.insert(QStringLiteral("messages"), messages);
+        body.insert(QStringLiteral("max_tokens"), 1);
+        body.insert(QStringLiteral("stream"), false);
+    } else if (s.protocol == 2) {
+        QJsonArray contents;
+        QJsonObject turn;
+        QJsonArray parts;
+        QJsonObject part;
+        part.insert(QStringLiteral("text"), QStringLiteral("ping"));
+        parts.append(part);
+        turn.insert(QStringLiteral("parts"), parts);
+        contents.append(turn);
+        body.insert(QStringLiteral("contents"), contents);
+        QJsonObject gen;
+        gen.insert(QStringLiteral("maxOutputTokens"), 1);
+        body.insert(QStringLiteral("generationConfig"), gen);
+    } else {
+        body.insert(QStringLiteral("messages"), messages);
+        body.insert(QStringLiteral("max_tokens"), 1);
+        body.insert(QStringLiteral("stream"), false);
+    }
+
+    QElapsedTimer timer;
+    timer.start();
+    QNetworkReply *reply = nam->post(req, QJsonDocument(body).toJson(QJsonDocument::Compact));
+
+    QObject::connect(reply, &QNetworkReply::finished, nam, [nam, reply, timer, done, s]() {
+        const int status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+        const QByteArray raw = reply->readAll();
+        const int ms = int(timer.elapsed());
+
+        // 服务端通常把失败原因放在 error.message（OpenAI/Anthropic/Gemini 都类似）
+        QString detail;
+        const QJsonDocument doc = QJsonDocument::fromJson(raw);
+        if (doc.isObject()) {
+            const QJsonValue e = doc.object().value(QStringLiteral("error"));
+            if (e.isObject())
+                detail = e.toObject().value(QStringLiteral("message")).toString();
+            else if (e.isString())
+                detail = e.toString();
+        }
+
+        const bool ok = status >= 200 && status < 300;
+        QString message;
+        if (ok) {
+            message = QCoreApplication::translate("AiChat", "连接成功 · HTTP %1 · %2 ms · 模型 %3")
+                          .arg(status).arg(ms).arg(modelOrDefault(s));
+        } else {
+            if (detail.isEmpty()) {
+                // 常见网络错误给一句中文说明，比 Qt 的英文 errorString 好懂
+                switch (reply->error()) {
+                case QNetworkReply::TimeoutError:
+                    detail = QCoreApplication::translate("AiChat", "连接超时（20 秒），检查地址或代理");
+                    break;
+                case QNetworkReply::HostNotFoundError:
+                    detail = QCoreApplication::translate("AiChat", "无法解析主机名，检查服务地址");
+                    break;
+                case QNetworkReply::ConnectionRefusedError:
+                    detail = QCoreApplication::translate("AiChat", "目标拒绝连接，检查地址/端口");
+                    break;
+                case QNetworkReply::ProxyConnectionRefusedError:
+                    detail = QCoreApplication::translate("AiChat", "代理拒绝连接，检查代理地址/端口");
+                    break;
+                case QNetworkReply::ProxyTimeoutError:
+                    detail = QCoreApplication::translate("AiChat", "代理连接超时");
+                    break;
+                case QNetworkReply::ProxyNotFoundError:
+                    detail = QCoreApplication::translate("AiChat", "找不到代理服务器");
+                    break;
+                case QNetworkReply::SslHandshakeFailedError:
+                    detail = QCoreApplication::translate("AiChat", "TLS 握手失败，检查代理或证书");
+                    break;
+                default:
+                    detail = reply->errorString();
+                    break;
+                }
+            }
+            if (detail.isEmpty())
+                detail = QString::fromUtf8(raw.left(200));
+            message = status > 0
+                          ? QCoreApplication::translate("AiChat", "HTTP %1 · %2")
+                                .arg(status).arg(detail)
+                          : detail;
+        }
+
+        if (done)
+            done(ok, message);
+        reply->deleteLater();
+        nam->deleteLater();
+    });
 }

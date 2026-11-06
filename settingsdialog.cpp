@@ -13,6 +13,8 @@
 #include <QIcon>
 #include <QPixmap>
 #include <QMessageBox>
+#include <QDesktopServices>
+#include <QUrl>
 #include <QGuiApplication>
 #include <QScreen>
 #include <QVariantAnimation>
@@ -29,8 +31,40 @@
 #include <QListWidget>
 #include <QStackedWidget>
 #include <QPlainTextEdit>
+#include <QClipboard>
 #include "sysInfo.h"
 #include "aiagent.h"
+
+// 版本号由 popball2.pro 从 package.json 读取后以宏传进来；直接编译单文件时兜底
+#ifndef APP_VERSION
+#define APP_VERSION "0.0.0"
+#endif
+
+namespace {
+
+// 打开外部链接：精简的 Linux 桌面可能没有 xdg-open（QDesktopServices 返回 false），
+// 这里退回复制到剪贴板并提示，避免「点了没反应」。Windows / macOS / 常见桌面均走正常分支。
+void openExternalLink(QWidget *ctx, const QString &url)
+{
+    if (QDesktopServices::openUrl(QUrl(url)))
+        return;
+    if (QClipboard *cb = QGuiApplication::clipboard())
+        cb->setText(url);
+    QMessageBox::information(ctx, QObject::tr("无法打开浏览器"),
+                             QObject::tr("链接已复制到剪贴板，请手动粘贴到浏览器打开：\n%1").arg(url));
+}
+
+// 原生 Wayland 下顶层窗口位置由合成器决定：QWidget::move() 只是自己记账，不会生效，
+// 且窗口首次映射前 frameGeometry() 也拿不到可靠值。
+// 程序在 Wayland 会话默认走 XWayland(xcb)（见 linuxwindow.h），这里只覆盖用户
+// 用 POPBALL2_QT_PLATFORM=wayland / QT_QPA_PLATFORM=wayland 强制原生 Wayland 的情况。
+bool platformIsWayland()
+{
+    return QGuiApplication::platformName().startsWith(QLatin1String("wayland"),
+                                                     Qt::CaseInsensitive);
+}
+
+} // namespace
 
 // ---------------------------------------------------------------- 配置项定义
 namespace {
@@ -164,6 +198,13 @@ QSpinBox::down-arrow, QDoubleSpinBox::down-arrow {
 }
 QSpinBox:hover, QDoubleSpinBox:hover, QComboBox:hover, QLineEdit:hover { border-color:#B8C0CA; }
 QSpinBox:focus, QDoubleSpinBox:focus, QComboBox:focus, QLineEdit:focus { border-color:#2E7DD8; }
+/* 多行输入（AI 额外请求头）：各平台原生控件差异大，这里统一成与单行输入框一致的外观 */
+QPlainTextEdit {
+    background-color:#FFFFFF; border:1px solid #DDE2E8; border-radius:4px;
+    padding:6px 8px; color:#3A3F45; font-size:13px;
+}
+QPlainTextEdit:hover { border-color:#B8C0CA; }
+QPlainTextEdit:focus { border-color:#2E7DD8; }
 QComboBox QAbstractItemView {
     background-color:#FFFFFF; border:1px solid #DDE2E8;
     selection-background-color:#E0EEFC; selection-color:#1B1F24;
@@ -293,6 +334,9 @@ void SettingsDialog::clampIntoScreen()
 {
     if (!isVisible())
         return;
+    // 原生 Wayland：位置由合成器决定，move() 不生效，跳过（X11 / XWayland / macOS / Windows 仍照常钳位）
+    if (platformIsWayland())
+        return;
     QScreen *scr = screen() != nullptr ? screen() : QGuiApplication::primaryScreen();
     if (scr == nullptr)
         return;
@@ -390,9 +434,12 @@ void SettingsDialog::buildUi()
     // 6 通用：语言 + 配置备份 + 高级 + 系统监视器
     stack->addWidget(makePage({ buildGeneralSection(), buildBackupSection(),
                                 buildAdvancedSection(), buildMonitorSection() }));
+    // 7 关于：版本信息 + GitHub 仓库入口
+    stack->addWidget(makePage({ buildAboutSection() }));
 
     const QStringList cats = {
-        tr("外观"), tr("悬浮球"), tr("监控项"), tr("数据中转站"), tr("AI"), tr("通用") };
+        tr("外观"), tr("悬浮球"), tr("监控项"), tr("数据中转站"), tr("AI"), tr("通用"),
+        tr("关于") };
     for (const QString &t : cats)
         nav->addItem(new QListWidgetItem(t, nav));
     nav->setCurrentRow(0);
@@ -789,6 +836,94 @@ QWidget *SettingsDialog::buildGeneralSection()
     return box;
 }
 
+QWidget *SettingsDialog::buildAboutSection()
+{
+    const QString repo = QStringLiteral("https://github.com/yt-theme/yt-popball-2");
+
+    auto *box = new QWidget(this);
+    auto *v = new QVBoxLayout(box);
+    v->setContentsMargins(0, 0, 0, 0);
+    v->setSpacing(16);
+
+    auto *g = new QLabel(tr("关  于"), box);
+    g->setProperty("section", "group");
+    v->addWidget(g);
+
+    // 图标 + 名称 + 版本 + 一句话简介
+    auto *head = new QHBoxLayout();
+    head->setSpacing(14);
+
+    auto *icon = new QLabel(box);
+    icon->setFixedSize(64, 64);
+    QPixmap pm(QStringLiteral(":/icons/resources/popball2.png"));
+    if (!pm.isNull())
+        icon->setPixmap(pm.scaled(64, 64, Qt::KeepAspectRatio, Qt::SmoothTransformation));
+    head->addWidget(icon);
+
+    auto *info = new QVBoxLayout();
+    info->setSpacing(4);
+    auto *name = new QLabel(tr("PopBall 系统监控球"), box);
+    name->setStyleSheet(QStringLiteral("font-size:17px;font-weight:600;"));
+    auto *ver = new QLabel(tr("版本 v%1").arg(QStringLiteral(APP_VERSION)), box);
+    ver->setProperty("role", "hint");
+    auto *desc = new QLabel(tr("轻量悬浮监控球：CPU / 内存 / GPU / 网络 / 磁盘一屏掌握，"
+                               "把文件拖进来就能当临时中转站。"), box);
+    desc->setWordWrap(true);
+    info->addWidget(name);
+    info->addWidget(ver);
+    info->addSpacing(6);
+    info->addWidget(desc);
+    head->addLayout(info, 1);
+    v->addLayout(head);
+
+    // GitHub 入口：仓库主页 / 问题反馈 / 更新记录
+    auto *links = new QHBoxLayout();
+    links->setSpacing(8);
+
+    auto *btnRepo = new QPushButton(tr("打开 GitHub 仓库"), box);
+    btnRepo->setProperty("role", "primary");
+    btnRepo->setCursor(Qt::PointingHandCursor);
+    connect(btnRepo, &QPushButton::clicked, this, [this, repo]() {
+        openExternalLink(this, repo);
+    });
+    links->addWidget(btnRepo);
+
+    auto *btnIssues = new QPushButton(tr("问题反馈"), box);
+    btnIssues->setCursor(Qt::PointingHandCursor);
+    connect(btnIssues, &QPushButton::clicked, this, [this, repo]() {
+        openExternalLink(this, repo + QStringLiteral("/issues"));
+    });
+    links->addWidget(btnIssues);
+
+    auto *btnReleases = new QPushButton(tr("更新记录"), box);
+    btnReleases->setCursor(Qt::PointingHandCursor);
+    connect(btnReleases, &QPushButton::clicked, this, [this, repo]() {
+        openExternalLink(this, repo + QStringLiteral("/releases"));
+    });
+    links->addWidget(btnReleases);
+    links->addStretch(1);
+    v->addLayout(links);
+
+    // 可直接点击的仓库地址（走统一的打开逻辑，缺 xdg-open 时能提示并复制）
+    auto *url = new QLabel(box);
+    url->setTextFormat(Qt::RichText);
+    url->setText(QStringLiteral("<a href=\"%1\">%1</a>").arg(repo));
+    url->setOpenExternalLinks(false);
+    connect(url, &QLabel::linkActivated, this, [this](const QString &link) {
+        openExternalLink(this, link);
+    });
+    url->setTextInteractionFlags(Qt::TextBrowserInteraction);
+    url->setProperty("role", "hint");
+    v->addWidget(url);
+
+    auto *license = new QLabel(tr("开源项目，具体许可见仓库中的 LICENSE 文件。"), box);
+    license->setProperty("role", "hint");
+    v->addWidget(license);
+
+    v->addStretch(1);
+    return box;
+}
+
 QWidget *SettingsDialog::buildAsideSection()
 {
     auto *box = new QWidget(this);
@@ -1134,7 +1269,7 @@ QWidget *SettingsDialog::buildAiSection()
     editAiApiKey->setObjectName("aiApiKey");
     editAiApiKey->setEchoMode(QLineEdit::Password);
     editAiApiKey->setClearButtonEnabled(true);
-    editAiApiKey->setPlaceholderText(tr("API Key / Token，只保存在本机配置"));
+    editAiApiKey->setPlaceholderText(tr("API Key / Token（保存在系统钥匙串）"));
     kr->addWidget(editAiApiKey, 1);
     v->addLayout(kr);
 
@@ -1177,6 +1312,52 @@ QWidget *SettingsDialog::buildAiSection()
     spinAiMaxTokens->setToolTip(tr("0 = 不指定（Anthropic 协议内部按 4096 兜底）"));
     sr->addWidget(spinAiMaxTokens, 1);
     v->addLayout(sr);
+
+    // 代理（可选）
+    auto *proxyRow = new QHBoxLayout();
+    proxyRow->setSpacing(10);
+    proxyRow->addWidget(new QLabel(tr("代理"), box));
+    editAiProxy = new QLineEdit(box);
+    editAiProxy->setObjectName("aiProxy");
+    editAiProxy->setClearButtonEnabled(true);
+    editAiProxy->setPlaceholderText(tr("可选：http://127.0.0.1:7890 或 socks5://127.0.0.1:1080；留空跟随系统"));
+    proxyRow->addWidget(editAiProxy, 1);
+    v->addLayout(proxyRow);
+
+    // 额外请求头（可选）
+    v->addWidget(new QLabel(tr("额外请求头"), box));
+    editAiHeaders = new QPlainTextEdit(box);
+    editAiHeaders->setObjectName("aiHeaders");
+    editAiHeaders->setFixedHeight(52);
+    editAiHeaders->setPlaceholderText(tr("可选，每行一个，例如：X-Org-Id: team-42"));
+    v->addWidget(editAiHeaders);
+
+    // 测试连接：用当前填写的地址/Key/模型发一次最小请求
+    auto *testRow = new QHBoxLayout();
+    testRow->setSpacing(10);
+    btnAiTest = new QPushButton(tr("测试连接"), box);
+    btnAiTest->setObjectName("aiTest");
+    btnAiTest->setToolTip(tr("用当前填写的服务地址、API Key 与模型名发一次最小请求，验证是否可用"));
+    testRow->addWidget(btnAiTest);
+    lblAiTestResult = new QLabel(box);
+    lblAiTestResult->setProperty("role", "hint");
+    lblAiTestResult->setWordWrap(true);
+    lblAiTestResult->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    testRow->addWidget(lblAiTestResult, 1);
+    v->addLayout(testRow);
+
+    connect(btnAiTest, &QPushButton::clicked, this, [this]() {
+        btnAiTest->setEnabled(false);
+        lblAiTestResult->setStyleSheet(QString());
+        lblAiTestResult->setText(tr("正在测试…"));
+        const AiSettings s = currentAiSettings();
+        testAiConnection(s, this, [this](bool ok, const QString &message) {
+            btnAiTest->setEnabled(true);
+            lblAiTestResult->setStyleSheet(ok ? QStringLiteral("color:#5AD08A;")
+                                              : QStringLiteral("color:#FF8A80;"));
+            lblAiTestResult->setText((ok ? tr("✓ ") : tr("✗ ")) + message);
+        });
+    });
 
     // 协议切换 → 更新占位提示（留空即用默认地址/模型）
     connect(comboAiProtocol, QOverload<int>::of(&QComboBox::currentIndexChanged),
@@ -1554,6 +1735,10 @@ void SettingsDialog::loadFromConfig()
     editAiPrompt->setPlainText(cfg->getAiSystemPrompt());
     spinAiTemp->setValue(qBound(0.0, cfg->getAiTemperature(), 2.0));
     spinAiMaxTokens->setValue(qBound(0, cfg->getAiMaxTokens(), spinAiMaxTokens->maximum()));
+    editAiProxy->setText(cfg->getAiProxy());
+    editAiHeaders->setPlainText(cfg->getAiHeaders());
+    lblAiTestResult->clear();
+    lblAiTestResult->setStyleSheet(QString());
     refreshAiProtocolHint();
 }
 
@@ -1659,7 +1844,28 @@ void SettingsDialog::loadDefaults()
     editAiPrompt->clear();
     spinAiTemp->setValue(0.7);
     spinAiMaxTokens->setValue(0);
+    editAiProxy->clear();
+    editAiHeaders->clear();
+    lblAiTestResult->clear();
+    lblAiTestResult->setStyleSheet(QString());
     refreshAiProtocolHint();
+}
+
+// 用界面上的当前值拼出 AiSettings（测试连接用；写回配置仍由 applyChanges 统一处理）
+AiSettings SettingsDialog::currentAiSettings() const
+{
+    AiSettings s;
+    s.protocol     = comboAiProtocol->currentData().toInt();
+    s.baseUrl      = editAiBaseUrl->text().trimmed();
+    s.apiKey       = editAiApiKey->text().trimmed();
+    s.model        = editAiModel->text().trimmed();
+    s.systemPrompt = editAiPrompt->toPlainText();
+    s.temperature  = spinAiTemp->value();
+    s.maxTokens    = spinAiMaxTokens->value();
+    s.width        = spinAiWidth->value();
+    s.proxy        = editAiProxy->text().trimmed();
+    s.headers      = editAiHeaders->toPlainText();
+    return s;
 }
 
 // 协议切换 / 载入配置后更新默认地址、默认模型与协议说明
@@ -1817,6 +2023,8 @@ void SettingsDialog::applyChanges()
     cfg->setAiSystemPrompt(editAiPrompt->toPlainText());
     cfg->setAiTemperature(spinAiTemp->value());
     cfg->setAiMaxTokens(spinAiMaxTokens->value());
+    cfg->setAiProxy(editAiProxy->text().trimmed());
+    cfg->setAiHeaders(editAiHeaders->toPlainText());
 
     // 界面语言切换需重启生效（QTranslator 在应用启动时加载）。
     // 不弹"重启生效"提示框：切换形态/语言后界面按新配置即时刷新，
